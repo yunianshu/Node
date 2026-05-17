@@ -1,0 +1,515 @@
+[2026-05-17 02:28:49] ============================================================
+[2026-05-17 02:28:49] [ImageGenerator] 章节图片生成器启动
+[2026-05-17 02:28:49] ============================================================
+[2026-05-17 02:28:49] [ImageGenerator] image-01 配额剩余: 198
+[2026-05-17 02:28:49] [ImageGenerator] 待生成图片: 1408 章
+[2026-05-17 02:29:11] [Image] 第1章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0001.jpg
+[2026-05-17 02:29:30] [Image] 第2章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0002.jpg
+[2026-05-17 02:29:51] [Image] 第3章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0003.jpg
+[2026-05-17 02:30:51] [Image] 第4章生成超时
+[2026-05-17 02:31:14] [Image] 第5章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0005.jpg
+[2026-05-17 02:31:35] [Image] 第6章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0006.jpg
+[2026-05-17 02:31:56] [Image] 第7章图片文件异常
+[2026-05-17 02:32:34] [Image] 第8章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0008.jpg
+[2026-05-17 02:32:53] [Image] 第9章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0009.jpg
+[2026-05-17 02:33:16] [Image] 第10章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0010.jpg
+[2026-05-17 02:33:38] [Image] 第11章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0011.jpg
+[2026-05-17 02:34:00] [Image] 第12章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0012.jpg
+[2026-05-17 02:34:19] [Image] 第13章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0013.jpg
+[2026-05-17 02:34:39] [Image] 第14章图片文件异常
+[2026-05-17 02:34:59] [Image] 第15章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0015.jpg
+[2026-05-17 02:35:21] [Image] 第16章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0016.jpg
+[2026-05-17 02:35:41] [Image] 第17章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0017.jpg
+[2026-05-17 02:36:01] [Image] 第18章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0018.jpg
+[2026-05-17 02:36:02] [Image] 第19章生成失败: {
+  "error": {
+    "code": 1,
+    "message": "API error: input new_sensitive (HTTP 200)"
+  }
+}
+[2026-05-17 02:36:25] [Image] 第20章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0020.jpg
+[2026-05-17 02:36:46] [Image] 第21章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0021.jpg
+[2026-05-17 02:37:06] [Image] 第22章图片文件异常
+[2026-05-17 02:37:26] [Image] 第23章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0023.jpg
+[2026-05-17 02:37:47] [Image] 第24章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0024.jpg
+[2026-05-17 02:38:08] [Image] 第25章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0025.jpg
+[2026-05-17 02:38:33] [Image] 第26章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0026.jpg
+[2026-05-17 02:38:54] [Image] 第27章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0027.jpg
+[2026-05-17 02:39:15] [Image] 第28章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0028.jpg
+[2026-05-17 02:39:36] [Image] 第29章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0029.jpg
+[2026-05-17 02:39:58] [Image] 第30章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0030.jpg
+[2026-05-17 02:40:20] [Image] 第31章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0031.jpg
+[2026-05-17 02:40:42] [Image] 第32章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0032.jpg
+[2026-05-17 02:41:05] [Image] 第33章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0033.jpg
+[2026-05-17 02:41:27] [Image] 第34章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0034.jpg
+[2026-05-17 02:41:51] [Image] 第35章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0035.jpg
+[2026-05-17 02:42:13] [Image] 第36章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0036.jpg
+[2026-05-17 02:42:37] [Image] 第37章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0037.jpg
+[2026-05-17 02:42:58] [Image] 第38章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0038.jpg
+[2026-05-17 02:43:20] [Image] 第39章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0039.jpg
+[2026-05-17 02:43:39] [Image] 第40章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0040.jpg
+[2026-05-17 02:44:01] [Image] 第41章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0041.jpg
+[2026-05-17 02:44:22] [Image] 第42章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0042.jpg
+[2026-05-17 02:44:42] [Image] 第43章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0043.jpg
+[2026-05-17 02:45:03] [Image] 第44章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0044.jpg
+[2026-05-17 02:45:24] [Image] 第45章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0045.jpg
+[2026-05-17 02:45:46] [Image] 第46章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0046.jpg
+[2026-05-17 02:46:07] [Image] 第47章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0047.jpg
+[2026-05-17 02:46:29] [Image] 第48章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0048.jpg
+[2026-05-17 02:46:49] [Image] 第49章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0049.jpg
+[2026-05-17 02:47:10] [Image] 第50章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0050.jpg
+[2026-05-17 02:47:11] [ImageGenerator] 完成: 成功 45, 失败 5
+[2026-05-17 02:47:11] ============================================================
+[2026-05-17 04:10:30] ============================================================
+[2026-05-17 04:10:30] [ImageGenerator] 章节图片生成器启动
+[2026-05-17 04:10:30] ============================================================
+[2026-05-17 04:10:30] [ImageGenerator] image-01 配额剩余: 152
+[2026-05-17 04:10:30] [ImageGenerator] 待生成图片: 1515 章
+[2026-05-17 04:10:52] [Image] 第4章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0004.jpg
+[2026-05-17 04:11:13] [Image] 第7章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0007.jpg
+[2026-05-17 04:11:33] [Image] 第14章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0014.jpg
+[2026-05-17 04:11:33] [Image] 第19章生成失败: {
+  "error": {
+    "code": 1,
+    "message": "API error: input new_sensitive (HTTP 200)"
+  }
+}
+[2026-05-17 04:11:54] [Image] 第22章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0022.jpg
+[2026-05-17 04:12:15] [Image] 第51章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0051.jpg
+[2026-05-17 04:12:36] [Image] 第52章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0052.jpg
+[2026-05-17 04:12:56] [Image] 第53章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0053.jpg
+[2026-05-17 04:13:16] [Image] 第54章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0054.jpg
+[2026-05-17 04:13:38] [Image] 第55章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0055.jpg
+[2026-05-17 04:14:00] [Image] 第56章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0056.jpg
+[2026-05-17 04:14:21] [Image] 第57章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0057.jpg
+[2026-05-17 04:14:44] [Image] 第58章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0058.jpg
+[2026-05-17 04:15:04] [Image] 第59章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0059.jpg
+[2026-05-17 04:15:25] [Image] 第60章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0060.jpg
+[2026-05-17 04:15:49] [Image] 第61章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0061.jpg
+[2026-05-17 04:16:10] [Image] 第62章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0062.jpg
+[2026-05-17 04:16:30] [Image] 第63章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0063.jpg
+[2026-05-17 04:16:51] [Image] 第64章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0064.jpg
+[2026-05-17 04:17:12] [Image] 第65章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0065.jpg
+[2026-05-17 04:17:32] [Image] 第66章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0066.jpg
+[2026-05-17 04:17:53] [Image] 第67章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0067.jpg
+[2026-05-17 04:18:15] [Image] 第68章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0068.jpg
+[2026-05-17 04:18:35] [Image] 第69章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0069.jpg
+[2026-05-17 04:18:55] [Image] 第70章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0070.jpg
+[2026-05-17 04:19:17] [Image] 第71章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0071.jpg
+[2026-05-17 04:19:38] [Image] 第72章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0072.jpg
+[2026-05-17 04:19:58] [Image] 第73章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0073.jpg
+[2026-05-17 04:20:19] [Image] 第74章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0074.jpg
+[2026-05-17 04:20:40] [Image] 第75章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0075.jpg
+[2026-05-17 04:21:01] [Image] 第76章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0076.jpg
+[2026-05-17 04:21:22] [Image] 第77章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0077.jpg
+[2026-05-17 04:21:42] [Image] 第78章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0078.jpg
+[2026-05-17 04:22:02] [Image] 第79章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0079.jpg
+[2026-05-17 04:22:23] [Image] 第80章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0080.jpg
+[2026-05-17 04:22:45] [Image] 第81章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0081.jpg
+[2026-05-17 04:23:07] [Image] 第82章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0082.jpg
+[2026-05-17 04:23:26] [Image] 第83章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0083.jpg
+[2026-05-17 04:23:48] [Image] 第84章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0084.jpg
+[2026-05-17 04:24:07] [Image] 第85章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0085.jpg
+[2026-05-17 04:24:29] [Image] 第86章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0086.jpg
+[2026-05-17 04:24:50] [Image] 第87章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0087.jpg
+[2026-05-17 04:25:10] [Image] 第88章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0088.jpg
+[2026-05-17 04:25:31] [Image] 第89章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0089.jpg
+[2026-05-17 04:25:51] [Image] 第90章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0090.jpg
+[2026-05-17 04:26:13] [Image] 第91章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0091.jpg
+[2026-05-17 04:26:32] [Image] 第92章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0092.jpg
+[2026-05-17 04:26:55] [Image] 第93章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0093.jpg
+[2026-05-17 04:27:17] [Image] 第94章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0094.jpg
+[2026-05-17 04:27:39] [Image] 第95章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0095.jpg
+[2026-05-17 04:27:40] [ImageGenerator] 完成: 成功 49, 失败 1
+[2026-05-17 04:27:40] ============================================================
+[2026-05-17 05:59:25] ============================================================
+[2026-05-17 05:59:25] [ImageGenerator] 章节图片生成器启动
+[2026-05-17 05:59:25] ============================================================
+[2026-05-17 05:59:26] [ImageGenerator] image-01 配额剩余: 103
+[2026-05-17 05:59:26] [ImageGenerator] 待生成图片: 1906 章
+[2026-05-17 05:59:26] [Image] 第19章生成失败: {
+  "error": {
+    "code": 1,
+    "message": "API error: input new_sensitive (HTTP 200)"
+  }
+}
+[2026-05-17 05:59:45] [Image] 第96章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0096.jpg
+[2026-05-17 06:00:05] [Image] 第97章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0097.jpg
+[2026-05-17 06:00:25] [Image] 第98章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0098.jpg
+[2026-05-17 06:00:48] [Image] 第99章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0099.jpg
+[2026-05-17 06:01:11] [Image] 第100章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0100.jpg
+[2026-05-17 06:01:31] [Image] 第101章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0101.jpg
+[2026-05-17 06:02:31] [Image] 第102章生成超时
+[2026-05-17 06:02:52] [Image] 第103章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0103.jpg
+[2026-05-17 06:03:12] [Image] 第104章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0104.jpg
+[2026-05-17 06:03:34] [Image] 第105章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0105.jpg
+[2026-05-17 06:03:54] [Image] 第106章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0106.jpg
+[2026-05-17 06:04:17] [Image] 第107章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0107.jpg
+[2026-05-17 06:04:36] [Image] 第108章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0108.jpg
+[2026-05-17 06:04:59] [Image] 第109章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0109.jpg
+[2026-05-17 06:05:20] [Image] 第110章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0110.jpg
+[2026-05-17 06:05:40] [Image] 第111章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0111.jpg
+[2026-05-17 06:06:00] [Image] 第112章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0112.jpg
+[2026-05-17 06:06:20] [Image] 第113章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0113.jpg
+[2026-05-17 06:06:40] [Image] 第114章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0114.jpg
+[2026-05-17 06:07:03] [Image] 第115章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0115.jpg
+[2026-05-17 06:07:23] [Image] 第116章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0116.jpg
+[2026-05-17 06:07:44] [Image] 第117章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0117.jpg
+[2026-05-17 06:08:03] [Image] 第118章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0118.jpg
+[2026-05-17 06:08:23] [Image] 第119章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0119.jpg
+[2026-05-17 06:08:24] [Image] 第120章生成失败: {
+  "error": {
+    "code": 1,
+    "message": "API error: input new_sensitive (HTTP 200)"
+  }
+}
+[2026-05-17 06:08:46] [Image] 第121章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0121.jpg
+[2026-05-17 06:09:07] [Image] 第122章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0122.jpg
+[2026-05-17 06:09:31] [Image] 第123章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0123.jpg
+[2026-05-17 06:09:51] [Image] 第124章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0124.jpg
+[2026-05-17 06:10:12] [Image] 第125章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0125.jpg
+[2026-05-17 06:10:33] [Image] 第126章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0126.jpg
+[2026-05-17 06:10:55] [Image] 第127章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0127.jpg
+[2026-05-17 06:11:13] [Image] 第128章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0128.jpg
+[2026-05-17 06:11:33] [Image] 第129章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0129.jpg
+[2026-05-17 06:11:54] [Image] 第130章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0130.jpg
+[2026-05-17 06:12:15] [Image] 第131章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0131.jpg
+[2026-05-17 06:13:15] [Image] 第132章生成超时
+[2026-05-17 06:13:34] [Image] 第133章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0133.jpg
+[2026-05-17 06:13:55] [Image] 第134章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0134.jpg
+[2026-05-17 06:14:15] [Image] 第135章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0135.jpg
+[2026-05-17 06:14:36] [Image] 第136章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0136.jpg
+[2026-05-17 06:15:15] [Image] 第137章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0137.jpg
+[2026-05-17 06:15:35] [Image] 第138章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0138.jpg
+[2026-05-17 06:15:56] [Image] 第139章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0139.jpg
+[2026-05-17 06:16:16] [Image] 第140章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0140.jpg
+[2026-05-17 06:16:36] [Image] 第141章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0141.jpg
+[2026-05-17 06:16:58] [Image] 第142章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0142.jpg
+[2026-05-17 06:17:20] [Image] 第143章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0143.jpg
+[2026-05-17 06:17:41] [Image] 第144章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0144.jpg
+[2026-05-17 06:17:42] [ImageGenerator] 完成: 成功 46, 失败 4
+[2026-05-17 06:17:42] ============================================================
+[2026-05-17 06:39:25] ============================================================
+[2026-05-17 06:39:25] [ImageGenerator] 章节图片生成器启动
+[2026-05-17 06:39:25] ============================================================
+[2026-05-17 06:39:26] [ImageGenerator] image-01 配额剩余: 56
+[2026-05-17 06:39:26] [ImageGenerator] 待生成图片: 1860 章
+[2026-05-17 06:39:26] [Image] 第19章生成失败: {
+  "error": {
+    "code": 1,
+    "message": "API error: input new_sensitive (HTTP 200)"
+  }
+}
+[2026-05-17 06:39:49] [Image] 第102章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0102.jpg
+[2026-05-17 06:39:50] [Image] 第120章生成失败: {
+  "error": {
+    "code": 1,
+    "message": "API error: input new_sensitive (HTTP 200)"
+  }
+}
+[2026-05-17 06:40:10] [Image] 第132章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0132.jpg
+[2026-05-17 06:40:37] [Image] 第145章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0145.jpg
+[2026-05-17 06:41:00] [Image] 第146章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0146.jpg
+[2026-05-17 06:41:20] [Image] 第147章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0147.jpg
+[2026-05-17 06:41:41] [Image] 第148章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0148.jpg
+[2026-05-17 06:41:43] ============================================================
+[2026-05-17 06:41:43] [ImageGenerator] 章节图片生成器启动
+[2026-05-17 06:41:43] ============================================================
+[2026-05-17 06:41:43] [ImageGenerator] image-01 配额剩余: 50
+[2026-05-17 06:41:43] [ImageGenerator] 待生成图片: 1854 章
+[2026-05-17 06:41:44] [Image] 第19章生成失败: {
+  "error": {
+    "code": 1,
+    "message": "API error: input new_sensitive (HTTP 200)"
+  }
+}
+[2026-05-17 06:41:44] [Image] 第120章生成失败: {
+  "error": {
+    "code": 1,
+    "message": "API error: input new_sensitive (HTTP 200)"
+  }
+}
+[2026-05-17 06:42:01] [Image] 第149章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0149.jpg
+[2026-05-17 06:42:07] [Image] 第149章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0149.jpg
+[2026-05-17 06:42:23] [Image] 第150章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0150.jpg
+[2026-05-17 06:42:28] [Image] 第150章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0150.jpg
+[2026-05-17 06:42:45] [Image] 第151章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0151.jpg
+[2026-05-17 06:42:51] [Image] 第151章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0151.jpg
+[2026-05-17 06:43:04] [Image] 第152章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0152.jpg
+[2026-05-17 06:43:13] [Image] 第152章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0152.jpg
+[2026-05-17 06:43:24] [Image] 第153章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0153.jpg
+[2026-05-17 06:43:33] [Image] 第153章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0153.jpg
+[2026-05-17 06:43:46] [Image] 第154章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0154.jpg
+[2026-05-17 06:43:55] [Image] 第154章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0154.jpg
+[2026-05-17 06:44:06] [Image] 第155章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0155.jpg
+[2026-05-17 06:44:16] [Image] 第155章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0155.jpg
+[2026-05-17 06:44:34] [Image] 第156章图片文件异常
+[2026-05-17 06:44:38] [Image] 第156章图片文件异常
+[2026-05-17 06:44:55] [Image] 第157章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0157.jpg
+[2026-05-17 06:44:59] [Image] 第157章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0157.jpg
+[2026-05-17 06:45:16] [Image] 第158章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0158.jpg
+[2026-05-17 06:45:19] [Image] 第158章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0158.jpg
+[2026-05-17 06:45:38] [Image] 第159章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0159.jpg
+[2026-05-17 06:45:39] [Image] 第159章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0159.jpg
+[2026-05-17 06:45:58] [Image] 第160章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0160.jpg
+[2026-05-17 06:46:02] [Image] 第160章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0160.jpg
+[2026-05-17 06:46:18] [Image] 第161章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0161.jpg
+[2026-05-17 06:46:22] [Image] 第161章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0161.jpg
+[2026-05-17 06:46:38] [Image] 第162章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0162.jpg
+[2026-05-17 06:46:43] [Image] 第162章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0162.jpg
+[2026-05-17 06:46:59] [Image] 第163章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0163.jpg
+[2026-05-17 06:47:04] [Image] 第163章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0163.jpg
+[2026-05-17 06:47:19] [Image] 第164章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0164.jpg
+[2026-05-17 06:47:26] [Image] 第164章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0164.jpg
+[2026-05-17 06:47:38] [Image] 第165章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0165.jpg
+[2026-05-17 06:47:46] [Image] 第165章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0165.jpg
+[2026-05-17 06:47:59] [Image] 第166章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0166.jpg
+[2026-05-17 06:48:05] [Image] 第166章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0166.jpg
+[2026-05-17 06:48:18] [Image] 第167章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0167.jpg
+[2026-05-17 06:48:26] [Image] 第167章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0167.jpg
+[2026-05-17 06:48:39] [Image] 第168章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0168.jpg
+[2026-05-17 06:48:45] [Image] 第168章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0168.jpg
+[2026-05-17 06:48:58] [Image] 第169章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0169.jpg
+[2026-05-17 06:49:04] [Image] 第169章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0169.jpg
+[2026-05-17 06:49:19] [Image] 第170章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0170.jpg
+[2026-05-17 06:49:24] [Image] 第170章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0170.jpg
+[2026-05-17 06:49:41] [Image] 第171章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0171.jpg
+[2026-05-17 06:49:44] [Image] 第171章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0171.jpg
+[2026-05-17 06:50:01] [Image] 第172章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0172.jpg
+[2026-05-17 06:50:07] [Image] 第172章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0172.jpg
+[2026-05-17 06:50:20] [Image] 第173章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0173.jpg
+[2026-05-17 06:50:27] [Image] 第173章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0173.jpg
+[2026-05-17 06:50:41] [Image] 第174章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0174.jpg
+[2026-05-17 06:50:48] [Image] 第174章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0174.jpg
+[2026-05-17 06:50:48] [Image] 第175章生成失败: {
+  "error": {
+    "code": 1,
+    "message": "API error: usage limit exceeded, daily usage limit reached for Token Plan Hs_max (200/200 used), resets at 2026-05-18T00:00:00+08:00 (HTTP 200)"
+  }
+}
+[2026-05-17 06:50:49] [Image] 第176章生成失败: {
+  "error": {
+    "code": 1,
+    "message": "API error: usage limit exceeded, daily usage limit reached for Token Plan Hs_max (200/200 used), resets at 2026-05-18T00:00:00+08:00 (HTTP 200)"
+  }
+}
+[2026-05-17 06:50:50] [Image] 第177章生成失败: {
+  "error": {
+    "code": 1,
+    "message": "API error: usage limit exceeded, daily usage limit reached for Token Plan Hs_max (200/200 used), resets at 2026-05-18T00:00:00+08:00 (HTTP 200)"
+  }
+}
+[2026-05-17 06:50:50] [Image] 第178章生成失败: {
+  "error": {
+    "code": 1,
+    "message": "API error: usage limit exceeded, daily usage limit reached for Token Plan Hs_max (200/200 used), resets at 2026-05-18T00:00:00+08:00 (HTTP 200)"
+  }
+}
+[2026-05-17 06:50:51] [Image] 第179章生成失败: {
+  "error": {
+    "code": 1,
+    "message": "API error: usage limit exceeded, daily usage limit reached for Token Plan Hs_max (200/200 used), resets at 2026-05-18T00:00:00+08:00 (HTTP 200)"
+  }
+}
+[2026-05-17 06:50:51] [Image] 第180章生成失败: {
+  "error": {
+    "code": 1,
+    "message": "API error: usage limit exceeded, daily usage limit reached for Token Plan Hs_max (200/200 used), resets at 2026-05-18T00:00:00+08:00 (HTTP 200)"
+  }
+}
+[2026-05-17 06:50:52] [Image] 第181章生成失败: {
+  "error": {
+    "code": 1,
+    "message": "API error: usage limit exceeded, daily usage limit reached for Token Plan Hs_max (200/200 used), resets at 2026-05-18T00:00:00+08:00 (HTTP 200)"
+  }
+}
+[2026-05-17 06:50:53] [Image] 第182章生成失败: {
+  "error": {
+    "code": 1,
+    "message": "API error: usage limit exceeded, daily usage limit reached for Token Plan Hs_max (200/200 used), resets at 2026-05-18T00:00:00+08:00 (HTTP 200)"
+  }
+}
+[2026-05-17 06:50:54] [Image] 第183章生成失败: {
+  "error": {
+    "code": 1,
+    "message": "API error: usage limit exceeded, daily usage limit reached for Token Plan Hs_max (200/200 used), resets at 2026-05-18T00:00:00+08:00 (HTTP 200)"
+  }
+}
+[2026-05-17 06:50:54] [Image] 第184章生成失败: {
+  "error": {
+    "code": 1,
+    "message": "API error: usage limit exceeded, daily usage limit reached for Token Plan Hs_max (200/200 used), resets at 2026-05-18T00:00:00+08:00 (HTTP 200)"
+  }
+}
+[2026-05-17 06:50:54] [Image] 第185章生成失败: {
+  "error": {
+    "code": 1,
+    "message": "API error: usage limit exceeded, daily usage limit reached for Token Plan Hs_max (200/200 used), resets at 2026-05-18T00:00:00+08:00 (HTTP 200)"
+  }
+}
+[2026-05-17 06:50:55] [Image] 第186章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:50:56] [Image] 第187章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:50:57] [Image] 第188章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:50:57] [Image] 第189章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:50:57] [Image] 第190章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:50:58] [Image] 第191章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:50:59] [Image] 第192章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:51:00] [Image] 第193章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:51:00] [Image] 第194章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:51:00] [Image] 第195章生成失败: {
+  "error": {
+    "code": 1,
+    "message": "API error: usage limit exceeded, daily usage limit reached for Token Plan Hs_max (200/200 used), resets at 2026-05-18T00:00:00+08:00 (HTTP 200)"
+  }
+}
+[2026-05-17 06:51:01] [Image] 第196章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:51:01] [Image] 第175章图片生成成功 -> D:\AiProject\Node\novels2\images\chapter_0175.jpg
+[2026-05-17 06:51:02] [ImageGenerator] 完成: 成功 25, 失败 25
+[2026-05-17 06:51:02] ============================================================
+[2026-05-17 06:51:03] [Image] 第176章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:51:03] [Image] 第177章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:51:04] [Image] 第178章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:51:04] [Image] 第179章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:51:05] [Image] 第180章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:51:06] [Image] 第181章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:51:06] [Image] 第182章生成失败: {
+  "error": {
+    "code": 1,
+    "message": "API error: usage limit exceeded, daily usage limit reached for Token Plan Hs_max (200/200 used), resets at 2026-05-18T00:00:00+08:00 (HTTP 200)"
+  }
+}
+[2026-05-17 06:51:07] [Image] 第183章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:51:07] [Image] 第184章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:51:08] [Image] 第185章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:51:09] [Image] 第186章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:51:09] [Image] 第187章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:51:10] [Image] 第188章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:51:10] [Image] 第189章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:51:11] [Image] 第190章生成失败: {
+  "error": {
+    "code": 10,
+    "message": "Input content flagged by sensitivity filter (rate limit exceeded(RPM))."
+  }
+}
+[2026-05-17 06:51:12] [ImageGenerator] 完成: 成功 32, 失败 18
+[2026-05-17 06:51:12] ============================================================
+[2026-05-17 07:03:01] ============================================================
+[2026-05-17 07:03:01] [ImageGenerator] 章节图片生成器启动
+[2026-05-17 07:03:01] ============================================================
+[2026-05-17 07:03:02] [ImageGenerator] image-01 配额剩余: 0
+[2026-05-17 07:03:02] [ImageGenerator] 图片配额不足，退出
