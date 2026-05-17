@@ -1,0 +1,21 @@
+# 生成内容（大文件，不提交）
+chapters/
+images/
+lyrics/
+music/
+reviews/
+
+# 日志和临时文件
+logs/
+*.log
+
+# 进度文件
+progress.json
+summary_report.json
+.last_report_state.json
+
+# 系统文件
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
