@@ -25,6 +25,13 @@ def select_chapters(mode: str) -> list[int]:
     return [ch for ch, status in statuses.items() if not status.final_ok]
 
 
+def sort_by_severity(mode: str, chapters: list[int]) -> list[int]:
+    statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"])
+    grade_attr = "draft_grade" if mode == "draft" else "final_grade"
+    rank = {"missing": 0, "hard_fail": 1, "warn": 2, "ok": 3}
+    return sorted(chapters, key=lambda ch: (rank.get(getattr(statuses[ch], grade_attr, "hard_fail"), 1), ch))
+
+
 def run_chapter(script: str, chapter: int, dry_run: bool) -> int:
     cmd = [sys.executable, str(SCRIPTS_DIR / script), "--chapter", str(chapter)]
     print(" ".join(cmd))
@@ -82,7 +89,7 @@ def main():
     args = parser.parse_args()
 
     state = load_repair_state()
-    chapters = select_chapters(args.mode)
+    chapters = sort_by_severity(args.mode, select_chapters(args.mode))
     if not args.ignore_state:
         chapters = [ch for ch in chapters if not should_skip_by_state(state, args.mode, ch)]
     if args.limit > 0:

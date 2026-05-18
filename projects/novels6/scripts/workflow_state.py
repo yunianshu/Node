@@ -11,6 +11,9 @@ from typing import Dict, Iterable
 
 MIN_CHAPTER_WORDS = 4500
 MAX_CHAPTER_WORDS = 5500
+WARN_MIN_CHAPTER_WORDS = 4300
+WARN_MAX_CHAPTER_WORDS = 5800
+HARD_FAIL_MIN_CHAPTER_WORDS = 3000
 MIN_EXISTING_BYTES = 1000
 
 
@@ -19,6 +22,7 @@ class ChapterStatus:
     chapter: int
     draft_exists: bool = False
     draft_words: int = 0
+    draft_grade: str = "missing"
     draft_ok: bool = False
     review_exists: bool = False
     review_status: str = "missing"
@@ -26,6 +30,7 @@ class ChapterStatus:
     review_ok: bool = False
     final_exists: bool = False
     final_words: int = 0
+    final_grade: str = "missing"
     final_ok: bool = False
     failed_reason: str = ""
     updated_at: str = ""
@@ -51,6 +56,18 @@ def read_text_length(path: Path) -> tuple[bool, int, bool]:
     return True, length, MIN_CHAPTER_WORDS <= length <= MAX_CHAPTER_WORDS
 
 
+def grade_chapter_words(length: int, exists: bool = True) -> str:
+    if not exists:
+        return "missing"
+    if MIN_CHAPTER_WORDS <= length <= MAX_CHAPTER_WORDS:
+        return "ok"
+    if length < HARD_FAIL_MIN_CHAPTER_WORDS:
+        return "hard_fail"
+    if WARN_MIN_CHAPTER_WORDS <= length <= WARN_MAX_CHAPTER_WORDS:
+        return "warn"
+    return "hard_fail"
+
+
 def load_review_status(path: Path) -> tuple[bool, str, float | None, bool]:
     if not path.exists():
         return False, "missing", None, False
@@ -74,6 +91,8 @@ def scan_one_chapter(base_dir: Path, chapter: int) -> ChapterStatus:
 
     draft_exists, draft_words, draft_ok = read_text_length(draft_file)
     final_exists, final_words, final_length_ok = read_text_length(final_file)
+    draft_grade = grade_chapter_words(draft_words, draft_exists)
+    final_grade = grade_chapter_words(final_words, final_exists)
     review_exists, review_status, review_score, review_ok = load_review_status(review_file)
     final_ok = final_exists and final_length_ok and review_ok
 
@@ -89,6 +108,7 @@ def scan_one_chapter(base_dir: Path, chapter: int) -> ChapterStatus:
         chapter=chapter,
         draft_exists=draft_exists,
         draft_words=draft_words,
+        draft_grade=draft_grade,
         draft_ok=draft_ok,
         review_exists=review_exists,
         review_status=review_status,
@@ -96,6 +116,7 @@ def scan_one_chapter(base_dir: Path, chapter: int) -> ChapterStatus:
         review_ok=review_ok,
         final_exists=final_exists,
         final_words=final_words,
+        final_grade=final_grade,
         final_ok=final_ok,
         failed_reason=failed_reason,
         updated_at=now_text(),

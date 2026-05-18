@@ -47,6 +47,19 @@ class WorkflowStateTest(unittest.TestCase):
             self.assertIsInstance(status, ChapterStatus)
             self.assertEqual(status.draft_words, 1200)
             self.assertFalse(status.draft_ok)
+            self.assertEqual(status.draft_grade, "hard_fail")
+
+    def test_near_range_chapter_is_warn_not_hard_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            draft_dir = base / "chapters" / "draft"
+            draft_dir.mkdir(parents=True)
+            (draft_dir / "chapter_0003.txt").write_text("字" * 4400, encoding="utf-8")
+
+            status = scan_chapter_status(base, 3, 3)[3]
+
+            self.assertFalse(status.draft_ok)
+            self.assertEqual(status.draft_grade, "warn")
 
 
 if __name__ == "__main__":
