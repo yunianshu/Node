@@ -7,11 +7,13 @@ Rewrite Agent - 重写Agent
 """
 import concurrent.futures
 import json
-import os
-import subprocess
 import sys
 import time
 from pathlib import Path
+
+from mmx_client import MmxError, call_mmx as call_mmx_client
+from novel_config import load_config
+from workflow_state import is_valid_chapter_text, load_review_status, read_text_length
 
 NOVELS_DIR = Path("D:/AiProject/Node/projects/novels6")
 DRAFT_DIR = NOVELS_DIR / "chapters" / "draft"
@@ -22,7 +24,7 @@ OUTLINE_FILE = NOVELS_DIR / "outline.json"
 CHARACTERS_FILE = NOVELS_DIR / "characters.json"
 LOG_FILE = NOVELS_DIR / "logs" / "rewrite_agent.log"
 
-MMX_CLI_PATH = "C:/Users/Administrator/AppData/Roaming/npm/node_modules/mmx-cli/dist/mmx.mjs"
+CONFIG = load_config(NOVELS_DIR)
 
 
 def log(msg: str):
@@ -35,38 +37,23 @@ def log(msg: str):
 
 
 def call_mmx(system_prompt: str, user_prompt: str, max_tokens: int = 8192, temperature: float = 0.7) -> str:
-    cmd = [
-        "node", MMX_CLI_PATH, "text", "chat",
-        "--model", "MiniMax-M2.7-highspeed",
-        "--system", system_prompt,
-        "--message", user_prompt,
-        "--max-tokens", str(max_tokens),
-        "--temperature", str(temperature),
-        "--stream=false",
-        "--quiet"
-    ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
-        if result.returncode != 0:
-            err = result.stderr.strip() if result.stderr else "unknown error"
-            log(f"[ERROR] mmx call failed (rc={result.returncode}): {err}")
-            return ""
-        raw = result.stdout.strip()
-        try:
-            data = json.loads(raw)
-            return data.get("content", raw)
-        except json.JSONDecodeError:
-            pass
-        if "Response:" in raw:
-            json_part = raw.split("Response:")[-1].strip()
-            try:
-                data = json.loads(json_part)
-                return data.get("content", raw)
-            except json.JSONDecodeError:
-                return json_part
-        return raw
-    except Exception as e:
-        log(f"[ERROR] mmx subprocess exception: {e}")
+        return call_mmx_client(
+            system_prompt,
+            user_prompt,
+            model=CONFIG["model"],
+            mmx_path=CONFIG["mmx_path"],
+            max_tokens=max_tokens,
+            temperature=temperature,
+            retries=CONFIG["writer"]["max_retries"],
+            retry_delay=CONFIG["writer"]["retry_delay"],
+            log_dir=NOVELS_DIR / "logs" / "raw_responses",
+            raw_name="rewrite",
+            qps=CONFIG["api_qps"],
+            rate_state_dir=NOVELS_DIR / "logs" / "rate_limit",
+        )
+    except MmxError as e:
+        log(f"[ERROR] mmx调用失败: {e}")
         return ""
 
 
@@ -84,8 +71,10 @@ def rewrite_chapter(chapter_number: int, retry: int = 0) -> str:
     review_file = REVIEWS_DIR / f"chapter_{chapter_number:04d}_review.json"
 
     # 如果final已存在且有效，跳过
-    if final_file.exists() and final_file.stat().st_size > 1000:
-        log(f"[Rewrite] 第{chapter_number}章终稿已存在，跳过")
+    final_exists, final_words, final_ok = read_text_length(final_file)
+    _, _, _, review_ok = load_review_status(review_file)
+    if final_exists and final_ok and review_ok:
+        log(f"[Rewrite] 第{chapter_number}章终稿已存在且质量门通过（{final_words}字），跳过")
         return "exists"
 
     # 必须存在初稿
@@ -104,12 +93,16 @@ def rewrite_chapter(chapter_number: int, retry: int = 0) -> str:
 
     # 只重写评分低于7分或标记为"需重写"的章节
     if verdict != "需重写" and score >= 7:
-        log(f"[Rewrite] 第{chapter_number}章评分{score}无需重写，直接复制初稿到终稿")
-        content = draft_file.read_text(encoding="utf-8")
-        FINAL_DIR.mkdir(parents=True, exist_ok=True)
-        with open(final_file, "w", encoding="utf-8") as f:
-            f.write(content)
-        return "copied"
+        _, draft_words, draft_ok = read_text_length(draft_file)
+        if not draft_ok:
+            log(f"[Rewrite] 第{chapter_number}章评分{score}但初稿字数不合格（{draft_words}字），进入重写")
+        else:
+            log(f"[Rewrite] 第{chapter_number}章评分{score}无需重写，直接复制初稿到终稿")
+            content = draft_file.read_text(encoding="utf-8")
+            FINAL_DIR.mkdir(parents=True, exist_ok=True)
+            with open(final_file, "w", encoding="utf-8") as f:
+                f.write(content)
+            return "copied"
 
     # 加载数据
     world = load_json(WORLD_FILE)
@@ -238,7 +231,7 @@ def rewrite_chapter(chapter_number: int, retry: int = 0) -> str:
     if not content:
         if retry < 3:
             log(f"[Rewrite] 第{chapter_number}章重写失败，重试({retry+1}/3)...")
-            time.sleep(5)
+            time.sleep(CONFIG["writer"]["retry_delay"])
             return rewrite_chapter(chapter_number, retry + 1)
         log(f"[Rewrite] 第{chapter_number}章重写失败，已达最大重试次数")
         return "failed"
@@ -276,12 +269,21 @@ def rewrite_chapter(chapter_number: int, retry: int = 0) -> str:
             word_count = len(content)
             log(f"[Rewrite] 第{chapter_number}章扩充后{word_count}字")
 
+    if not is_valid_chapter_text(content):
+        if retry < 3:
+            log(f"[Rewrite] 第{chapter_number}章终稿字数不合格（{word_count}字），重试({retry+1}/3)...")
+            time.sleep(CONFIG["writer"]["retry_delay"])
+            return rewrite_chapter(chapter_number, retry + 1)
+        log(f"[Rewrite] 第{chapter_number}章终稿字数不合格（{word_count}字），保存并标记失败")
+
     # 保存终稿
     FINAL_DIR.mkdir(parents=True, exist_ok=True)
     with open(final_file, "w", encoding="utf-8") as f:
         f.write(content)
 
     log(f"[Rewrite] 第{chapter_number}章终稿已保存（{word_count}字） -> {final_file}")
+    if not is_valid_chapter_text(content):
+        return "failed"
     return "success"
 
 
@@ -321,7 +323,7 @@ def main():
     parser.add_argument("--end", type=int, default=2000, help="结束章节")
     parser.add_argument("--chapter", type=int, default=0, help="只重写某一章")
     parser.add_argument("--candidates", action="store_true", help="只列出需要重写的章节")
-    parser.add_argument("--workers", type=int, default=20, help="并行重写Agent数量")
+    parser.add_argument("--workers", type=int, default=CONFIG["coordinator"]["num_workers"], help="并行重写Agent数量")
     parser.add_argument("--all", action="store_true", help="处理所有章节（含直接复制）")
     args = parser.parse_args()
 

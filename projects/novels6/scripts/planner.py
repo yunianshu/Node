@@ -5,18 +5,18 @@ Planner Agent - 框架总领Agent
 支持 --start/--end 参数，可并行生成指定范围的大纲
 """
 import json
-import os
-import subprocess
 import sys
 from pathlib import Path
+
+from mmx_client import MmxError, call_mmx as call_mmx_client
+from novel_config import load_config
 
 NOVELS_DIR = Path("D:/AiProject/Node/projects/novels6")
 WORLD_FILE = NOVELS_DIR / "world.json"
 OUTLINE_FILE = NOVELS_DIR / "outline.json"
 CHARACTERS_FILE = NOVELS_DIR / "characters.json"
 
-# mmx CLI 路径（Windows 需通过 node 直接运行）
-MMX_CLI_PATH = "C:/Users/Administrator/AppData/Roaming/npm/node_modules/mmx-cli/dist/mmx.mjs"
+CONFIG = load_config(NOVELS_DIR)
 
 NOVEL_PREMISE = """《长生武道：虚空万界行》是《长生武道：从五禽养生拳开始》的续作/后传。
 
@@ -32,38 +32,23 @@ NOVEL_PREMISE = """《长生武道：虚空万界行》是《长生武道：从�
 
 def call_mmx(system_prompt: str, user_prompt: str, max_tokens: int = 8192, temperature: float = 0.4) -> str:
     """调用 mmx text chat 生成内容（通过 node 直接运行 mmx-cli）"""
-    cmd = [
-        "node", MMX_CLI_PATH, "text", "chat",
-        "--model", "MiniMax-M2.7-highspeed",
-        "--system", system_prompt,
-        "--message", user_prompt,
-        "--max-tokens", str(max_tokens),
-        "--temperature", str(temperature),
-        "--stream=false",
-        "--quiet"
-    ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
-        if result.returncode != 0:
-            err = result.stderr.strip() if result.stderr else "unknown error"
-            print(f"[ERROR] mmx call failed (rc={result.returncode}): {err}", file=sys.stderr)
-            return ""
-        raw = result.stdout.strip()
-        try:
-            data = json.loads(raw)
-            return data.get("content", raw)
-        except json.JSONDecodeError:
-            pass
-        if "Response:" in raw:
-            json_part = raw.split("Response:")[-1].strip()
-            try:
-                data = json.loads(json_part)
-                return data.get("content", raw)
-            except json.JSONDecodeError:
-                return json_part
-        return raw
-    except Exception as e:
-        print(f"[ERROR] mmx subprocess exception: {e}", file=sys.stderr)
+        return call_mmx_client(
+            system_prompt,
+            user_prompt,
+            model=CONFIG["model"],
+            mmx_path=CONFIG["mmx_path"],
+            max_tokens=max_tokens,
+            temperature=temperature,
+            retries=CONFIG["writer"]["max_retries"],
+            retry_delay=CONFIG["writer"]["retry_delay"],
+            log_dir=NOVELS_DIR / "logs" / "raw_responses",
+            raw_name="planner",
+            qps=CONFIG["api_qps"],
+            rate_state_dir=NOVELS_DIR / "logs" / "rate_limit",
+        )
+    except MmxError as e:
+        print(f"[ERROR] mmx调用失败: {e}", file=sys.stderr)
         return ""
 
 

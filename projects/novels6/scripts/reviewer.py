@@ -4,11 +4,13 @@ Reviewer Agent - 审查Agent
 负责审查章节质量并输出评分报告
 """
 import json
-import os
-import subprocess
 import sys
 import time
 from pathlib import Path
+
+from mmx_client import MmxError, call_mmx as call_mmx_client
+from novel_config import load_config
+from workflow_state import load_review_status
 
 NOVELS_DIR = Path("D:/AiProject/Node/projects/novels6")
 CHAPTERS_DIR = NOVELS_DIR / "chapters" / "draft"
@@ -17,8 +19,7 @@ CHARACTERS_FILE = NOVELS_DIR / "characters.json"
 REVIEWS_DIR = NOVELS_DIR / "reviews"
 LOG_FILE = NOVELS_DIR / "logs" / "reviewer.log"
 
-# mmx CLI 路径（Windows 需通过 node 直接运行）
-MMX_CLI_PATH = "C:/Users/Administrator/AppData/Roaming/npm/node_modules/mmx-cli/dist/mmx.mjs"
+CONFIG = load_config(NOVELS_DIR)
 
 
 def log(msg: str):
@@ -33,38 +34,23 @@ def log(msg: str):
 
 def call_mmx(system_prompt: str, user_prompt: str, max_tokens: int = 4096, temperature: float = 0.3) -> str:
     """调用 mmx text chat 进行审查（通过 node 直接运行 mmx-cli）"""
-    cmd = [
-        "node", MMX_CLI_PATH, "text", "chat",
-        "--model", "MiniMax-M2.7-highspeed",
-        "--system", system_prompt,
-        "--message", user_prompt,
-        "--max-tokens", str(max_tokens),
-        "--temperature", str(temperature),
-        "--stream=false",
-        "--quiet"
-    ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
-        if result.returncode != 0:
-            err = result.stderr.strip() if result.stderr else "unknown error"
-            log(f"[ERROR] mmx call failed (rc={result.returncode}): {err}")
-            return ""
-        raw = result.stdout.strip()
-        try:
-            data = json.loads(raw)
-            return data.get("content", raw)
-        except json.JSONDecodeError:
-            pass
-        if "Response:" in raw:
-            json_part = raw.split("Response:")[-1].strip()
-            try:
-                data = json.loads(json_part)
-                return data.get("content", raw)
-            except json.JSONDecodeError:
-                return json_part
-        return raw
-    except Exception as e:
-        log(f"[ERROR] mmx subprocess exception: {e}")
+        return call_mmx_client(
+            system_prompt,
+            user_prompt,
+            model=CONFIG["model"],
+            mmx_path=CONFIG["mmx_path"],
+            max_tokens=max_tokens,
+            temperature=temperature,
+            retries=CONFIG["writer"]["max_retries"],
+            retry_delay=CONFIG["writer"]["retry_delay"],
+            log_dir=NOVELS_DIR / "logs" / "raw_responses",
+            raw_name="reviewer",
+            qps=CONFIG["api_qps"],
+            rate_state_dir=NOVELS_DIR / "logs" / "rate_limit",
+        )
+    except MmxError as e:
+        log(f"[ERROR] mmx调用失败: {e}")
         return ""
 
 
@@ -86,9 +72,12 @@ def review_chapter(chapter_number: int) -> dict:
         return {"status": "no_file"}
 
     if review_file.exists():
-        log(f"[Reviewer] 第{chapter_number}章已审查过，跳过")
-        with open(review_file, "r", encoding="utf-8") as f:
-            return json.load(f)
+        _, status, _, ok = load_review_status(review_file)
+        if ok:
+            log(f"[Reviewer] 第{chapter_number}章已有有效审查报告，跳过")
+            with open(review_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        log(f"[Reviewer] 第{chapter_number}章审查报告无效（{status}），重新审查")
 
     # 读取章节内容
     with open(chapter_file, "r", encoding="utf-8") as f:
@@ -184,7 +173,11 @@ def review_chapter(chapter_number: int) -> dict:
 
     if not content:
         log(f"[Reviewer] 第{chapter_number}章审查失败")
-        return {"status": "failed"}
+        review_data = {"chapter_number": chapter_number, "status": "failed"}
+        REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(review_file, "w", encoding="utf-8") as f:
+            json.dump(review_data, f, ensure_ascii=False, indent=2)
+        return review_data
 
     # 解析JSON
     try:

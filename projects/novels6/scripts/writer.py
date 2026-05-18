@@ -4,11 +4,13 @@ Writer Agent - 内容生成Agent
 负责根据大纲生成具体章节内容，保存为txt文件
 """
 import json
-import os
-import subprocess
 import sys
 import time
 from pathlib import Path
+
+from mmx_client import MmxError, call_mmx as call_mmx_client
+from novel_config import load_config
+from workflow_state import is_valid_chapter_text, read_text_length
 
 NOVELS_DIR = Path("D:/AiProject/Node/projects/novels6")
 CHAPTERS_DIR = NOVELS_DIR / "chapters" / "draft"
@@ -17,8 +19,7 @@ OUTLINE_FILE = NOVELS_DIR / "outline.json"
 CHARACTERS_FILE = NOVELS_DIR / "characters.json"
 LOG_FILE = NOVELS_DIR / "logs" / "writer.log"
 
-# mmx CLI 路径（Windows 需通过 node 直接运行）
-MMX_CLI_PATH = "C:/Users/Administrator/AppData/Roaming/npm/node_modules/mmx-cli/dist/mmx.mjs"
+CONFIG = load_config(NOVELS_DIR)
 
 
 def log(msg: str):
@@ -33,38 +34,23 @@ def log(msg: str):
 
 def call_mmx(system_prompt: str, user_prompt: str, max_tokens: int = 8192, temperature: float = 0.7) -> str:
     """调用 mmx text chat 生成内容（通过 node 直接运行 mmx-cli）"""
-    cmd = [
-        "node", MMX_CLI_PATH, "text", "chat",
-        "--model", "MiniMax-M2.7-highspeed",
-        "--system", system_prompt,
-        "--message", user_prompt,
-        "--max-tokens", str(max_tokens),
-        "--temperature", str(temperature),
-        "--stream=false",
-        "--quiet"
-    ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
-        if result.returncode != 0:
-            err = result.stderr.strip() if result.stderr else "unknown error"
-            log(f"[ERROR] mmx call failed (rc={result.returncode}): {err}")
-            return ""
-        raw = result.stdout.strip()
-        try:
-            data = json.loads(raw)
-            return data.get("content", raw)
-        except json.JSONDecodeError:
-            pass
-        if "Response:" in raw:
-            json_part = raw.split("Response:")[-1].strip()
-            try:
-                data = json.loads(json_part)
-                return data.get("content", raw)
-            except json.JSONDecodeError:
-                return json_part
-        return raw
-    except Exception as e:
-        log(f"[ERROR] mmx subprocess exception: {e}")
+        return call_mmx_client(
+            system_prompt,
+            user_prompt,
+            model=CONFIG["model"],
+            mmx_path=CONFIG["mmx_path"],
+            max_tokens=max_tokens,
+            temperature=temperature,
+            retries=CONFIG["writer"]["max_retries"],
+            retry_delay=CONFIG["writer"]["retry_delay"],
+            log_dir=NOVELS_DIR / "logs" / "raw_responses",
+            raw_name="writer",
+            qps=CONFIG["api_qps"],
+            rate_state_dir=NOVELS_DIR / "logs" / "rate_limit",
+        )
+    except MmxError as e:
+        log(f"[ERROR] mmx调用失败: {e}")
         return ""
 
 
@@ -80,9 +66,12 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
     """生成单个章节"""
     chapter_file = CHAPTERS_DIR / f"chapter_{chapter_number:04d}.txt"
 
-    if chapter_file.exists() and chapter_file.stat().st_size > 1000:
-        log(f"[Writer] 第{chapter_number}章已存在，跳过")
+    exists, existing_words, existing_ok = read_text_length(chapter_file)
+    if exists and existing_ok:
+        log(f"[Writer] 第{chapter_number}章已存在且字数合格（{existing_words}字），跳过")
         return "exists"
+    if exists:
+        log(f"[Writer] 第{chapter_number}章已存在但字数不合格（{existing_words}字），重新生成")
 
     # 加载数据
     world = load_json(WORLD_FILE)
@@ -235,7 +224,7 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
     if not content:
         if retry < 3:
             log(f"[Writer] 第{chapter_number}章生成失败，重试({retry+1}/3)...")
-            time.sleep(5)
+            time.sleep(CONFIG["writer"]["retry_delay"])
             return generate_chapter(chapter_number, retry + 1)
         log(f"[Writer] 第{chapter_number}章生成失败，已达最大重试次数")
         return "failed"
@@ -250,6 +239,14 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
             lines = lines[:-1]
         content = "\n".join(lines).strip()
 
+    if not is_valid_chapter_text(content):
+        word_count = len(content)
+        if retry < 3:
+            log(f"[Writer] 第{chapter_number}章字数不合格（{word_count}字），重试({retry+1}/3)...")
+            time.sleep(CONFIG["writer"]["retry_delay"])
+            return generate_chapter(chapter_number, retry + 1)
+        log(f"[Writer] 第{chapter_number}章字数不合格（{word_count}字），保存草稿并标记失败")
+
     # 保存
     CHAPTERS_DIR.mkdir(parents=True, exist_ok=True)
     with open(chapter_file, "w", encoding="utf-8") as f:
@@ -257,6 +254,8 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
 
     word_count = len(content)
     log(f"[Writer] 第{chapter_number}章已保存（{word_count}字） -> {chapter_file}")
+    if not is_valid_chapter_text(content):
+        return "failed"
     return "success"
 
 
