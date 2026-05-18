@@ -1,0 +1,18 @@
+[2026-05-18 14:12:12] [Planner] [INFO] ============================================================
+[2026-05-18 14:12:12] [Planner] [INFO] Planner Agent 启动
+[2026-05-18 14:12:12] [Planner] [INFO] ============================================================
+[2026-05-18 14:12:12] [Planner] [INFO] world.json 已存在，跳过
+[2026-05-18 14:12:12] [Planner] [INFO] characters.json 已存在，跳过
+Traceback (most recent call last):
+  File "D:\AiProject\Node\projects\novels7\scripts\planner.py", line 367, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "D:\AiProject\Node\projects\novels7\scripts\planner.py", line 358, in main
+    if not generate_outline(client, planner_prompt, world_data, chars_data, config.outline_file, logger):
+           ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\AiProject\Node\projects\novels7\scripts\planner.py", line 243, in generate_outline
+    world_summary = _summarize_world(world_data)
+  File "D:\AiProject\Node\projects\novels7\scripts\planner.py", line 162, in _summarize_world
+    for f in factions[:8]:
+             ~~~~~~~~^^^^
+KeyError: slice(None, 8, None)

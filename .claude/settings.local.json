@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__pencil__get_guidelines",
+      "mcp__pencil__get_editor_state"
+    ]
+  }
+}
