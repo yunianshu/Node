@@ -13,7 +13,7 @@ import sys
 import time
 from pathlib import Path
 
-NOVELS_DIR = Path("D:/AiProject/Node/novels4")
+NOVELS_DIR = Path("D:/AiProject/Node/novels3")
 DRAFT_DIR = NOVELS_DIR / "chapters" / "draft"
 FINAL_DIR = NOVELS_DIR / "chapters" / "final"
 REVIEWS_DIR = NOVELS_DIR / "reviews"

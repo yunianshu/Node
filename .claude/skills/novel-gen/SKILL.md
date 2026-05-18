@@ -214,7 +214,7 @@ python -m novels.coordinator --config D:/AiProject/Node/projects/novels6/config.
 
 ```bash
 # 生成封面和预告片
-cd D:/AiProject/Node/novels5
+cd D:/AiProject/Node/projects/novels6
 python scripts/generate_cover_and_trailer.py
 ```
 

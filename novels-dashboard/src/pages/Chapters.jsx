@@ -10,10 +10,13 @@ import { novelApi } from '../api/novelApi'
 const { Title, Text } = Typography
 
 const PROJECT_OPTIONS = [
+  { value: 'novels1', label: 'novels1' },
   { value: 'novels2', label: 'novels2 (剑来风格)' },
   { value: 'novels3', label: 'novels3 (武道通神)' },
   { value: 'novels4', label: 'novels4' },
-  { value: 'novels5', label: 'novels5 (新书示例)' },
+  { value: 'novels5', label: 'novels5' },
+  { value: 'novels6', label: 'novels6 (新书示例)' },
+  { value: 'novels7', label: 'novels7 (凡尘逆仙)' },
 ]
 
 const STATUS_TAG = {
@@ -24,7 +27,7 @@ const STATUS_TAG = {
 
 function Chapters() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const [projectId, setProjectId] = useState(searchParams.get('project') || 'novels5')
+  const [projectId, setProjectId] = useState(searchParams.get('project') || 'novels6')
   const [data, setData] = useState([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)

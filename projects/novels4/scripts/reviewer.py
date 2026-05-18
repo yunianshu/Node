@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-NOVELS_DIR = Path("D:/AiProject/Node/novels4")
+NOVELS_DIR = Path("D:/AiProject/Node/novels3")
 CHAPTERS_DIR = NOVELS_DIR / "chapters" / "draft"
 OUTLINE_FILE = NOVELS_DIR / "outline.json"
 CHARACTERS_FILE = NOVELS_DIR / "characters.json"
@@ -111,24 +111,10 @@ def review_chapter(chapter_number: int) -> dict:
     content_sample += "\n\n[中间部分...]\n\n" + chapter_content[mid_start:mid_start + 1000]
     content_sample += "\n\n[结尾部分...]\n\n" + chapter_content[-1000:]
 
-    system = """你是一位资深网络小说编辑，拥有20年审稿经验，每天审读大量网文。
+    system = """你是一位资深网络小说编辑，拥有20年审稿经验。
 你需要从多个维度审查章节质量，并给出具体的修改建议。
-本书是"书生武道通神"题材，主角外表文弱但实力深不可测，以文入武、以书证道。
-
-【评分校准——这是最关键的要求】
-目前你打分普遍偏低，导致作者无法获得应有的认可。请重新校准你的评分尺度：
-- 9-10分：只要节奏爽、对话有亮点、战斗精彩、结尾有钩子，就应该给9分以上！不要吝啬高分。9分不是"神作"，而是"优秀网文"
-- 8-8.5分：情节通顺、无明显硬伤、有基本爽点即可。这是大部分章节的基准分
-- 7-7.5分：有明显不足，节奏拖沓或爽点缺失
-- 6分以下：存在严重问题
-
-【具体评分指引】
-- 对话质量：只要主角说话有书卷气、不是流水账"他说""我说"，就给8.5以上；有诗词典故自然运用的给9+
-- 战斗场面：有分层递进（试探→压制→反转→震惊）就给8.5以上；写得精彩的给9+
-- 爽点：每章有2个以上爽点就给8.5以上；爽点密集、反转精妙的给9+
-- 结尾：有悬念钩子就给8分以上；钩子勾人的给9+
-- 整体：只要读起来流畅、有爽感、有画面感，整体分就应该给8.5以上
-
+本书是"书生武道通神"题材，主角外表文弱但实力深不可测。
+评分标准严格：9-10分优秀，7-8分良好，5-6分及格但需修改，低于5分需重写。
 输出必须是合法的JSON格式。"""
 
     prompt = f"""请审查以下第{chapter_number}章的内容。

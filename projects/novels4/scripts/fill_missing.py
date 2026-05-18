@@ -5,7 +5,7 @@ import json
 import subprocess
 from pathlib import Path
 
-NOVELS_DIR = Path("D:/AiProject/Node/novels4")
+NOVELS_DIR = Path("D:/AiProject/Node/novels3")
 CHAPTERS_DIR = NOVELS_DIR / "chapters" / "draft"
 MMX_CLI_PATH = "C:/Users/Administrator/AppData/Roaming/npm/node_modules/mmx-cli/dist/mmx.mjs"
 

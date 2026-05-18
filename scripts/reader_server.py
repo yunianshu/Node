@@ -5,7 +5,7 @@
 
 用法:
     python reader_server.py              # 默认扫描上级目录
-    python reader_server.py --root D:/AiProject/Node/novels5
+    python reader_server.py --root D:/AiProject/Node/projects/novels6
     python reader_server.py --port 8888
 """
 import argparse

@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-NOVELS_DIR = Path("D:/AiProject/Node/novels4")
+NOVELS_DIR = Path("D:/AiProject/Node/novels3")
 REVIEWS_DIR = NOVELS_DIR / "reviews"
 LOG_FILE = NOVELS_DIR / "logs" / "fill_reviews_parallel.log"
 SCRIPTS_DIR = NOVELS_DIR / "scripts"

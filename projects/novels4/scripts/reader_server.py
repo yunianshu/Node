@@ -11,7 +11,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, unquote
 
-NOVELS_ROOT = Path("D:/AiProject/Node/novels4")
+NOVELS_ROOT = Path("D:/AiProject/Node/novels3")
 NOVELS_PARENT = NOVELS_ROOT.parent
 PORT = 8889
 

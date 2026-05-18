@@ -15,7 +15,7 @@ from pathlib import Path
 import urllib.request
 import urllib.error
 
-NOVELS_DIR = Path("D:/AiProject/Node/novels4")
+NOVELS_DIR = Path("D:/AiProject/Node/novels3")
 
 # mmx CLI 路径（Windows 需通过 node 直接运行）
 MMX_CLI_PATH = "C:/Users/Administrator/AppData/Roaming/npm/node_modules/mmx-cli/dist/mmx.mjs"
@@ -414,7 +414,7 @@ def main():
     # 解析命令行参数
     import argparse
     parser = argparse.ArgumentParser(description="小说生成协调器")
-    parser.add_argument("--batch-size", type=int, default=60, help="每批生成的章节数")
+    parser.add_argument("--batch-size", type=int, default=40, help="每批生成的章节数")
     parser.add_argument("--start", type=int, default=1, help="起始章节")
     parser.add_argument("--end", type=int, default=2000, help="结束章节")
     parser.add_argument("--skip-planner", action="store_true", help="跳过Planner阶段")
@@ -512,7 +512,7 @@ def main():
         log(f"[Coordinator] ===== 开始第 {batch_start}-{batch_end} 章 =====")
 
         # 写入本批章节（并行60个Writer）
-        writer_results = run_parallel_agents("writer.py", batch_start, batch_end, num_workers=min(batch_size, 80))
+        writer_results = run_parallel_agents("writer.py", batch_start, batch_end, num_workers=60)
         failed_writers = [r for r in writer_results if r[2] != 0]
         if failed_writers:
             for s, e, rc in failed_writers:
@@ -526,7 +526,7 @@ def main():
 
         # 审查本批章节（并行60个Reviewer）
         if not args.skip_review:
-            reviewer_results = run_parallel_agents("reviewer.py", batch_start, batch_end, num_workers=min(batch_size, 80))
+            reviewer_results = run_parallel_agents("reviewer.py", batch_start, batch_end, num_workers=60)
             failed_reviewers = [r for r in reviewer_results if r[2] != 0]
             if failed_reviewers:
                 for s, e, rc in failed_reviewers:
@@ -543,8 +543,8 @@ def main():
             generate_summary_report()
 
         # 批次间暂停
-        log(f"[Coordinator] 第 {batch_start}-{batch_end} 章完成，继续下一批...")
-        time.sleep(0)
+        log(f"[Coordinator] 第 {batch_start}-{batch_end} 章完成，暂停3秒...")
+        time.sleep(3)
 
     # 阶段3: 处理重写队列（调用独立的 Rewrite Agent）
     if progress["rewrite_queue"] and not args.rewrite_only:

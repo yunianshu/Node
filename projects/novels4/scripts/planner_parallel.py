@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 
-NOVELS_DIR = Path("D:/AiProject/Node/novels4")
+NOVELS_DIR = Path("D:/AiProject/Node/novels3")
 SCRIPTS_DIR = Path(__file__).parent
 OUTLINE_FILE = NOVELS_DIR / "outline.json"
 

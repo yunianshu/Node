@@ -5,10 +5,25 @@
 
 const PROJECTS = [
   {
+    id: 'novels1',
+    name: 'novels1',
+    title: '原始项目',
+    dir: 'D:/AiProject/Node/projects/novels1',
+    totalChapters: 2000,
+    completedChapters: 2000,
+    avgScore: null,
+    writerFailures: 0,
+    jsonFailures: 0,
+    status: 'completed',
+    hasCover: false,
+    hasTrailer: false,
+    createdAt: '2025-04',
+  },
+  {
     id: 'novels2',
     name: 'novels2',
     title: '剑来风格',
-    dir: 'D:/AiProject/Node/novels2',
+    dir: 'D:/AiProject/Node/projects/novels2',
     totalChapters: 2000,
     completedChapters: 2000,
     avgScore: 8.19,
@@ -23,7 +38,7 @@ const PROJECTS = [
     id: 'novels3',
     name: 'novels3',
     title: '一介书生，但武道通神',
-    dir: 'D:/AiProject/Node/novels3',
+    dir: 'D:/AiProject/Node/projects/novels3',
     totalChapters: 2000,
     completedChapters: 1997,
     avgScore: 7.77,
@@ -37,10 +52,10 @@ const PROJECTS = [
   {
     id: 'novels4',
     name: 'novels4',
-    title: '（独立脚本完成）',
-    dir: 'D:/AiProject/Node/novels4',
+    title: '版本 3 备份',
+    dir: 'D:/AiProject/Node/projects/novels4',
     totalChapters: 2000,
-    completedChapters: 2000,
+    completedChapters: 122,
     avgScore: null,
     writerFailures: 0,
     jsonFailures: 0,
@@ -52,8 +67,23 @@ const PROJECTS = [
   {
     id: 'novels5',
     name: 'novels5',
+    title: '（独立脚本完成）',
+    dir: 'D:/AiProject/Node/projects/novels5',
+    totalChapters: 2000,
+    completedChapters: 2000,
+    avgScore: null,
+    writerFailures: 0,
+    jsonFailures: 0,
+    status: 'completed',
+    hasCover: false,
+    hasTrailer: false,
+    createdAt: '2025-05',
+  },
+  {
+    id: 'novels6',
+    name: 'novels6',
     title: '新书示例',
-    dir: 'D:/AiProject/Node/novels5',
+    dir: 'D:/AiProject/Node/projects/novels6',
     totalChapters: 2000,
     completedChapters: 0,
     avgScore: null,
@@ -64,11 +94,26 @@ const PROJECTS = [
     hasTrailer: true,
     createdAt: '2025-05',
   },
+  {
+    id: 'novels7',
+    name: 'novels7',
+    title: '凡尘逆仙',
+    dir: 'D:/AiProject/Node/projects/novels7',
+    totalChapters: 200,
+    completedChapters: 0,
+    avgScore: null,
+    writerFailures: 0,
+    jsonFailures: 0,
+    status: 'pending',
+    hasCover: false,
+    hasTrailer: false,
+    createdAt: '2025-05',
+  },
 ]
 
 const DEFAULT_CONFIG = {
   title: '新书名称',
-  project_dir: 'D:/AiProject/Node/novels6',
+  project_dir: 'D:/AiProject/Node/projects/novels6',
   total_chapters: 2000,
   model: 'MiniMax-M2.7-highspeed',
   mmx_path: 'C:/Users/Administrator/AppData/Roaming/npm/node_modules/mmx-cli/dist/mmx.mjs',
@@ -150,10 +195,13 @@ const QUOTA_MOCK = {
 }
 
 const MULTIMEDIA_STATUS = {
+  novels1: { cover: false, trailer: false, images: 0, videos: 0, audio: 0, music: 0 },
   novels2: { cover: false, trailer: false, images: 0, videos: 0, audio: 0, music: 62 },
   novels3: { cover: false, trailer: false, images: 0, videos: 0, audio: 0, music: 0 },
   novels4: { cover: false, trailer: false, images: 0, videos: 0, audio: 0, music: 0 },
-  novels5: { cover: true, trailer: true, images: 1, videos: 1, audio: 0, music: 0 },
+  novels5: { cover: false, trailer: false, images: 0, videos: 0, audio: 0, music: 0 },
+  novels6: { cover: true, trailer: true, images: 1, videos: 1, audio: 0, music: 0 },
+  novels7: { cover: false, trailer: false, images: 0, videos: 0, audio: 0, music: 0 },
 }
 
 // 模拟 API 调用延迟

@@ -10,7 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-NOVELS_DIR = Path("D:/AiProject/Node/novels4")
+NOVELS_DIR = Path("D:/AiProject/Node/novels3")
 WORLD_FILE = NOVELS_DIR / "world.json"
 OUTLINE_FILE = NOVELS_DIR / "outline.json"
 CHARACTERS_FILE = NOVELS_DIR / "characters.json"

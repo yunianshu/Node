@@ -9,10 +9,13 @@ import { novelApi } from '../api/novelApi'
 const { Title, Text } = Typography
 
 const PROJECT_OPTIONS = [
+  { value: 'novels1', label: 'novels1' },
   { value: 'novels2', label: 'novels2' },
   { value: 'novels3', label: 'novels3' },
   { value: 'novels4', label: 'novels4' },
   { value: 'novels5', label: 'novels5' },
+  { value: 'novels6', label: 'novels6' },
+  { value: 'novels7', label: 'novels7' },
 ]
 
 const LOG_TYPES = [
@@ -23,7 +26,7 @@ const LOG_TYPES = [
 ]
 
 function Logs() {
-  const [projectId, setProjectId] = useState('novels5')
+  const [projectId, setProjectId] = useState('novels6')
   const [logType, setLogType] = useState('coordinator')
   const [logs, setLogs] = useState([])
   const [loading, setLoading] = useState(true)
