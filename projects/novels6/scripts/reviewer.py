@@ -22,6 +22,31 @@ LOG_FILE = NOVELS_DIR / "logs" / "reviewer.log"
 CONFIG = load_config(NOVELS_DIR)
 
 
+def analyze_chapter_text(chapter_content: str) -> dict:
+    """本地全文质量检查，不依赖模型。"""
+    text = chapter_content.strip()
+    length = len(text)
+    paragraph_count = len([p for p in text.splitlines() if p.strip()])
+    dialogue_count = text.count("“") + text.count('"')
+    issues = []
+    if length < 4500:
+        issues.append(f"字数低于4500字，当前{length}字")
+    if length > 5500:
+        issues.append(f"字数超过5500字，当前{length}字")
+    if paragraph_count < 20:
+        issues.append(f"段落数量偏少，当前{paragraph_count}段")
+    if dialogue_count < 4:
+        issues.append("对话标记偏少，可能缺少角色互动")
+    return {
+        "word_count": length,
+        "word_count_ok": 4500 <= length <= 5500,
+        "paragraph_count": paragraph_count,
+        "dialogue_marker_count": dialogue_count,
+        "issues": issues,
+        "local_ok": not issues,
+    }
+
+
 def log(msg: str):
     """记录日志"""
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -82,6 +107,7 @@ def review_chapter(chapter_number: int) -> dict:
     # 读取章节内容
     with open(chapter_file, "r", encoding="utf-8") as f:
         chapter_content = f.read()
+    local_analysis = analyze_chapter_text(chapter_content)
 
     # 读取大纲
     outline = load_json(OUTLINE_FILE)
@@ -119,6 +145,9 @@ def review_chapter(chapter_number: int) -> dict:
 
 ## 章节字数
 {len(chapter_content)}字
+
+## 本地全文检查
+{json.dumps(local_analysis, ensure_ascii=False, indent=2)}
 
 请输出以下JSON格式的审查报告：
 {{
@@ -173,7 +202,11 @@ def review_chapter(chapter_number: int) -> dict:
 
     if not content:
         log(f"[Reviewer] 第{chapter_number}章审查失败")
-        review_data = {"chapter_number": chapter_number, "status": "failed"}
+        review_data = {
+            "chapter_number": chapter_number,
+            "status": "failed",
+            "local_analysis": local_analysis,
+        }
         REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
         with open(review_file, "w", encoding="utf-8") as f:
             json.dump(review_data, f, ensure_ascii=False, indent=2)
@@ -187,12 +220,14 @@ def review_chapter(chapter_number: int) -> dict:
             content = content.split("```")[1].split("```")[0].strip()
         review_data = json.loads(content)
         review_data["status"] = "completed"
+        review_data["local_analysis"] = local_analysis
     except Exception as e:
         log(f"[Reviewer] JSON解析失败: {e}")
         review_data = {
             "chapter_number": chapter_number,
             "status": "parse_error",
-            "raw_response": content
+            "raw_response": content,
+            "local_analysis": local_analysis,
         }
 
     # 保存审查报告
