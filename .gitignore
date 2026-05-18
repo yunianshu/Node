@@ -3,3 +3,4 @@
 __pycache__/
 *.pyc
 projects/*/chapter_status.json
+projects/*/repair_state.json
