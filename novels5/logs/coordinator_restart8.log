@@ -1,0 +1,381 @@
+======================================================================
+  2000章玄幻小说Agent系统 - Coordinator (60 Agent 版本)
+======================================================================
+[2026-05-18 07:46:31] [Coordinator] 企业微信进度推送已启动（每2分钟）
+[2026-05-18 07:46:31] [Coordinator] 当前进度: 已生成 1509 章，已审查 720 章
+[2026-05-18 07:46:31] [Coordinator] 世界观、大纲(2000章)、角色档案已存在
+[2026-05-18 07:46:31] [Coordinator] 生成范围: 第1510-2000章（大纲共2000章），批次大小: 40
+[2026-05-18 07:46:32] [Coordinator] 配额 MiniMax-M*: 1240/4500, 剩余 3260
+[2026-05-18 07:46:32] [Coordinator] 配额 speech-hd: 0/19000, 剩余 19000
+[2026-05-18 07:46:32] [Coordinator] 配额 MiniMax-Hailuo-2.3-Fast-6s-768p: 0/3, 剩余 3
+[2026-05-18 07:46:32] [Coordinator] 配额 MiniMax-Hailuo-2.3-6s-768p: 0/3, 剩余 3
+[2026-05-18 07:46:32] [Coordinator] 配额 music-2.5: 0/7, 剩余 7
+[2026-05-18 07:46:32] [Coordinator] 配额 music-2.6: 0/100, 剩余 100
+[2026-05-18 07:46:32] [Coordinator] 配额 music-cover: 0/100, 剩余 100
+[2026-05-18 07:46:32] [Coordinator] 配额 lyrics_generation: 0/100, 剩余 100
+[2026-05-18 07:46:32] [Coordinator] 配额 image-01: 0/200, 剩余 200
+[2026-05-18 07:46:32] [Coordinator] 配额 coding-plan-vlm: 0/450, 剩余 450
+[2026-05-18 07:46:32] [Coordinator] 配额 coding-plan-search: 0/450, 剩余 450
+[2026-05-18 07:46:32] [Coordinator] ===== 开始第 1510-1549 章 =====
+[2026-05-18 07:46:32] [Coordinator] 并行启动 5 个 writer.py 实例
+[2026-05-18 07:46:32] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1510 --end 1517
+[2026-05-18 07:46:32] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1518 --end 1525
+[2026-05-18 07:46:32] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1526 --end 1533
+[2026-05-18 07:46:32] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1534 --end 1541
+[2026-05-18 07:46:32] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1542 --end 1549
+[2026-05-18 07:48:32] [WeChat] 进度已推送: 初稿1515/2000, 审查713/2000
+[2026-05-18 07:50:32] [WeChat] 进度已推送: 初稿1529/2000, 审查713/2000
+[2026-05-18 07:52:32] [WeChat] 进度已推送: 初稿1555/2000, 审查713/2000
+[2026-05-18 07:53:41] [Coordinator] writer.py 1518-1525 完成 (rc=0)
+[2026-05-18 07:53:59] [Coordinator] writer.py 1510-1517 完成 (rc=0)
+[2026-05-18 07:54:02] [Coordinator] writer.py 1534-1541 完成 (rc=0)
+[2026-05-18 07:54:20] [Coordinator] writer.py 1526-1533 完成 (rc=0)
+[2026-05-18 07:54:33] [WeChat] 进度已推送: 初稿1579/2000, 审查713/2000
+[2026-05-18 07:55:14] [Coordinator] writer.py 1542-1549 完成 (rc=0)
+[2026-05-18 07:55:14] [Coordinator] 第 1510-1549 章完成，暂停3秒...
+[2026-05-18 07:55:17] [Coordinator] 配额 MiniMax-M*: 1460/4500, 剩余 3040
+[2026-05-18 07:55:17] [Coordinator] 配额 speech-hd: 0/19000, 剩余 19000
+[2026-05-18 07:55:17] [Coordinator] 配额 MiniMax-Hailuo-2.3-Fast-6s-768p: 0/3, 剩余 3
+[2026-05-18 07:55:17] [Coordinator] 配额 MiniMax-Hailuo-2.3-6s-768p: 0/3, 剩余 3
+[2026-05-18 07:55:17] [Coordinator] 配额 music-2.5: 0/7, 剩余 7
+[2026-05-18 07:55:17] [Coordinator] 配额 music-2.6: 0/100, 剩余 100
+[2026-05-18 07:55:17] [Coordinator] 配额 music-cover: 0/100, 剩余 100
+[2026-05-18 07:55:17] [Coordinator] 配额 lyrics_generation: 0/100, 剩余 100
+[2026-05-18 07:55:17] [Coordinator] 配额 image-01: 0/200, 剩余 200
+[2026-05-18 07:55:17] [Coordinator] 配额 coding-plan-vlm: 0/450, 剩余 450
+[2026-05-18 07:55:17] [Coordinator] 配额 coding-plan-search: 0/450, 剩余 450
+[2026-05-18 07:55:17] [Coordinator] ===== 开始第 1550-1589 章 =====
+[2026-05-18 07:55:17] [Coordinator] 并行启动 5 个 writer.py 实例
+[2026-05-18 07:55:17] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1550 --end 1557
+[2026-05-18 07:55:17] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1558 --end 1565
+[2026-05-18 07:55:17] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1566 --end 1573
+[2026-05-18 07:55:17] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1574 --end 1581
+[2026-05-18 07:55:17] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1582 --end 1589
+[2026-05-18 07:56:32] [Coordinator] writer.py 1574-1581 完成 (rc=0)
+[2026-05-18 07:56:33] [WeChat] 进度已推送: 初稿1614/2000, 审查713/2000
+[2026-05-18 07:57:32] [Coordinator] writer.py 1566-1573 完成 (rc=0)
+[2026-05-18 07:57:38] [Coordinator] writer.py 1558-1565 完成 (rc=0)
+[2026-05-18 07:58:23] [Coordinator] writer.py 1550-1557 完成 (rc=0)
+[2026-05-18 07:58:33] [WeChat] 进度已推送: 初稿1643/2000, 审查713/2000
+[2026-05-18 07:59:05] [Coordinator] writer.py 1582-1589 完成 (rc=0)
+[2026-05-18 07:59:05] [Coordinator] 第 1550-1589 章完成，暂停3秒...
+[2026-05-18 07:59:09] [Coordinator] 配额 MiniMax-M*: 1604/4500, 剩余 2896
+[2026-05-18 07:59:09] [Coordinator] 配额 speech-hd: 0/19000, 剩余 19000
+[2026-05-18 07:59:09] [Coordinator] 配额 MiniMax-Hailuo-2.3-Fast-6s-768p: 0/3, 剩余 3
+[2026-05-18 07:59:09] [Coordinator] 配额 MiniMax-Hailuo-2.3-6s-768p: 0/3, 剩余 3
+[2026-05-18 07:59:09] [Coordinator] 配额 music-2.5: 0/7, 剩余 7
+[2026-05-18 07:59:09] [Coordinator] 配额 music-2.6: 0/100, 剩余 100
+[2026-05-18 07:59:09] [Coordinator] 配额 music-cover: 0/100, 剩余 100
+[2026-05-18 07:59:09] [Coordinator] 配额 lyrics_generation: 0/100, 剩余 100
+[2026-05-18 07:59:09] [Coordinator] 配额 image-01: 0/200, 剩余 200
+[2026-05-18 07:59:09] [Coordinator] 配额 coding-plan-vlm: 0/450, 剩余 450
+[2026-05-18 07:59:09] [Coordinator] 配额 coding-plan-search: 0/450, 剩余 450
+[2026-05-18 07:59:09] [Coordinator] ===== 开始第 1590-1629 章 =====
+[2026-05-18 07:59:09] [Coordinator] 并行启动 5 个 writer.py 实例
+[2026-05-18 07:59:09] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1590 --end 1597
+[2026-05-18 07:59:09] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1598 --end 1605
+[2026-05-18 07:59:09] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1606 --end 1613
+[2026-05-18 07:59:09] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1614 --end 1621
+[2026-05-18 07:59:09] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1622 --end 1629
+[2026-05-18 07:59:27] [Coordinator] writer.py 1590-1597 完成 (rc=0)
+[2026-05-18 07:59:27] [Coordinator] writer.py 1598-1605 完成 (rc=0)
+[2026-05-18 08:00:27] [Coordinator] writer.py 1614-1621 完成 (rc=0)
+[2026-05-18 08:00:34] [WeChat] 进度已推送: 初稿1677/2000, 审查713/2000
+[2026-05-18 08:00:39] [Coordinator] writer.py 1606-1613 完成 (rc=0)
+[2026-05-18 08:02:06] [Coordinator] writer.py 1622-1629 完成 (rc=0)
+[2026-05-18 08:02:06] [Coordinator] 第 1590-1629 章完成，暂停3秒...
+[2026-05-18 08:02:09] [Coordinator] 配额 MiniMax-M*: 1699/4500, 剩余 2801
+[2026-05-18 08:02:09] [Coordinator] 配额 speech-hd: 0/19000, 剩余 19000
+[2026-05-18 08:02:09] [Coordinator] 配额 MiniMax-Hailuo-2.3-Fast-6s-768p: 0/3, 剩余 3
+[2026-05-18 08:02:09] [Coordinator] 配额 MiniMax-Hailuo-2.3-6s-768p: 0/3, 剩余 3
+[2026-05-18 08:02:09] [Coordinator] 配额 music-2.5: 0/7, 剩余 7
+[2026-05-18 08:02:09] [Coordinator] 配额 music-2.6: 0/100, 剩余 100
+[2026-05-18 08:02:09] [Coordinator] 配额 music-cover: 0/100, 剩余 100
+[2026-05-18 08:02:09] [Coordinator] 配额 lyrics_generation: 0/100, 剩余 100
+[2026-05-18 08:02:09] [Coordinator] 配额 image-01: 0/200, 剩余 200
+[2026-05-18 08:02:09] [Coordinator] 配额 coding-plan-vlm: 0/450, 剩余 450
+[2026-05-18 08:02:09] [Coordinator] 配额 coding-plan-search: 0/450, 剩余 450
+[2026-05-18 08:02:09] [Coordinator] ===== 开始第 1630-1669 章 =====
+[2026-05-18 08:02:09] [Coordinator] 并行启动 5 个 writer.py 实例
+[2026-05-18 08:02:09] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1630 --end 1637
+[2026-05-18 08:02:09] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1638 --end 1645
+[2026-05-18 08:02:09] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1646 --end 1653
+[2026-05-18 08:02:09] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1654 --end 1661
+[2026-05-18 08:02:10] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1662 --end 1669
+[2026-05-18 08:02:28] [Coordinator] writer.py 1630-1637 完成 (rc=0)
+[2026-05-18 08:02:28] [Coordinator] writer.py 1638-1645 完成 (rc=0)
+[2026-05-18 08:02:34] [WeChat] 进度已推送: 初稿1701/2000, 审查713/2000
+[2026-05-18 08:03:52] [Coordinator] writer.py 1662-1669 完成 (rc=0)
+[2026-05-18 08:03:55] [Coordinator] writer.py 1646-1653 完成 (rc=0)
+[2026-05-18 08:03:55] [Coordinator] writer.py 1654-1661 完成 (rc=0)
+[2026-05-18 08:03:55] [Coordinator] 第 1630-1669 章完成，暂停3秒...
+[2026-05-18 08:03:58] [Coordinator] 配额 MiniMax-M*: 1744/4500, 剩余 2756
+[2026-05-18 08:03:58] [Coordinator] 配额 speech-hd: 0/19000, 剩余 19000
+[2026-05-18 08:03:58] [Coordinator] 配额 MiniMax-Hailuo-2.3-Fast-6s-768p: 0/3, 剩余 3
+[2026-05-18 08:03:58] [Coordinator] 配额 MiniMax-Hailuo-2.3-6s-768p: 0/3, 剩余 3
+[2026-05-18 08:03:58] [Coordinator] 配额 music-2.5: 0/7, 剩余 7
+[2026-05-18 08:03:58] [Coordinator] 配额 music-2.6: 0/100, 剩余 100
+[2026-05-18 08:03:58] [Coordinator] 配额 music-cover: 0/100, 剩余 100
+[2026-05-18 08:03:58] [Coordinator] 配额 lyrics_generation: 0/100, 剩余 100
+[2026-05-18 08:03:58] [Coordinator] 配额 image-01: 0/200, 剩余 200
+[2026-05-18 08:03:58] [Coordinator] 配额 coding-plan-vlm: 0/450, 剩余 450
+[2026-05-18 08:03:58] [Coordinator] 配额 coding-plan-search: 0/450, 剩余 450
+[2026-05-18 08:03:58] [Coordinator] ===== 开始第 1670-1709 章 =====
+[2026-05-18 08:03:58] [Coordinator] 并行启动 5 个 writer.py 实例
+[2026-05-18 08:03:58] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1670 --end 1677
+[2026-05-18 08:03:58] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1678 --end 1685
+[2026-05-18 08:03:58] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1686 --end 1693
+[2026-05-18 08:03:58] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1694 --end 1701
+[2026-05-18 08:03:58] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1702 --end 1709
+[2026-05-18 08:04:16] [Coordinator] writer.py 1670-1677 完成 (rc=0)
+[2026-05-18 08:04:35] [WeChat] 进度已推送: 初稿1720/2000, 审查713/2000
+[2026-05-18 08:06:35] [WeChat] 进度已推送: 初稿1746/2000, 审查713/2000
+[2026-05-18 08:06:58] [Coordinator] writer.py 1702-1709 完成 (rc=0)
+[2026-05-18 08:07:13] [Coordinator] writer.py 1694-1701 完成 (rc=0)
+[2026-05-18 08:07:22] [Coordinator] writer.py 1686-1693 完成 (rc=0)
+[2026-05-18 08:08:25] [Coordinator] writer.py 1678-1685 完成 (rc=0)
+[2026-05-18 08:08:25] [Coordinator] 第 1670-1709 章完成，暂停3秒...
+[2026-05-18 08:08:28] [Coordinator] 配额 MiniMax-M*: 1913/4500, 剩余 2587
+[2026-05-18 08:08:28] [Coordinator] 配额 speech-hd: 0/19000, 剩余 19000
+[2026-05-18 08:08:28] [Coordinator] 配额 MiniMax-Hailuo-2.3-Fast-6s-768p: 0/3, 剩余 3
+[2026-05-18 08:08:28] [Coordinator] 配额 MiniMax-Hailuo-2.3-6s-768p: 0/3, 剩余 3
+[2026-05-18 08:08:28] [Coordinator] 配额 music-2.5: 0/7, 剩余 7
+[2026-05-18 08:08:28] [Coordinator] 配额 music-2.6: 0/100, 剩余 100
+[2026-05-18 08:08:28] [Coordinator] 配额 music-cover: 0/100, 剩余 100
+[2026-05-18 08:08:28] [Coordinator] 配额 lyrics_generation: 0/100, 剩余 100
+[2026-05-18 08:08:28] [Coordinator] 配额 image-01: 0/200, 剩余 200
+[2026-05-18 08:08:28] [Coordinator] 配额 coding-plan-vlm: 0/450, 剩余 450
+[2026-05-18 08:08:28] [Coordinator] 配额 coding-plan-search: 0/450, 剩余 450
+[2026-05-18 08:08:28] [Coordinator] ===== 开始第 1710-1749 章 =====
+[2026-05-18 08:08:28] [Coordinator] 并行启动 5 个 writer.py 实例
+[2026-05-18 08:08:28] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1710 --end 1717
+[2026-05-18 08:08:28] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1718 --end 1725
+[2026-05-18 08:08:28] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1726 --end 1733
+[2026-05-18 08:08:29] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1734 --end 1741
+[2026-05-18 08:08:29] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1742 --end 1749
+[2026-05-18 08:08:35] [WeChat] 进度已推送: 初稿1775/2000, 审查713/2000
+[2026-05-18 08:08:47] [Coordinator] writer.py 1710-1717 完成 (rc=0)
+[2026-05-18 08:08:47] [Coordinator] writer.py 1718-1725 完成 (rc=0)
+[2026-05-18 08:08:47] [Coordinator] writer.py 1726-1733 完成 (rc=0)
+[2026-05-18 08:08:47] [Coordinator] writer.py 1734-1741 完成 (rc=0)
+[2026-05-18 08:10:20] [Coordinator] writer.py 1742-1749 完成 (rc=0)
+[2026-05-18 08:10:20] [Coordinator] 第 1710-1749 章完成，暂停3秒...
+[2026-05-18 08:10:23] [Coordinator] 配额 MiniMax-M*: 1986/4500, 剩余 2514
+[2026-05-18 08:10:23] [Coordinator] 配额 speech-hd: 0/19000, 剩余 19000
+[2026-05-18 08:10:23] [Coordinator] 配额 MiniMax-Hailuo-2.3-Fast-6s-768p: 0/3, 剩余 3
+[2026-05-18 08:10:23] [Coordinator] 配额 MiniMax-Hailuo-2.3-6s-768p: 0/3, 剩余 3
+[2026-05-18 08:10:23] [Coordinator] 配额 music-2.5: 0/7, 剩余 7
+[2026-05-18 08:10:23] [Coordinator] 配额 music-2.6: 0/100, 剩余 100
+[2026-05-18 08:10:23] [Coordinator] 配额 music-cover: 0/100, 剩余 100
+[2026-05-18 08:10:23] [Coordinator] 配额 lyrics_generation: 0/100, 剩余 100
+[2026-05-18 08:10:23] [Coordinator] 配额 image-01: 0/200, 剩余 200
+[2026-05-18 08:10:23] [Coordinator] 配额 coding-plan-vlm: 0/450, 剩余 450
+[2026-05-18 08:10:23] [Coordinator] 配额 coding-plan-search: 0/450, 剩余 450
+[2026-05-18 08:10:23] [Coordinator] ===== 开始第 1750-1789 章 =====
+[2026-05-18 08:10:23] [Coordinator] 并行启动 5 个 writer.py 实例
+[2026-05-18 08:10:23] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1750 --end 1757
+[2026-05-18 08:10:23] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1758 --end 1765
+[2026-05-18 08:10:23] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1766 --end 1773
+[2026-05-18 08:10:23] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1774 --end 1781
+[2026-05-18 08:10:23] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1782 --end 1789
+[2026-05-18 08:10:36] [WeChat] 进度已推送: 初稿1802/2000, 审查713/2000
+[2026-05-18 08:11:41] [Coordinator] writer.py 1758-1765 完成 (rc=0)
+[2026-05-18 08:11:56] [Coordinator] writer.py 1774-1781 完成 (rc=0)
+[2026-05-18 08:12:36] [WeChat] 进度已推送: 初稿1836/2000, 审查713/2000
+[2026-05-18 08:13:02] [Coordinator] writer.py 1750-1757 完成 (rc=0)
+[2026-05-18 08:13:02] [Coordinator] writer.py 1782-1789 完成 (rc=0)
+[2026-05-18 08:13:08] [Coordinator] writer.py 1766-1773 完成 (rc=0)
+[2026-05-18 08:13:08] [Coordinator] 第 1750-1789 章完成，暂停3秒...
+[2026-05-18 08:13:12] [Coordinator] 配额 MiniMax-M*: 2124/4500, 剩余 2376
+[2026-05-18 08:13:12] [Coordinator] 配额 speech-hd: 0/19000, 剩余 19000
+[2026-05-18 08:13:12] [Coordinator] 配额 MiniMax-Hailuo-2.3-Fast-6s-768p: 0/3, 剩余 3
+[2026-05-18 08:13:12] [Coordinator] 配额 MiniMax-Hailuo-2.3-6s-768p: 0/3, 剩余 3
+[2026-05-18 08:13:12] [Coordinator] 配额 music-2.5: 0/7, 剩余 7
+[2026-05-18 08:13:12] [Coordinator] 配额 music-2.6: 0/100, 剩余 100
+[2026-05-18 08:13:12] [Coordinator] 配额 music-cover: 0/100, 剩余 100
+[2026-05-18 08:13:12] [Coordinator] 配额 lyrics_generation: 0/100, 剩余 100
+[2026-05-18 08:13:12] [Coordinator] 配额 image-01: 0/200, 剩余 200
+[2026-05-18 08:13:12] [Coordinator] 配额 coding-plan-vlm: 0/450, 剩余 450
+[2026-05-18 08:13:12] [Coordinator] 配额 coding-plan-search: 0/450, 剩余 450
+[2026-05-18 08:13:12] [Coordinator] ===== 开始第 1790-1829 章 =====
+[2026-05-18 08:13:12] [Coordinator] 并行启动 5 个 writer.py 实例
+[2026-05-18 08:13:12] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1790 --end 1797
+[2026-05-18 08:13:12] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1798 --end 1805
+[2026-05-18 08:13:12] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1806 --end 1813
+[2026-05-18 08:13:12] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1814 --end 1821
+[2026-05-18 08:13:12] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1822 --end 1829
+[2026-05-18 08:14:36] [Coordinator] writer.py 1798-1805 完成 (rc=0)
+[2026-05-18 08:14:37] [WeChat] 进度已推送: 初稿1868/2000, 审查713/2000
+[2026-05-18 08:14:39] [Coordinator] writer.py 1790-1797 完成 (rc=0)
+[2026-05-18 08:14:48] [Coordinator] writer.py 1806-1813 完成 (rc=0)
+[2026-05-18 08:15:54] [Coordinator] writer.py 1814-1821 完成 (rc=0)
+[2026-05-18 08:16:24] [Coordinator] writer.py 1822-1829 完成 (rc=0)
+[2026-05-18 08:16:24] [Coordinator] 第 1790-1829 章完成，暂停3秒...
+[2026-05-18 08:16:27] [Coordinator] 配额 MiniMax-M*: 2273/4500, 剩余 2227
+[2026-05-18 08:16:27] [Coordinator] 配额 speech-hd: 0/19000, 剩余 19000
+[2026-05-18 08:16:27] [Coordinator] 配额 MiniMax-Hailuo-2.3-Fast-6s-768p: 0/3, 剩余 3
+[2026-05-18 08:16:27] [Coordinator] 配额 MiniMax-Hailuo-2.3-6s-768p: 0/3, 剩余 3
+[2026-05-18 08:16:27] [Coordinator] 配额 music-2.5: 0/7, 剩余 7
+[2026-05-18 08:16:27] [Coordinator] 配额 music-2.6: 0/100, 剩余 100
+[2026-05-18 08:16:27] [Coordinator] 配额 music-cover: 0/100, 剩余 100
+[2026-05-18 08:16:27] [Coordinator] 配额 lyrics_generation: 0/100, 剩余 100
+[2026-05-18 08:16:27] [Coordinator] 配额 image-01: 0/200, 剩余 200
+[2026-05-18 08:16:27] [Coordinator] 配额 coding-plan-vlm: 0/450, 剩余 450
+[2026-05-18 08:16:27] [Coordinator] 配额 coding-plan-search: 0/450, 剩余 450
+[2026-05-18 08:16:27] [Coordinator] ===== 开始第 1830-1869 章 =====
+[2026-05-18 08:16:27] [Coordinator] 并行启动 5 个 writer.py 实例
+[2026-05-18 08:16:27] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1830 --end 1837
+[2026-05-18 08:16:27] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1838 --end 1845
+[2026-05-18 08:16:27] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1846 --end 1853
+[2026-05-18 08:16:27] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1854 --end 1861
+[2026-05-18 08:16:27] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1862 --end 1869
+[2026-05-18 08:16:37] [WeChat] 进度已推送: 初稿1898/2000, 审查713/2000
+[2026-05-18 08:17:48] [Coordinator] writer.py 1846-1853 完成 (rc=0)
+[2026-05-18 08:17:57] [Coordinator] writer.py 1830-1837 完成 (rc=0)
+[2026-05-18 08:18:12] [Coordinator] writer.py 1838-1845 完成 (rc=0)
+[2026-05-18 08:18:38] [WeChat] 进度已推送: 初稿1933/2000, 审查713/2000
+[2026-05-18 08:19:30] [Coordinator] writer.py 1854-1861 完成 (rc=0)
+[2026-05-18 08:19:39] [Coordinator] writer.py 1862-1869 完成 (rc=0)
+[2026-05-18 08:19:39] [Coordinator] 第 1830-1869 章完成，暂停3秒...
+[2026-05-18 08:19:43] [Coordinator] 配额 MiniMax-M*: 2448/4500, 剩余 2052
+[2026-05-18 08:19:43] [Coordinator] 配额 speech-hd: 0/19000, 剩余 19000
+[2026-05-18 08:19:43] [Coordinator] 配额 MiniMax-Hailuo-2.3-Fast-6s-768p: 0/3, 剩余 3
+[2026-05-18 08:19:43] [Coordinator] 配额 MiniMax-Hailuo-2.3-6s-768p: 0/3, 剩余 3
+[2026-05-18 08:19:43] [Coordinator] 配额 music-2.5: 0/7, 剩余 7
+[2026-05-18 08:19:43] [Coordinator] 配额 music-2.6: 0/100, 剩余 100
+[2026-05-18 08:19:43] [Coordinator] 配额 music-cover: 0/100, 剩余 100
+[2026-05-18 08:19:43] [Coordinator] 配额 lyrics_generation: 0/100, 剩余 100
+[2026-05-18 08:19:43] [Coordinator] 配额 image-01: 0/200, 剩余 200
+[2026-05-18 08:19:43] [Coordinator] 配额 coding-plan-vlm: 0/450, 剩余 450
+[2026-05-18 08:19:43] [Coordinator] 配额 coding-plan-search: 0/450, 剩余 450
+[2026-05-18 08:19:43] [Coordinator] ===== 开始第 1870-1909 章 =====
+[2026-05-18 08:19:43] [Coordinator] 并行启动 5 个 writer.py 实例
+[2026-05-18 08:19:43] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1870 --end 1877
+[2026-05-18 08:19:43] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1878 --end 1885
+[2026-05-18 08:19:43] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1886 --end 1893
+[2026-05-18 08:19:43] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1894 --end 1901
+[2026-05-18 08:19:43] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1902 --end 1909
+[2026-05-18 08:20:01] [Coordinator] writer.py 1870-1877 完成 (rc=0)
+[2026-05-18 08:20:01] [Coordinator] writer.py 1878-1885 完成 (rc=0)
+[2026-05-18 08:20:38] [WeChat] 进度已推送: 初稿1967/2000, 审查713/2000
+[2026-05-18 08:21:28] [Coordinator] writer.py 1894-1901 完成 (rc=0)
+[2026-05-18 08:21:49] [Coordinator] writer.py 1902-1909 完成 (rc=0)
+[2026-05-18 08:21:52] [Coordinator] writer.py 1886-1893 完成 (rc=0)
+[2026-05-18 08:21:52] [Coordinator] 第 1870-1909 章完成，暂停3秒...
+[2026-05-18 08:21:56] [Coordinator] 配额 MiniMax-M*: 2556/4500, 剩余 1944
+[2026-05-18 08:21:56] [Coordinator] 配额 speech-hd: 0/19000, 剩余 19000
+[2026-05-18 08:21:56] [Coordinator] 配额 MiniMax-Hailuo-2.3-Fast-6s-768p: 0/3, 剩余 3
+[2026-05-18 08:21:56] [Coordinator] 配额 MiniMax-Hailuo-2.3-6s-768p: 0/3, 剩余 3
+[2026-05-18 08:21:56] [Coordinator] 配额 music-2.5: 0/7, 剩余 7
+[2026-05-18 08:21:56] [Coordinator] 配额 music-2.6: 0/100, 剩余 100
+[2026-05-18 08:21:56] [Coordinator] 配额 music-cover: 0/100, 剩余 100
+[2026-05-18 08:21:56] [Coordinator] 配额 lyrics_generation: 0/100, 剩余 100
+[2026-05-18 08:21:56] [Coordinator] 配额 image-01: 0/200, 剩余 200
+[2026-05-18 08:21:56] [Coordinator] 配额 coding-plan-vlm: 0/450, 剩余 450
+[2026-05-18 08:21:56] [Coordinator] 配额 coding-plan-search: 0/450, 剩余 450
+[2026-05-18 08:21:56] [Coordinator] ===== 开始第 1910-1949 章 =====
+[2026-05-18 08:21:56] [Coordinator] 并行启动 5 个 writer.py 实例
+[2026-05-18 08:21:56] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1910 --end 1917
+[2026-05-18 08:21:56] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1918 --end 1925
+[2026-05-18 08:21:56] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1926 --end 1933
+[2026-05-18 08:21:56] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1934 --end 1941
+[2026-05-18 08:21:56] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1942 --end 1949
+[2026-05-18 08:22:14] [Coordinator] writer.py 1910-1917 完成 (rc=0)
+[2026-05-18 08:22:14] [Coordinator] writer.py 1926-1933 完成 (rc=0)
+[2026-05-18 08:22:38] [WeChat] 进度已推送: 初稿1991/2000, 审查713/2000
+[2026-05-18 08:23:17] [Coordinator] writer.py 1934-1941 完成 (rc=0)
+[2026-05-18 08:23:38] [Coordinator] writer.py 1942-1949 完成 (rc=0)
+[2026-05-18 08:23:50] [Coordinator] writer.py 1918-1925 完成 (rc=0)
+[2026-05-18 08:23:50] [Coordinator] 第 1910-1949 章完成，暂停3秒...
+[2026-05-18 08:23:53] [Coordinator] 配额 MiniMax-M*: 2629/4500, 剩余 1871
+[2026-05-18 08:23:53] [Coordinator] 配额 speech-hd: 0/19000, 剩余 19000
+[2026-05-18 08:23:53] [Coordinator] 配额 MiniMax-Hailuo-2.3-Fast-6s-768p: 0/3, 剩余 3
+[2026-05-18 08:23:53] [Coordinator] 配额 MiniMax-Hailuo-2.3-6s-768p: 0/3, 剩余 3
+[2026-05-18 08:23:53] [Coordinator] 配额 music-2.5: 0/7, 剩余 7
+[2026-05-18 08:23:53] [Coordinator] 配额 music-2.6: 0/100, 剩余 100============================================================
+Rewrite Agent 启动
+============================================================
+需要重写的章节: 7 个
+  第84章: 评分6.5 [需修改]
+  第257章: 评分6.5 [需修改]
+  第291章: 评分6.5 [需修改]
+  第473章: 评分5.5 [需修改]
+  第530章: 评分6.8 [需修改]
+  第584章: 评分6.5 [需修改]
+  第658章: 评分6.5 [需修改]
+[2026-05-18 08:26:06] [Rewrite] 第84章终稿已存在，跳过
+[2026-05-18 08:26:06] [Rewrite] 第257章终稿已存在，跳过
+[2026-05-18 08:26:06] [Rewrite] 第291章终稿已存在，跳过
+[2026-05-18 08:26:06] [Rewrite] 第473章终稿已存在，跳过
+[2026-05-18 08:26:06] [Rewrite] 第530章终稿已存在，跳过
+[2026-05-18 08:26:06] [Rewrite] 第584章终稿已存在，跳过
+[2026-05-18 08:26:06] [Rewrite] 第658章终稿已存在，跳过
+[2026-05-18 08:26:06] [Rewrite] 完成: 成功0章, 失败0章
+
+[2026-05-18 08:23:53] [Coordinator] 配额 music-cover: 0/100, 剩余 100
+[2026-05-18 08:23:53] [Coordinator] 配额 lyrics_generation: 0/100, 剩余 100
+[2026-05-18 08:23:53] [Coordinator] 配额 image-01: 0/200, 剩余 200
+[2026-05-18 08:23:53] [Coordinator] 配额 coding-plan-vlm: 0/450, 剩余 450
+[2026-05-18 08:23:53] [Coordinator] 配额 coding-plan-search: 0/450, 剩余 450
+[2026-05-18 08:23:53] [Coordinator] ===== 开始第 1950-1989 章 =====
+[2026-05-18 08:23:53] [Coordinator] 并行启动 5 个 writer.py 实例
+[2026-05-18 08:23:53] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1950 --end 1957
+[2026-05-18 08:23:53] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1958 --end 1965
+[2026-05-18 08:23:53] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1966 --end 1973
+[2026-05-18 08:23:53] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1974 --end 1981
+[2026-05-18 08:23:53] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1982 --end 1989
+[2026-05-18 08:24:11] [Coordinator] writer.py 1958-1965 完成 (rc=0)
+[2026-05-18 08:24:11] [Coordinator] writer.py 1974-1981 完成 (rc=0)
+[2026-05-18 08:24:11] [Coordinator] writer.py 1982-1989 完成 (rc=0)
+[2026-05-18 08:24:39] [WeChat] 进度已推送: 初稿1998/2000, 审查713/2000
+[2026-05-18 08:25:14] [Coordinator] writer.py 1950-1957 完成 (rc=0)
+[2026-05-18 08:25:53] [Coordinator] writer.py 1966-1973 完成 (rc=0)
+[2026-05-18 08:25:53] [Coordinator] 第 1950-1989 章完成，暂停3秒...
+[2026-05-18 08:25:57] [Coordinator] 配额 MiniMax-M*: 2688/4500, 剩余 1812
+[2026-05-18 08:25:57] [Coordinator] 配额 speech-hd: 0/19000, 剩余 19000
+[2026-05-18 08:25:57] [Coordinator] 配额 MiniMax-Hailuo-2.3-Fast-6s-768p: 0/3, 剩余 3
+[2026-05-18 08:25:57] [Coordinator] 配额 MiniMax-Hailuo-2.3-6s-768p: 0/3, 剩余 3
+[2026-05-18 08:25:57] [Coordinator] 配额 music-2.5: 0/7, 剩余 7
+[2026-05-18 08:25:57] [Coordinator] 配额 music-2.6: 0/100, 剩余 100
+[2026-05-18 08:25:57] [Coordinator] 配额 music-cover: 0/100, 剩余 100
+[2026-05-18 08:25:57] [Coordinator] 配额 lyrics_generation: 0/100, 剩余 100
+[2026-05-18 08:25:57] [Coordinator] 配额 image-01: 0/200, 剩余 200
+[2026-05-18 08:25:57] [Coordinator] 配额 coding-plan-vlm: 0/450, 剩余 450
+[2026-05-18 08:25:57] [Coordinator] 配额 coding-plan-search: 0/450, 剩余 450
+[2026-05-18 08:25:57] [Coordinator] ===== 开始第 1990-2000 章 =====
+[2026-05-18 08:25:57] [Coordinator] 并行启动 5 个 writer.py 实例
+[2026-05-18 08:25:57] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1990 --end 1991
+[2026-05-18 08:25:57] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1992 --end 1993
+[2026-05-18 08:25:57] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1994 --end 1995
+[2026-05-18 08:25:57] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1996 --end 1997
+[2026-05-18 08:25:57] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\writer.py --start 1998 --end 1999
+[2026-05-18 08:26:03] [Coordinator] writer.py 1990-1991 完成 (rc=0)
+[2026-05-18 08:26:03] [Coordinator] writer.py 1992-1993 完成 (rc=0)
+[2026-05-18 08:26:03] [Coordinator] writer.py 1994-1995 完成 (rc=0)
+[2026-05-18 08:26:03] [Coordinator] writer.py 1996-1997 完成 (rc=0)
+[2026-05-18 08:26:03] [Coordinator] writer.py 1998-1999 完成 (rc=0)
+[2026-05-18 08:26:03] ============================================================
+[2026-05-18 08:26:03] [Coordinator] 生成总结报告
+[2026-05-18 08:26:03] ============================================================
+[2026-05-18 08:26:03] [Coordinator] 总结报告: 已完成 2000/2000 章
+[2026-05-18 08:26:03] [Coordinator] 总字数: 11,145,347 字
+[2026-05-18 08:26:03] [Coordinator] 平均评分: 7.68
+[2026-05-18 08:26:03] [Coordinator] 需重写: 32 章
+[2026-05-18 08:26:03] [Coordinator] 第 1990-2000 章完成，暂停3秒...
+[2026-05-18 08:26:06] ============================================================
+[2026-05-18 08:26:06] [Coordinator] 处理重写队列: 7 章
+[2026-05-18 08:26:06] ============================================================
+[2026-05-18 08:26:06] [Coordinator] 执行: D:\soft\py\python.exe D:\AiProject\Node\novels5\scripts\rewrite_agent.py
+[2026-05-18 08:26:06] [Coordinator] Rewrite Agent 完成 (rc=0)
+[2026-05-18 08:26:06] ============================================================
+[2026-05-18 08:26:06] [Coordinator] 生成总结报告
+[2026-05-18 08:26:06] ============================================================
+[2026-05-18 08:26:07] [Coordinator] 总结报告: 已完成 2000/2000 章
+[2026-05-18 08:26:07] [Coordinator] 总字数: 11,144,850 字
+[2026-05-18 08:26:07] [Coordinator] 平均评分: 7.68
+[2026-05-18 08:26:07] [Coordinator] 需重写: 32 章
+[2026-05-18 08:26:07] ============================================================
+[2026-05-18 08:26:07] [Coordinator] 全部任务完成
+[2026-05-18 08:26:07] [Coordinator] 总进度: 2000/2000 章
+[2026-05-18 08:26:07] [Coordinator] 总字数: 11,144,850 字
+[2026-05-18 08:26:07] ============================================================

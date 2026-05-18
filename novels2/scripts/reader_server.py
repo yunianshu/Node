@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-多本小说阅读器 - 简易HTTP服务器
-扫描 novels/ 下的所有小说子目录
+多本小说阅读器 - 简易HTTP服务器 (多媒体增强版)
+扫描 novels/ 下的所有小说子目录，支持视频、音乐、图片、语音
 """
 import json
+import mimetypes
 import os
 import sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -92,7 +93,7 @@ body {
   background: var(--sidebar-bg);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 24px;
+  overflow: hidden;
   cursor: pointer;
   transition: transform 0.2s, box-shadow 0.2s;
   position: relative;
@@ -101,23 +102,31 @@ body {
   transform: translateY(-4px);
   box-shadow: 0 8px 24px rgba(0,0,0,0.15);
 }
-.book-card .book-icon {
-  width: 64px;
-  height: 80px;
+.book-cover {
+  width: 100%;
+  height: 160px;
+  object-fit: cover;
+  background: var(--hover);
+  display: block;
+}
+.book-cover-placeholder {
+  width: 100%;
+  height: 160px;
   background: var(--accent);
-  border-radius: 4px;
-  margin-bottom: 16px;
   display: flex;
   align-items: center;
   justify-content: center;
   color: #fff;
-  font-size: 28px;
+  font-size: 48px;
   font-weight: bold;
+}
+.book-card .card-body {
+  padding: 16px 20px 20px;
 }
 .book-card h3 {
   font-size: 20px;
   color: var(--accent);
-  margin-bottom: 10px;
+  margin-bottom: 8px;
   word-break: break-all;
 }
 .book-card .meta {
@@ -128,6 +137,57 @@ body {
 .book-card .meta span {
   display: inline-block;
   margin-right: 12px;
+}
+.book-card .media-tags {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.media-tag {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: var(--bg);
+  color: var(--accent);
+  border: 1px solid var(--border);
+}
+
+/* ========== 视频弹窗 ========== */
+#video-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.8);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+#video-modal.show { display: flex; }
+#video-modal .video-box {
+  position: relative;
+  width: 90%;
+  max-width: 800px;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+}
+#video-modal video {
+  width: 100%;
+  display: block;
+}
+#video-modal .close-video {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: rgba(0,0,0,0.6);
+  color: #fff;
+  border: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  font-size: 20px;
+  cursor: pointer;
 }
 
 /* ========== 阅读页面 ========== */
@@ -225,15 +285,24 @@ body {
 }
 .btn:hover { background: var(--hover); }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 #progress-text { font-size: 14px; color: var(--accent); }
 
 #content-area {
   flex: 1;
   overflow-y: auto;
-  padding: 40px 60px;
+  padding: 30px 60px;
   max-width: 900px;
   margin: 0 auto;
   width: 100%;
+}
+#chapter-image {
+  width: 100%;
+  max-height: 320px;
+  object-fit: cover;
+  border-radius: 8px;
+  margin-bottom: 24px;
+  display: none;
 }
 #chapter-title {
   font-size: 28px;
@@ -245,13 +314,40 @@ body {
 #chapter-body { text-indent: 2em; text-align: justify; }
 #chapter-body p { margin-bottom: 1em; }
 
+/* 歌词面板 */
+#lyrics-panel {
+  position: fixed;
+  bottom: 64px;
+  right: 20px;
+  width: 320px;
+  max-height: 300px;
+  overflow-y: auto;
+  background: var(--sidebar-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+  display: none;
+  z-index: 100;
+  font-size: 14px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+}
+#lyrics-panel.show { display: block; }
+#lyrics-panel .lyrics-title {
+  font-weight: bold;
+  color: var(--accent);
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
 /* 底部导航 */
 #bottom-nav {
   display: flex;
   justify-content: center;
   align-items: center;
   gap: 20px;
-  padding: 16px;
+  padding: 12px 16px;
   border-top: 1px solid var(--border);
   background: var(--sidebar-bg);
   flex-shrink: 0;
@@ -265,6 +361,21 @@ body {
   color: var(--text);
   text-align: center;
 }
+
+/* 音频控制条 */
+#audio-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--sidebar-bg);
+  flex-shrink: 0;
+  font-size: 14px;
+}
+#audio-bar .audio-label { color: var(--accent); font-size: 12px; min-width: 48px; }
+#audio-bar input[type="range"] { flex: 1; }
+#audio-bar .time-display { font-size: 12px; color: var(--sidebar-text); min-width: 80px; text-align: center; }
 
 /* 设置面板 */
 #settings-panel {
@@ -311,6 +422,8 @@ body {
   #content-area { padding: 20px; }
   #toolbar { padding: 0 10px; }
   #library-page { padding: 20px; }
+  #audio-bar { flex-wrap: wrap; }
+  #lyrics-panel { width: calc(100% - 40px); right: 20px; }
 }
 </style>
 </head>
@@ -347,13 +460,28 @@ body {
           <button class="btn" id="next-chapter">下一章</button>
         </div>
         <div id="toolbar-right">
+          <button class="btn" id="btn-music" title="背景音乐">音乐</button>
+          <button class="btn" id="btn-lyrics" title="歌词">歌词</button>
+          <button class="btn" id="btn-tts" title="语音朗读">朗读</button>
           <button class="btn" id="btn-settings">设置</button>
         </div>
       </div>
 
       <div id="content-area">
+        <img id="chapter-image" alt="章节配图">
         <div id="chapter-title">加载中...</div>
         <div id="chapter-body">正在加载章节内容...</div>
+      </div>
+
+      <div id="lyrics-panel">
+        <div class="lyrics-title">歌词</div>
+        <div id="lyrics-content">暂无歌词</div>
+      </div>
+
+      <div id="audio-bar">
+        <span class="audio-label">朗读</span>
+        <input type="range" id="tts-progress" min="0" max="100" value="0">
+        <span class="time-display" id="tts-time">00:00 / 00:00</span>
       </div>
 
       <div id="bottom-nav">
@@ -367,6 +495,15 @@ body {
   </div>
 </div>
 
+<!-- 视频弹窗 -->
+<div id="video-modal">
+  <div class="video-box">
+    <button class="close-video" onclick="closeVideo()">&times;</button>
+    <video id="trailer-video" controls></video>
+  </div>
+</div>
+
+<!-- 设置面板 -->
 <div id="settings-panel">
   <div class="setting-row">
     <label>主题</label>
@@ -384,6 +521,14 @@ body {
     <label>行间距</label>
     <input type="range" id="line-height" min="1.2" max="3" step="0.1" value="1.8">
   </div>
+  <div class="setting-row">
+    <label>朗读音量</label>
+    <input type="range" id="tts-volume" min="0" max="100" value="80">
+  </div>
+  <div class="setting-row">
+    <label>音乐音量</label>
+    <input type="range" id="music-volume" min="0" max="100" value="50">
+  </div>
   <div class="setting-row" style="justify-content:center;">
     <button class="btn" id="close-settings">关闭</button>
   </div>
@@ -392,9 +537,17 @@ body {
 <script>
 let books = [];
 let currentBook = null;
+let currentBookObj = null;
 let chapters = [];
 let currentChapter = 1;
 let totalChapters = 0;
+let currentMedia = {};
+
+let musicAudio = new Audio();
+musicAudio.loop = true;
+let ttsAudio = new Audio();
+let isMusicPlaying = false;
+let isTtsPlaying = false;
 
 function loadSettings() {
   const s = JSON.parse(localStorage.getItem('reader_settings') || '{}');
@@ -407,12 +560,22 @@ function loadSettings() {
     document.documentElement.style.setProperty('--line-height', s.lineHeight);
     document.getElementById('line-height').value = s.lineHeight;
   }
+  if (s.ttsVolume !== undefined) {
+    ttsAudio.volume = s.ttsVolume / 100;
+    document.getElementById('tts-volume').value = s.ttsVolume;
+  }
+  if (s.musicVolume !== undefined) {
+    musicAudio.volume = s.musicVolume / 100;
+    document.getElementById('music-volume').value = s.musicVolume;
+  }
 }
 function saveSettings() {
   localStorage.setItem('reader_settings', JSON.stringify({
     theme: document.body.className.replace('theme-', '') || 'day',
     fontSize: parseInt(document.getElementById('font-size').value),
-    lineHeight: parseFloat(document.getElementById('line-height').value)
+    lineHeight: parseFloat(document.getElementById('line-height').value),
+    ttsVolume: parseInt(document.getElementById('tts-volume').value),
+    musicVolume: parseInt(document.getElementById('music-volume').value)
   }));
 }
 function setTheme(t) {
@@ -437,38 +600,72 @@ function renderBookList() {
   books.forEach(book => {
     const card = document.createElement('div');
     card.className = 'book-card';
-    const firstChar = book.title.charAt(0).toUpperCase();
+    const coverHtml = book.cover
+      ? '<img class="book-cover" src="' + book.cover + '" alt="封面" loading="lazy">'
+      : '<div class="book-cover-placeholder">' + book.title.charAt(0).toUpperCase() + '</div>';
+    let tags = '';
+    if (book.has_video) tags += '<span class="media-tag">视频</span>';
+    if (book.has_music) tags += '<span class="media-tag">音乐</span>';
+    if (book.has_audio) tags += '<span class="media-tag">朗读</span>';
+    if (book.has_images) tags += '<span class="media-tag">配图</span>';
     card.innerHTML =
-      '<div class="book-icon">' + firstChar + '</div>' +
+      coverHtml +
+      '<div class="card-body">' +
       '<h3>' + book.title + '</h3>' +
       '<div class="meta">' +
         '<span>' + book.chapter_count + '章</span>' +
         '<span>' + (book.word_count / 10000).toFixed(1) + '万字</span>' +
+      '</div>' +
+      '<div class="media-tags">' + tags + '</div>' +
       '</div>';
     card.onclick = () => { selectBook(book.id); };
+    // 视频按钮（如果有预告片）
+    if (book.trailer) {
+      const playBtn = document.createElement('button');
+      playBtn.className = 'btn';
+      playBtn.textContent = '预告片';
+      playBtn.style.cssText = 'position:absolute;top:8px;right:8px;font-size:12px;padding:4px 10px;background:rgba(0,0,0,0.6);color:#fff;border:none;';
+      playBtn.onclick = (e) => { e.stopPropagation(); openVideo(book.trailer); };
+      card.querySelector('.card-body').appendChild(playBtn);
+    }
     list.appendChild(card);
   });
 }
 
+function openVideo(src) {
+  const video = document.getElementById('trailer-video');
+  video.src = src;
+  document.getElementById('video-modal').classList.add('show');
+  video.play();
+}
+function closeVideo() {
+  const video = document.getElementById('trailer-video');
+  video.pause();
+  video.src = '';
+  document.getElementById('video-modal').classList.remove('show');
+}
+
 async function selectBook(bookId) {
   currentBook = bookId;
+  currentBookObj = books.find(b => b.id === bookId);
   localStorage.setItem('reader_book', bookId);
   currentChapter = parseInt(localStorage.getItem('reader_book_' + bookId + '_chapter') || '1');
 
-  // 切换到阅读页面
   document.getElementById('library-page').style.display = 'none';
   document.getElementById('reader-page').classList.add('show');
 
-  const book = books.find(b => b.id === bookId);
-  document.getElementById('current-book-title').textContent = book ? book.title : bookId;
+  document.getElementById('current-book-title').textContent = currentBookObj ? currentBookObj.title : bookId;
 
   await loadChapterList(bookId);
 }
 
 function backToLibrary() {
+  musicAudio.pause();
+  ttsAudio.pause();
   document.getElementById('reader-page').classList.remove('show');
   document.getElementById('library-page').style.display = 'block';
   currentBook = null;
+  currentBookObj = null;
 }
 
 async function loadChapterList(bookId) {
@@ -511,6 +708,7 @@ async function loadChapter(n) {
   const active = document.querySelector('.chapter-item.active');
   if (active) active.scrollIntoView({ block: 'center' });
 
+  // 加载章节内容和媒体
   try {
     const res = await fetch('/api/book/' + encodeURIComponent(currentBook) + '/chapter/' + n);
     const data = await res.json();
@@ -518,8 +716,14 @@ async function loadChapter(n) {
     document.getElementById('chapter-body').innerHTML = paragraphs.map(p =>
       '<p>' + p.trim().replace(/\\n/g, '<br>') + '</p>').join('');
     document.getElementById('content-area').scrollTop = 0;
+
+    // 处理媒体
+    currentMedia = data.media || {};
+    renderMedia();
   } catch (e) {
     document.getElementById('chapter-body').textContent = '加载失败: ' + e.message;
+    currentMedia = {};
+    renderMedia();
   }
 
   document.getElementById('prev-chapter').disabled = n <= 1;
@@ -527,6 +731,127 @@ async function loadChapter(n) {
   document.getElementById('bottom-prev').disabled = n <= 1;
   document.getElementById('bottom-next').disabled = n >= totalChapters;
 }
+
+function renderMedia() {
+  // 章节配图
+  const imgEl = document.getElementById('chapter-image');
+  if (currentMedia.image) {
+    imgEl.src = currentMedia.image;
+    imgEl.style.display = 'block';
+  } else {
+    imgEl.style.display = 'none';
+    imgEl.src = '';
+  }
+
+  // 背景音乐
+  const musicBtn = document.getElementById('btn-music');
+  if (currentMedia.music) {
+    musicBtn.style.display = '';
+    if (musicAudio.src !== currentMedia.music) {
+      musicAudio.src = currentMedia.music;
+      if (isMusicPlaying) musicAudio.play().catch(()=>{});
+    }
+  } else {
+    musicBtn.style.display = 'none';
+    musicAudio.pause();
+    musicAudio.src = '';
+    isMusicPlaying = false;
+  }
+  updateMusicBtn();
+
+  // TTS 语音
+  const ttsBtn = document.getElementById('btn-tts');
+  const audioBar = document.getElementById('audio-bar');
+  if (currentMedia.audio) {
+    ttsBtn.style.display = '';
+    audioBar.style.display = 'flex';
+    if (ttsAudio.src !== currentMedia.audio) {
+      ttsAudio.src = currentMedia.audio;
+      isTtsPlaying = false;
+    }
+  } else {
+    ttsBtn.style.display = 'none';
+    audioBar.style.display = 'none';
+    ttsAudio.pause();
+    ttsAudio.src = '';
+    isTtsPlaying = false;
+  }
+  updateTtsBtn();
+
+  // 歌词
+  const lyricsPanel = document.getElementById('lyrics-panel');
+  const lyricsContent = document.getElementById('lyrics-content');
+  const lyricsBtn = document.getElementById('btn-lyrics');
+  if (currentMedia.lyrics) {
+    lyricsBtn.style.display = '';
+    lyricsContent.textContent = currentMedia.lyrics;
+  } else {
+    lyricsBtn.style.display = 'none';
+    lyricsPanel.classList.remove('show');
+    lyricsContent.textContent = '暂无歌词';
+  }
+}
+
+function toggleMusic() {
+  if (!currentMedia.music) return;
+  if (isMusicPlaying) {
+    musicAudio.pause();
+    isMusicPlaying = false;
+  } else {
+    musicAudio.play().catch(e => console.log('音乐播放失败', e));
+    isMusicPlaying = true;
+  }
+  updateMusicBtn();
+}
+function updateMusicBtn() {
+  const btn = document.getElementById('btn-music');
+  btn.textContent = isMusicPlaying ? '暂停' : '音乐';
+  btn.classList.toggle('active', isMusicPlaying);
+}
+
+function toggleTts() {
+  if (!currentMedia.audio) return;
+  if (isTtsPlaying) {
+    ttsAudio.pause();
+    isTtsPlaying = false;
+  } else {
+    ttsAudio.play().catch(e => console.log('朗读播放失败', e));
+    isTtsPlaying = true;
+  }
+  updateTtsBtn();
+}
+function updateTtsBtn() {
+  const btn = document.getElementById('btn-tts');
+  btn.textContent = isTtsPlaying ? '暂停' : '朗读';
+  btn.classList.toggle('active', isTtsPlaying);
+}
+
+function toggleLyrics() {
+  document.getElementById('lyrics-panel').classList.toggle('show');
+}
+
+// TTS 进度更新
+ttsAudio.ontimeupdate = () => {
+  if (!ttsAudio.duration) return;
+  const pct = (ttsAudio.currentTime / ttsAudio.duration) * 100;
+  document.getElementById('tts-progress').value = pct;
+  document.getElementById('tts-time').textContent =
+    formatTime(ttsAudio.currentTime) + ' / ' + formatTime(ttsAudio.duration);
+};
+ttsAudio.onended = () => { isTtsPlaying = false; updateTtsBtn(); };
+ttsAudio.onerror = () => { isTtsPlaying = false; updateTtsBtn(); };
+
+function formatTime(s) {
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return String(m).padStart(2, '0') + ':' + String(sec).padStart(2, '0');
+}
+
+document.getElementById('tts-progress').oninput = (e) => {
+  if (ttsAudio.duration) {
+    ttsAudio.currentTime = (e.target.value / 100) * ttsAudio.duration;
+  }
+};
 
 function prevChapter() { loadChapter(currentChapter - 1); }
 function nextChapter() { loadChapter(currentChapter + 1); }
@@ -548,6 +873,10 @@ document.getElementById('goto-input').onkeydown = (e) => {
 };
 document.getElementById('search-input').oninput = (e) => renderChapterList(e.target.value);
 
+document.getElementById('btn-music').onclick = toggleMusic;
+document.getElementById('btn-tts').onclick = toggleTts;
+document.getElementById('btn-lyrics').onclick = toggleLyrics;
+
 document.getElementById('btn-settings').onclick = () => {
   document.getElementById('settings-panel').classList.toggle('show');
 };
@@ -563,13 +892,25 @@ document.getElementById('line-height').oninput = (e) => {
   document.documentElement.style.setProperty('--line-height', e.target.value);
   saveSettings();
 };
+document.getElementById('tts-volume').oninput = (e) => {
+  ttsAudio.volume = e.target.value / 100;
+  saveSettings();
+};
+document.getElementById('music-volume').oninput = (e) => {
+  musicAudio.volume = e.target.value / 100;
+  saveSettings();
+};
 
 document.onkeydown = (e) => {
   if (e.target.tagName === 'INPUT') return;
   if (!currentBook) return;
   if (e.key === 'ArrowLeft') prevChapter();
   if (e.key === 'ArrowRight') nextChapter();
-  if (e.key === 'Escape') document.getElementById('settings-panel').classList.remove('show');
+  if (e.key === 'Escape') {
+    document.getElementById('settings-panel').classList.remove('show');
+    document.getElementById('lyrics-panel').classList.remove('show');
+    closeVideo();
+  }
 };
 
 loadSettings();
@@ -578,7 +919,6 @@ loadBooks();
 // 如果有上次阅读的小说，自动恢复
 const lastBook = localStorage.getItem('reader_book');
 if (lastBook) {
-  // 等待书库加载完成后再选择
   setTimeout(() => {
     const book = books.find(b => b.id === lastBook);
     if (book) selectBook(lastBook);
@@ -589,14 +929,32 @@ if (lastBook) {
 </html>
 """
 
+# 扩展名到 MIME 类型的映射
+MIME_MAP = {
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
+    ".m4a": "audio/mp4",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".txt": "text/plain; charset=utf-8",
+    ".lrc": "text/plain; charset=utf-8",
+}
+
 
 def discover_books(parent_dir):
-    """扫描目录下所有小说"""
+    """扫描目录下所有小说，同时检测多媒体资源"""
     books = []
     for entry in Path(parent_dir).iterdir():
         if not entry.is_dir():
             continue
-        if entry.name in ('audio', 'logs', 'scripts', 'node_modules'):
+        if entry.name in ("audio", "logs", "scripts", "node_modules"):
             continue
         outline_file = entry / "outline.json"
         chapters_dir = entry / "chapters"
@@ -607,7 +965,7 @@ def discover_books(parent_dir):
                 outline = json.load(f)
             chapter_count = len(outline.get("chapters", []))
             total_words = 0
-            # 优先统计 final/ 目录（有内容的），其次 draft/，最后 chapters/（兼容旧数据）
+            # 优先统计 final/ 目录，其次 draft/，最后 chapters/
             for src_dir in (entry / "chapters" / "final", entry / "chapters" / "draft", chapters_dir):
                 if src_dir.exists():
                     txt_files = list(src_dir.glob("chapter_*.txt"))
@@ -615,18 +973,60 @@ def discover_books(parent_dir):
                         for cf in txt_files:
                             if cf.stat().st_size > 100:
                                 total_words += len(cf.read_text(encoding="utf-8"))
-                        break  # 找到第一个有文件的目录就停止
+                        break
+
             book_title = entry.name
-            # 尝试从outline中找到书名
             first_ch = outline.get("chapters", [{}])[0]
             if first_ch and "series_title" in first_ch:
                 book_title = first_ch["series_title"]
+
+            media_dir = entry / "media"
+            cover_path = None
+            trailer_path = None
+            has_video = False
+            has_music = False
+            has_audio = False
+            has_images = False
+
+            if media_dir.exists():
+                # 封面
+                for ext in (".jpg", ".jpeg", ".png", ".webp"):
+                    cover = media_dir / f"cover{ext}"
+                    if cover.exists():
+                        cover_path = f"/media/{entry.name}/cover{ext}"
+                        break
+                # 预告片
+                for ext in (".mp4", ".webm", ".mov"):
+                    trailer = media_dir / f"trailer{ext}"
+                    if trailer.exists():
+                        trailer_path = f"/media/{entry.name}/trailer{ext}"
+                        has_video = True
+                        break
+                # 子目录检测
+                if (media_dir / "music").exists() and list((media_dir / "music").glob("*")):
+                    has_music = True
+                if (media_dir / "audio").exists() and list((media_dir / "audio").glob("*")):
+                    has_audio = True
+                if (media_dir / "images").exists() and list((media_dir / "images").glob("*")):
+                    has_images = True
+                # 如果没有 trailer 但 video 目录有文件也算
+                if not has_video and (media_dir / "video").exists():
+                    videos = list((media_dir / "video").glob("*"))
+                    if videos:
+                        has_video = True
+
             books.append({
                 "id": entry.name,
                 "title": book_title,
                 "path": str(entry),
                 "chapter_count": chapter_count,
                 "word_count": total_words,
+                "cover": cover_path,
+                "trailer": trailer_path,
+                "has_video": has_video,
+                "has_music": has_music,
+                "has_audio": has_audio,
+                "has_images": has_images,
             })
         except Exception:
             continue
@@ -652,6 +1052,11 @@ class ReaderHandler(BaseHTTPRequestHandler):
             self.send_json(discover_books(NOVELS_PARENT))
             return
 
+        # 静态媒体文件服务 /media/{book_id}/{type}/{filename}
+        if path.startswith("/media/"):
+            self.serve_media(path)
+            return
+
         if path.startswith("/api/book/"):
             parts = path.split("/")
             if len(parts) >= 4:
@@ -671,12 +1076,51 @@ class ReaderHandler(BaseHTTPRequestHandler):
                 if len(parts) >= 6 and parts[4] == "chapter":
                     try:
                         num = int(parts[5])
-                        self.send_json(self.get_chapter(chapters_dir, num))
+                        self.send_json(self.get_chapter(book_dir, chapters_dir, num))
                     except ValueError:
                         self.send_error(400, "Invalid chapter number")
                     return
 
         self.send_error(404)
+
+    def serve_media(self, path):
+        # /media/{book_id}/{type}/{filename}
+        parts = path.split("/")
+        if len(parts) < 5:
+            self.send_error(400)
+            return
+        book_id = unquote(parts[2])
+        media_type = parts[3]
+        filename = unquote(parts[4])
+
+        # 安全检查：防止目录遍历
+        if ".." in book_id or ".." in filename or ".." in media_type:
+            self.send_error(403)
+            return
+
+        file_path = NOVELS_PARENT / book_id / "media" / media_type / filename
+        if not file_path.exists() or not file_path.is_file():
+            # 兼容根级媒体文件 (cover.jpg, trailer.mp4)
+            if media_type in ("cover", "trailer"):
+                file_path = NOVELS_PARENT / book_id / "media" / filename
+            if not file_path.exists() or not file_path.is_file():
+                self.send_error(404)
+                return
+
+        ext = file_path.suffix.lower()
+        mime = MIME_MAP.get(ext, "application/octet-stream")
+
+        try:
+            with open(file_path, "rb") as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "public, max-age=3600")
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception:
+            self.send_error(500)
 
     def send_json(self, data):
         self.send_response(200)
@@ -698,24 +1142,61 @@ class ReaderHandler(BaseHTTPRequestHandler):
             results.append({"number": num, "title": title})
         return results
 
-    def get_chapter(self, chapters_dir, num):
-        # 优先顺序: final/ > draft/ > chapters/ (兼容旧数据)
+    def get_chapter(self, book_dir, chapters_dir, num):
+        # 优先顺序: final/ > draft/ > chapters/
         final_file = chapters_dir / "final" / f"chapter_{num:04d}.txt"
         draft_file = chapters_dir / "draft" / f"chapter_{num:04d}.txt"
         old_file = chapters_dir / f"chapter_{num:04d}.txt"
 
+        content = ""
         for chapter_file in (final_file, draft_file, old_file):
             if chapter_file.exists():
                 content = chapter_file.read_text(encoding="utf-8")
-                return {"number": num, "content": content, "word_count": len(content)}
-        return {"number": num, "content": "", "word_count": 0, "error": "章节不存在"}
+                break
+
+        # 收集该章节的媒体资源
+        media = {}
+        media_dir = book_dir / "media"
+        if media_dir.exists():
+            # 配图
+            for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+                img = media_dir / "images" / f"chapter_{num:04d}{ext}"
+                if img.exists():
+                    media["image"] = f"/media/{book_dir.name}/images/chapter_{num:04d}{ext}"
+                    break
+            # 背景音乐
+            for ext in (".mp3", ".wav", ".ogg", ".m4a"):
+                music = media_dir / "music" / f"chapter_{num:04d}{ext}"
+                if music.exists():
+                    media["music"] = f"/media/{book_dir.name}/music/chapter_{num:04d}{ext}"
+                    break
+            # TTS 语音
+            for ext in (".mp3", ".wav", ".ogg", ".m4a"):
+                audio = media_dir / "audio" / f"chapter_{num:04d}{ext}"
+                if audio.exists():
+                    media["audio"] = f"/media/{book_dir.name}/audio/chapter_{num:04d}{ext}"
+                    break
+            # 歌词
+            for ext in (".txt", ".lrc"):
+                lyrics = media_dir / "lyrics" / f"chapter_{num:04d}{ext}"
+                if lyrics.exists():
+                    media["lyrics"] = lyrics.read_text(encoding="utf-8")
+                    break
+
+        return {
+            "number": num,
+            "content": content,
+            "word_count": len(content),
+            "media": media,
+        }
 
 
 def main():
     server = HTTPServer(("0.0.0.0", PORT), ReaderHandler)
     print("=" * 50)
-    print("  多本小说阅读器已启动")
+    print("  多本小说阅读器已启动 (多媒体增强版)")
     print(f"  请在浏览器打开: http://localhost:{PORT}")
+    print("  媒体文件请放在每本小说的 media/ 目录下")
     print("  按 Ctrl+C 停止")
     print("=" * 50)
     try:

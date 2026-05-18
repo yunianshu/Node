@@ -1,0 +1,75 @@
+{
+  "title": "新书示例",
+  "project_dir": "D:/AiProject/Node/novels5",
+  "total_chapters": 2000,
+  "model": "MiniMax-M2.7-highspeed",
+  "mmx_path": "C:/Users/Administrator/AppData/Roaming/npm/node_modules/mmx-cli/dist/mmx.mjs",
+  "api_qps": 2.0,
+  "writer": {
+    "max_tokens": 8192,
+    "temperature": 0.7,
+    "context_chapters": 3,
+    "max_retries": 3,
+    "retry_delay": 5.0
+  },
+  "reviewer": {
+    "max_tokens": 4096,
+    "temperature": 0.3,
+    "min_score": 7.0,
+    "rewrite_threshold": 6.5,
+    "dimensions": ["文笔", "剧情", "人设", "连贯性"]
+  },
+  "planner": {
+    "parallel_agents": 60,
+    "segments": 60,
+    "max_tokens": 8192,
+    "temperature": 0.7
+  },
+  "coordinator": {
+    "batch_size": 20,
+    "num_workers": 5,
+    "wechat_webhook": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=22ea4574-b1f0-4c36-af2d-b13c6c2d471b",
+    "push_interval_seconds": 120,
+    "auto_fill_missing": true,
+    "auto_rewrite": true,
+    "pause_between_batches": 3.0
+  },
+  "multimedia": {
+    "enabled": true,
+    "images": {
+      "enabled": true,
+      "model": "image-01",
+      "aspect_ratio": "16:9",
+      "generate_cover": true,
+      "generate_chapter_images": true,
+      "max_images_per_chapter": 1
+    },
+    "videos": {
+      "enabled": false,
+      "model": "MiniMax-Hailuo-2.3",
+      "generate_trailer": true,
+      "generate_chapter_videos": false,
+      "trailer_chapters": [1, 500, 1000, 1500, 2000],
+      "duration": "6s",
+      "resolution": "768p"
+    },
+    "audio": {
+      "enabled": false,
+      "model": "speech-2.8-hd",
+      "voice": "Chinese_Mandarin_Gentle_Youth",
+      "generate_chapter_audio": true,
+      "speed": 1.0
+    },
+    "music": {
+      "enabled": false,
+      "model": "music-2.6",
+      "generate_chapter_music": false,
+      "generate_theme_music": true,
+      "genre": "dark folk",
+      "mood": "mysterious, tense",
+      "vocals": "male, deep, emotional",
+      "instruments": "acoustic guitar, cello, piano",
+      "tempo": "slow"
+    }
+  }
+}

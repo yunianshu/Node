@@ -1,0 +1,391 @@
+============================================================
+Reviewer Agent 启动
+============================================================
+[2026-05-18 09:10:02] [Reviewer] 正在审查第1201章...
+[2026-05-18 09:10:35] [Reviewer] 第1201章审查完成，评分: 8.5， verdict: 需修改
+[2026-05-18 09:10:36] [Reviewer] 正在审查第1202章...
+[2026-05-18 09:11:12] [Reviewer] 第1202章审查完成，评分: 7.5， verdict: 需修改
+[2026-05-18 09:11:13] [Reviewer] 正在审查第1203章...
+[2026-05-18 09:11:46] [Reviewer] JSON解析失败: Invalid control character at: line 36 column 114 (char 1133)
+[2026-05-18 09:11:46] [Reviewer] 第1203章审查完成，评分: N/A， verdict: N/A
+[2026-05-18 09:11:47] [Reviewer] 正在审查第1204章...
+[2026-05-18 09:12:19] [Reviewer] 第1204章审查完成，评分: 7.5， verdict: 需修改
+[2026-05-18 09:12:21] [Reviewer] 正在审查第1205章...
+[2026-05-18 09:12:53] [Reviewer] 第1205章审查完成，评分: 8.5， verdict: 通过
+[2026-05-18 09:12:54] [Reviewer] 正在审查第1206章...
+[2026-05-18 09:13:26] [Reviewer] 第1206章审查完成，评分: 8.2， verdict: 通过
+[2026-05-18 09:13:27] [Reviewer] 正在审查第1207章...
+[2026-05-18 09:14:07] [Reviewer] 第1207章审查完成，评分: 8.0， verdict: 通过
+[2026-05-18 09:14:08] [Reviewer] 正在审查第1208章...
+[2026-05-18 09:14:45] [Reviewer] 第1208章审查完成，评分: 7.8， verdict: 需修改
+[2026-05-18 09:14:46] [Reviewer] 正在审查第1209章...
+[2026-05-18 09:14:47] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. Token Plan 主要面向个人开发者的交互式使用场景。当前请求量较高，请稍后重试；如需支持更高并发或自动化任务，建议升级至更高级别套餐，或使用按量付费 API。 (2062)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:14:47] [Reviewer] 第1209章审查失败
+[2026-05-18 09:14:48] [Reviewer] 正在审查第1210章...
+[2026-05-18 09:14:48] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. Token Plan 主要面向个人开发者的交互式使用场景。当前请求量较高，请稍后重试；如需支持更高并发或自动化任务，建议升级至更高级别套餐，或使用按量付费 API。 (2062)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:14:48] [Reviewer] 第1210章审查失败
+[2026-05-18 09:14:49] [Reviewer] 正在审查第1211章...
+[2026-05-18 09:14:50] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. Token Plan 主要面向个人开发者的交互式使用场景。当前请求量较高，请稍后重试；如需支持更高并发或自动化任务，建议升级至更高级别套餐，或使用按量付费 API。 (2062)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:14:50] [Reviewer] 第1211章审查失败
+[2026-05-18 09:14:51] [Reviewer] 正在审查第1212章...
+[2026-05-18 09:14:52] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. Token Plan 主要面向个人开发者的交互式使用场景。当前请求量较高，请稍后重试；如需支持更高并发或自动化任务，建议升级至更高级别套餐，或使用按量付费 API。 (2062)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:14:52] [Reviewer] 第1212章审查失败
+[2026-05-18 09:14:53] [Reviewer] 正在审查第1213章...
+[2026-05-18 09:14:53] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. Token Plan 主要面向个人开发者的交互式使用场景。当前请求量较高，请稍后重试；如需支持更高并发或自动化任务，建议升级至更高级别套餐，或使用按量付费 API。 (2062)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:14:53] [Reviewer] 第1213章审查失败
+[2026-05-18 09:14:54] [Reviewer] 正在审查第1214章...
+[2026-05-18 09:14:55] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. Token Plan 主要面向个人开发者的交互式使用场景。当前请求量较高，请稍后重试；如需支持更高并发或自动化任务，建议升级至更高级别套餐，或使用按量付费 API。 (2062)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:14:55] [Reviewer] 第1214章审查失败
+[2026-05-18 09:14:56] [Reviewer] 正在审查第1215章...
+[2026-05-18 09:14:58] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. Token Plan 主要面向个人开发者的交互式使用场景。当前请求量较高，请稍后重试；如需支持更高并发或自动化任务，建议升级至更高级别套餐，或使用按量付费 API。 (2062)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:14:58] [Reviewer] 第1215章审查失败
+[2026-05-18 09:15:00] [Reviewer] 正在审查第1216章...
+[2026-05-18 09:15:01] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. Token Plan 主要面向个人开发者的交互式使用场景。当前请求量较高，请稍后重试；如需支持更高并发或自动化任务，建议升级至更高级别套餐，或使用按量付费 API。 (2062)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:15:01] [Reviewer] 第1216章审查失败
+[2026-05-18 09:15:03] [Reviewer] 正在审查第1217章...
+[2026-05-18 09:15:06] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. Token Plan 主要面向个人开发者的交互式使用场景。当前请求量较高，请稍后重试；如需支持更高并发或自动化任务，建议升级至更高级别套餐，或使用按量付费 API。 (2062)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:15:06] [Reviewer] 第1217章审查失败
+[2026-05-18 09:15:07] [Reviewer] 正在审查第1218章...
+[2026-05-18 09:15:11] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. Token Plan 主要面向个人开发者的交互式使用场景。当前请求量较高，请稍后重试；如需支持更高并发或自动化任务，建议升级至更高级别套餐，或使用按量付费 API。 (2062)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:15:11] [Reviewer] 第1218章审查失败
+[2026-05-18 09:15:13] [Reviewer] 正在审查第1219章...
+[2026-05-18 09:15:55] [Reviewer] 第1219章审查完成，评分: 8.0， verdict: 通过
+[2026-05-18 09:15:56] [Reviewer] 正在审查第1220章...
+[2026-05-18 09:15:59] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. Token Plan 主要面向个人开发者的交互式使用场景。当前请求量较高，请稍后重试；如需支持更高并发或自动化任务，建议升级至更高级别套餐，或使用按量付费 API。 (2062)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:15:59] [Reviewer] 第1220章审查失败
+[2026-05-18 09:16:00] [Reviewer] 第1221章已审查过，跳过
+[2026-05-18 09:16:01] [Reviewer] 正在审查第1222章...
+[2026-05-18 09:16:05] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. Token Plan 主要面向个人开发者的交互式使用场景。当前请求量较高，请稍后重试；如需支持更高并发或自动化任务，建议升级至更高级别套餐，或使用按量付费 API。 (2062)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:16:05] [Reviewer] 第1222章审查失败
+[2026-05-18 09:16:06] [Reviewer] 正在审查第1223章...
+[2026-05-18 09:16:09] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. Token Plan 主要面向个人开发者的交互式使用场景。当前请求量较高，请稍后重试；如需支持更高并发或自动化任务，建议升级至更高级别套餐，或使用按量付费 API。 (2062)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:16:09] [Reviewer] 第1223章审查失败
+[2026-05-18 09:16:10] [Reviewer] 正在审查第1224章...
+[2026-05-18 09:16:54] [Reviewer] 第1224章审查完成，评分: 8， verdict: 通过
+[2026-05-18 09:16:56] [Reviewer] 正在审查第1225章...
+[2026-05-18 09:16:58] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. Token Plan 主要面向个人开发者的交互式使用场景。当前请求量较高，请稍后重试；如需支持更高并发或自动化任务，建议升级至更高级别套餐，或使用按量付费 API。 (2062)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:16:58] [Reviewer] 第1225章审查失败
+[2026-05-18 09:16:59] [Reviewer] 第1226章已审查过，跳过
+[2026-05-18 09:17:00] [Reviewer] 正在审查第1227章...
+[2026-05-18 09:17:02] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. Token Plan 主要面向个人开发者的交互式使用场景。当前请求量较高，请稍后重试；如需支持更高并发或自动化任务，建议升级至更高级别套餐，或使用按量付费 API。 (2062)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:17:02] [Reviewer] 第1227章审查失败
+[2026-05-18 09:17:03] [Reviewer] 正在审查第1228章...
+[2026-05-18 09:17:05] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. Token Plan 主要面向个人开发者的交互式使用场景。当前请求量较高，请稍后重试；如需支持更高并发或自动化任务，建议升级至更高级别套餐，或使用按量付费 API。 (2062)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:17:05] [Reviewer] 第1228章审查失败
+[2026-05-18 09:17:06] [Reviewer] 正在审查第1229章...
+[2026-05-18 09:17:08] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. Token Plan 主要面向个人开发者的交互式使用场景。当前请求量较高，请稍后重试；如需支持更高并发或自动化任务，建议升级至更高级别套餐，或使用按量付费 API。 (2062)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:17:08] [Reviewer] 第1229章审查失败
+[2026-05-18 09:17:09] [Reviewer] 正在审查第1230章...
+[2026-05-18 09:17:12] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. Token Plan 主要面向个人开发者的交互式使用场景。当前请求量较高，请稍后重试；如需支持更高并发或自动化任务，建议升级至更高级别套餐，或使用按量付费 API。 (2062)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:17:12] [Reviewer] 第1230章审查失败
+[2026-05-18 09:17:13] [Reviewer] 正在审查第1231章...
+[2026-05-18 09:17:46] [Reviewer] 第1231章审查完成，评分: 7.8， verdict: 需修改
+[2026-05-18 09:17:47] [Reviewer] 正在审查第1232章...
+[2026-05-18 09:18:27] [Reviewer] 第1232章审查完成，评分: 7.5， verdict: 需修改
+[2026-05-18 09:18:28] [Reviewer] 正在审查第1233章...
+[2026-05-18 09:18:59] [Reviewer] 第1233章审查完成，评分: 8.2， verdict: 通过
+[2026-05-18 09:19:00] [Reviewer] 第1234章已审查过，跳过
+[2026-05-18 09:19:01] [Reviewer] 正在审查第1235章...
+[2026-05-18 09:19:38] [Reviewer] 第1235章审查完成，评分: 7.5， verdict: 需修改
+[2026-05-18 09:19:39] [Reviewer] 正在审查第1236章...
+[2026-05-18 09:20:23] [Reviewer] 第1236章审查完成，评分: 8.5， verdict: 通过
+[2026-05-18 09:20:24] [Reviewer] 正在审查第1237章...
+[2026-05-18 09:21:03] [Reviewer] 第1237章审查完成，评分: 8.3， verdict: 需修改
+[2026-05-18 09:21:04] [Reviewer] 正在审查第1238章...
+[2026-05-18 09:21:46] [Reviewer] 第1238章审查完成，评分: 6.5， verdict: 需修改
+[2026-05-18 09:21:47] [Reviewer] 正在审查第1239章...
+[2026-05-18 09:22:20] [Reviewer] 第1239章审查完成，评分: 8.5， verdict: 通过
+[2026-05-18 09:22:21] [Reviewer] 正在审查第1240章...
+[2026-05-18 09:22:51] [Reviewer] 第1240章审查完成，评分: 7.5， verdict: 需修改
+[2026-05-18 09:22:52] [Reviewer] 第1241章已审查过，跳过
+[2026-05-18 09:22:53] [Reviewer] 正在审查第1242章...
+[2026-05-18 09:23:29] [Reviewer] 第1242章审查完成，评分: 7.5， verdict: 需修改
+[2026-05-18 09:23:30] [Reviewer] 正在审查第1243章...
+[2026-05-18 09:24:03] [Reviewer] 第1243章审查完成，评分: 8.0， verdict: 通过
+[2026-05-18 09:24:04] [Reviewer] 正在审查第1244章...
+[2026-05-18 09:24:44] [Reviewer] 第1244章审查完成，评分: 7.5， verdict: 需修改
+[2026-05-18 09:24:45] [Reviewer] 正在审查第1245章...
+[2026-05-18 09:25:23] [Reviewer] 第1245章审查完成，评分: 8.0， verdict: 通过
+[2026-05-18 09:25:24] [Reviewer] 正在审查第1246章...
+[2026-05-18 09:26:03] [Reviewer] 第1246章审查完成，评分: 7.8， verdict: 需修改
+[2026-05-18 09:26:04] [Reviewer] 正在审查第1247章...
+[2026-05-18 09:26:44] [Reviewer] 第1247章审查完成，评分: 8.5， verdict: 通过
+[2026-05-18 09:26:45] [Reviewer] 正在审查第1248章...
+[2026-05-18 09:27:23] [Reviewer] 第1248章审查完成，评分: 7.2， verdict: 需修改
+[2026-05-18 09:27:24] [Reviewer] 第1249章已审查过，跳过
+[2026-05-18 09:27:25] [Reviewer] 正在审查第1250章...
+[2026-05-18 09:28:09] [Reviewer] 第1250章审查完成，评分: 7.8， verdict: 通过
+[2026-05-18 09:28:10] [Reviewer] 正在审查第1251章...
+[2026-05-18 09:28:53] [Reviewer] 第1251章审查完成，评分: 7.2， verdict: 需修改
+[2026-05-18 09:28:54] [Reviewer] 正在审查第1252章...
+[2026-05-18 09:29:33] [Reviewer] JSON解析失败: Invalid control character at: line 37 column 84 (char 1273)
+[2026-05-18 09:29:33] [Reviewer] 第1252章审查完成，评分: N/A， verdict: N/A
+[2026-05-18 09:29:34] [Reviewer] 正在审查第1253章...
+[2026-05-18 09:30:08] [Reviewer] 第1253章审查完成，评分: 7.8， verdict: 需修改
+[2026-05-18 09:30:09] [Reviewer] 正在审查第1254章...
+[2026-05-18 09:30:42] [Reviewer] 第1254章审查完成，评分: 8.2， verdict: 通过
+[2026-05-18 09:30:43] [Reviewer] 正在审查第1255章...
+[2026-05-18 09:31:19] [Reviewer] 第1255章审查完成，评分: 7.5， verdict: 需修改
+[2026-05-18 09:31:20] [Reviewer] 正在审查第1256章...
+[2026-05-18 09:31:53] [Reviewer] 第1256章审查完成，评分: 8.2， verdict: 通过
+[2026-05-18 09:31:54] [Reviewer] 正在审查第1257章...
+[2026-05-18 09:32:22] [Reviewer] 第1257章审查完成，评分: 8.2， verdict: 通过
+[2026-05-18 09:32:23] [Reviewer] 正在审查第1258章...
+[2026-05-18 09:32:56] [Reviewer] 第1258章审查完成，评分: 7.5， verdict: 需修改
+[2026-05-18 09:32:57] [Reviewer] 第1259章已审查过，跳过
+[2026-05-18 09:32:58] [Reviewer] 正在审查第1260章...
+[2026-05-18 09:33:48] [Reviewer] 第1260章审查完成，评分: 8.5， verdict: 通过
+[2026-05-18 09:33:49] [Reviewer] 第1261章已审查过，跳过
+[2026-05-18 09:33:50] [Reviewer] 正在审查第1262章...
+[2026-05-18 09:34:27] [Reviewer] 第1262章审查完成，评分: 7.8， verdict: 需修改
+[2026-05-18 09:34:28] [Reviewer] 正在审查第1263章...
+[2026-05-18 09:35:00] [Reviewer] 第1263章审查完成，评分: 8.2， verdict: 通过
+[2026-05-18 09:35:01] [Reviewer] 第1264章已审查过，跳过
+[2026-05-18 09:35:02] [Reviewer] 正在审查第1265章...
+[2026-05-18 09:35:47] [Reviewer] 第1265章审查完成，评分: 7.2， verdict: 需修改
+[2026-05-18 09:35:48] [Reviewer] 正在审查第1266章...
+[2026-05-18 09:36:18] [Reviewer] JSON解析失败: Expecting ',' delimiter: line 27 column 31 (char 624)
+[2026-05-18 09:36:18] [Reviewer] 第1266章审查完成，评分: N/A， verdict: N/A
+[2026-05-18 09:36:19] [Reviewer] 正在审查第1267章...
+[2026-05-18 09:37:01] [Reviewer] 第1267章审查完成，评分: 7.8， verdict: 通过
+[2026-05-18 09:37:02] [Reviewer] 正在审查第1268章...
+[2026-05-18 09:37:38] [Reviewer] 第1268章审查完成，评分: 7.5， verdict: 需修改
+[2026-05-18 09:37:39] [Reviewer] 正在审查第1269章...
+[2026-05-18 09:38:21] [Reviewer] 第1269章审查完成，评分: 8.0， verdict: 通过
+[2026-05-18 09:38:22] [Reviewer] 正在审查第1270章...
+[2026-05-18 09:39:04] [Reviewer] 第1270章审查完成，评分: 7.5， verdict: 需修改
+[2026-05-18 09:39:05] [Reviewer] 正在审查第1271章...
+[2026-05-18 09:39:41] [Reviewer] 第1271章审查完成，评分: 8.5， verdict: 通过
+[2026-05-18 09:39:42] [Reviewer] 第1272章已审查过，跳过
+[2026-05-18 09:39:43] [Reviewer] 正在审查第1273章...
+[2026-05-18 09:40:10] [Reviewer] 第1273章审查完成，评分: 7.5， verdict: 需修改
+[2026-05-18 09:40:11] [Reviewer] 正在审查第1274章...
+[2026-05-18 09:40:53] [Reviewer] 第1274章审查完成，评分: 8， verdict: 通过
+[2026-05-18 09:40:54] [Reviewer] 正在审查第1275章...
+[2026-05-18 09:41:32] [Reviewer] 第1275章审查完成，评分: 8.5， verdict: 需修改
+[2026-05-18 09:41:33] [Reviewer] 正在审查第1276章...
+[2026-05-18 09:42:11] [Reviewer] 第1276章审查完成，评分: 7.8， verdict: 需修改
+[2026-05-18 09:42:12] [Reviewer] 正在审查第1277章...
+[2026-05-18 09:42:53] [Reviewer] 第1277章审查完成，评分: 7.5， verdict: 需修改
+[2026-05-18 09:42:54] [Reviewer] 正在审查第1278章...
+[2026-05-18 09:43:35] [Reviewer] 第1278章审查完成，评分: 8.0， verdict: 通过
+[2026-05-18 09:43:36] [Reviewer] 正在审查第1279章...
+[2026-05-18 09:44:07] [Reviewer] 第1279章审查完成，评分: 8.5， verdict: 通过
+[2026-05-18 09:44:08] [Reviewer] 正在审查第1280章...
+[2026-05-18 09:44:47] [Reviewer] 第1280章审查完成，评分: 8.5， verdict: 通过
+[2026-05-18 09:44:48] [Reviewer] 第1281章已审查过，跳过
+[2026-05-18 09:44:49] [Reviewer] 正在审查第1282章...
+[2026-05-18 09:45:17] [Reviewer] 第1282章审查完成，评分: 7.5， verdict: 需修改
+[2026-05-18 09:45:18] [Reviewer] 正在审查第1283章...
+[2026-05-18 09:46:06] [Reviewer] 第1283章审查完成，评分: 8.5， verdict: 通过
+[2026-05-18 09:46:07] [Reviewer] 正在审查第1284章...
+[2026-05-18 09:46:55] [Reviewer] 第1284章审查完成，评分: 7.5， verdict: 需修改
+[2026-05-18 09:46:56] [Reviewer] 正在审查第1285章...
+[2026-05-18 09:47:34] [Reviewer] 第1285章审查完成，评分: 8， verdict: 通过
+[2026-05-18 09:47:35] [Reviewer] 正在审查第1286章...
+[2026-05-18 09:48:18] [Reviewer] 第1286章审查完成，评分: 7.8， verdict: 需修改
+[2026-05-18 09:48:19] [Reviewer] 正在审查第1287章...
+[2026-05-18 09:48:56] [Reviewer] 第1287章审查完成，评分: 8.2， verdict: 需修改
+[2026-05-18 09:48:57] [Reviewer] 第1288章已审查过，跳过
+[2026-05-18 09:48:58] [Reviewer] 正在审查第1289章...
+[2026-05-18 09:49:43] [Reviewer] 第1289章审查完成，评分: 8.2， verdict: 需修改
+[2026-05-18 09:49:44] [Reviewer] 正在审查第1290章...
+[2026-05-18 09:49:45] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. usage limit exceeded, 5-hour usage limit reached for Token Plan Hs_max (4500/4500 used), resets at 2026-05-18T10:00:00+08:00 (2056)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:49:45] [Reviewer] 第1290章审查失败
+[2026-05-18 09:49:46] [Reviewer] 正在审查第1291章...
+[2026-05-18 09:49:46] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. usage limit exceeded, 5-hour usage limit reached for Token Plan Hs_max (4500/4500 used), resets at 2026-05-18T10:00:00+08:00 (2056)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:49:46] [Reviewer] 第1291章审查失败
+[2026-05-18 09:49:47] [Reviewer] 正在审查第1292章...
+[2026-05-18 09:49:48] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. usage limit exceeded, 5-hour usage limit reached for Token Plan Hs_max (4500/4500 used), resets at 2026-05-18T10:00:00+08:00 (2056)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:49:48] [Reviewer] 第1292章审查失败
+[2026-05-18 09:49:49] [Reviewer] 正在审查第1293章...
+[2026-05-18 09:49:49] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. usage limit exceeded, 5-hour usage limit reached for Token Plan Hs_max (4500/4500 used), resets at 2026-05-18T10:00:00+08:00 (2056)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:49:49] [Reviewer] 第1293章审查失败
+[2026-05-18 09:49:50] [Reviewer] 正在审查第1294章...
+[2026-05-18 09:49:51] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. usage limit exceeded, 5-hour usage limit reached for Token Plan Hs_max (4500/4500 used), resets at 2026-05-18T10:00:00+08:00 (2056)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:49:51] [Reviewer] 第1294章审查失败
+[2026-05-18 09:49:52] [Reviewer] 正在审查第1295章...
+[2026-05-18 09:49:52] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. usage limit exceeded, 5-hour usage limit reached for Token Plan Hs_max (4500/4500 used), resets at 2026-05-18T10:00:00+08:00 (2056)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:49:52] [Reviewer] 第1295章审查失败
+[2026-05-18 09:49:53] [Reviewer] 正在审查第1296章...
+[2026-05-18 09:49:54] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. usage limit exceeded, 5-hour usage limit reached for Token Plan Hs_max (4500/4500 used), resets at 2026-05-18T10:00:00+08:00 (2056)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:49:54] [Reviewer] 第1296章审查失败
+[2026-05-18 09:49:55] [Reviewer] 第1297章已审查过，跳过
+[2026-05-18 09:49:56] [Reviewer] 正在审查第1298章...
+[2026-05-18 09:49:56] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. usage limit exceeded, 5-hour usage limit reached for Token Plan Hs_max (4500/4500 used), resets at 2026-05-18T10:00:00+08:00 (2056)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:49:56] [Reviewer] 第1298章审查失败
+[2026-05-18 09:49:57] [Reviewer] 正在审查第1299章...
+[2026-05-18 09:49:58] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. usage limit exceeded, 5-hour usage limit reached for Token Plan Hs_max (4500/4500 used), resets at 2026-05-18T10:00:00+08:00 (2056)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:49:58] [Reviewer] 第1299章审查失败
+[2026-05-18 09:49:59] [Reviewer] 正在审查第1300章...
+[2026-05-18 09:49:59] [ERROR] mmx call failed (rc=4): {
+  "error": {
+    "code": 4,
+    "message": "Rate limit or quota exceeded. usage limit exceeded, 5-hour usage limit reached for Token Plan Hs_max (4500/4500 used), resets at 2026-05-18T10:00:00+08:00 (2056)",
+    "hint": "Check usage: mmx quota show"
+  }
+}
+[2026-05-18 09:49:59] [Reviewer] 第1300章审查失败
+[2026-05-18 09:50:00] [Reviewer] 全部完成

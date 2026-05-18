@@ -1,0 +1,13 @@
+{
+  "project": "novels3",
+  "target_chapters": 2000,
+  "draft_chapters": 2000,
+  "final_chapters": 2000,
+  "reviewed_chapters": 2000,
+  "total_draft_words": 10284814,
+  "total_final_words": 10311782,
+  "average_words_per_chapter": 5155,
+  "average_score": 8.01,
+  "rewrite_count": 50,
+  "completed": true
+}
