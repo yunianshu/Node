@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 projects/*/chapter_status.json
 projects/*/repair_state.json
+novel-tools/fill_gaps_quick.py
+novel-tools/fill_last_gaps.py
