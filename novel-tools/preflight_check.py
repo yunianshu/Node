@@ -5,7 +5,13 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+import json
 from pathlib import Path
+
+from novel_config import configure_stdio
+from workflow_state import scan_chapter_status
+
+configure_stdio()
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,6 +98,57 @@ def check_python_syntax(paths: list[Path]) -> bool:
     return True
 
 
+def check_content_risks(project: Path, strict: bool = False) -> bool:
+    print("\n[检查] 内容产物风险")
+    config_file = project / "config.json"
+    total = 0
+    if config_file.exists():
+        try:
+            total = int(json.loads(config_file.read_text(encoding="utf-8")).get("total_chapters", 0))
+        except Exception:
+            total = 0
+    if total <= 0:
+        print("[提示] 未找到 total_chapters，跳过内容产物风险检查")
+        return True
+
+    statuses = scan_chapter_status(project, 1, total)
+    draft_bad = [ch for ch, status in statuses.items() if not status.draft_ok]
+    review_bad = [ch for ch, status in statuses.items() if not status.review_ok]
+    final_bad = [ch for ch, status in statuses.items() if not status.final_ok]
+    title_missing = []
+    paragraph_sparse = []
+    for chapter in range(1, total + 1):
+        draft_file = project / "chapters" / "draft" / f"chapter_{chapter:04d}.txt"
+        if not draft_file.exists():
+            continue
+        text = draft_file.read_text(encoding="utf-8", errors="ignore")
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if not lines or not (lines[0].startswith("第") and "章" in lines[0][:16]):
+            title_missing.append(chapter)
+        if len(lines) < 20:
+            paragraph_sparse.append(chapter)
+
+    print(f"初稿未达标: {len(draft_bad)}/{total}")
+    print(f"审查未达标: {len(review_bad)}/{total}")
+    print(f"终稿未达标: {len(final_bad)}/{total}")
+    print(f"初稿缺标题: {len(title_missing)}/{total}")
+    print(f"初稿段落偏少: {len(paragraph_sparse)}/{total}")
+    for name, items in (("draft", draft_bad), ("review", review_bad), ("final", final_bad)):
+        if items:
+            preview = ", ".join(str(ch) for ch in items[:10])
+            print(f"  {name} 前10个问题章节: {preview}")
+    for name, items in (("title", title_missing), ("paragraph", paragraph_sparse)):
+        if items:
+            preview = ", ".join(str(ch) for ch in items[:10])
+            print(f"  {name} 前10个风险章节: {preview}")
+
+    if strict and (draft_bad or review_bad or final_bad):
+        print("[失败] 严格内容检查未通过")
+        return False
+    print("[通过] 内容风险已报告")
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="小说工作流提交前检查")
     parser.add_argument(
@@ -101,6 +158,7 @@ def main() -> int:
         default=DEFAULT_PROJECT,
         help="小说项目目录，默认检查 projects/novels6",
     )
+    parser.add_argument("--strict-content", action="store_true", help="内容产物不完整时返回失败")
     args = parser.parse_args()
     project = args.project.resolve()
 
@@ -132,6 +190,7 @@ def main() -> int:
                 "--dry-run",
             ],
         ),
+        check_content_risks(project, strict=args.strict_content),
         show_git_status(),
     ]
 

@@ -11,8 +11,10 @@ import time
 import urllib.request
 from pathlib import Path
 
-from novel_config import get_webhook_url, load_config
+from novel_config import configure_stdio, get_webhook_url, load_config
 from workflow_state import scan_chapter_status
+
+configure_stdio()
 
 NOVELS_DIR = None
 CHAPTERS_DIR = None

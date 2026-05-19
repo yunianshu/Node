@@ -23,6 +23,14 @@ class RepairQualityTest(unittest.TestCase):
 
         self.assertTrue(should_skip_by_state(state, "draft", 5))
 
+    def test_quality_failure_with_zero_rc_is_failed(self):
+        state = {"chapters": {}}
+        record_repair_result(state, "final", 7, 0, "final_missing")
+
+        item = state["chapters"]["0007"]
+        self.assertEqual(item["status"], "failed")
+        self.assertEqual(item["failure_reason"], "final_missing")
+
 
 if __name__ == "__main__":
     unittest.main()

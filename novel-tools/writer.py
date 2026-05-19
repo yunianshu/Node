@@ -11,8 +11,10 @@ import time
 from pathlib import Path
 
 from mmx_client import MmxError, call_mmx as call_mmx_client
-from novel_config import load_config
+from novel_config import configure_stdio, load_config
 from workflow_state import is_valid_chapter_text, read_text_length
+
+configure_stdio()
 
 NOVELS_DIR = None
 CHAPTERS_DIR = None

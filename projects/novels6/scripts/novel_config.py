@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import sys
 from pathlib import Path
 
 
@@ -51,6 +52,13 @@ def get_webhook_url(config: dict) -> str:
     if isinstance(coordinator, dict):
         return str(coordinator.get("wechat_webhook", "") or "").strip()
     return ""
+
+
+def configure_stdio() -> None:
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def deep_merge(base: dict, override: dict) -> dict:

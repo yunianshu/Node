@@ -23,8 +23,10 @@ import sys
 import time
 from pathlib import Path
 
-from novel_config import load_config
+from novel_config import configure_stdio, load_config
 from workflow_state import scan_chapter_status
+
+configure_stdio()
 
 SCRIPTS_DIR = Path(__file__).parent
 
@@ -62,14 +64,15 @@ def cmd_status(args):
     print(f"平均评分  : {avg_score:.2f}")
     print("=" * 50)
 
-    if final_ok >= total:
+    step, _ = next_required_step(project, total)
+    if step == "done":
         print("全部完成!")
-    elif draft_ok >= total:
-        print("初稿完成，建议运行: novel_workflow.py review")
-    elif review_ok >= total * 0.8:
-        print("审查进度较高，建议运行: novel_workflow.py repair --mode final")
+    elif step == "draft":
+        print("下一步: novel_workflow.py repair --mode draft")
+    elif step == "review":
+        print("下一步: novel_workflow.py review")
     else:
-        print("建议运行: novel_workflow.py generate")
+        print("下一步: novel_workflow.py repair --mode final")
 
     return 0
 
@@ -102,6 +105,46 @@ def cmd_repair(args):
     if args.ignore_state:
         extra.append("--ignore-state")
     return run("repair_quality.py", args.project, extra)
+
+
+def _quality_counts(project: Path, total: int):
+    statuses = scan_chapter_status(project, 1, total)
+    return statuses, {
+        "draft": sum(1 for s in statuses.values() if s.draft_ok),
+        "review": sum(1 for s in statuses.values() if s.review_ok),
+        "final": sum(1 for s in statuses.values() if s.final_ok),
+    }
+
+
+def next_required_step(project: Path, total: int) -> tuple[str, dict]:
+    _, counts = _quality_counts(project, total)
+    if counts["draft"] < total:
+        return "draft", counts
+    if counts["review"] < total:
+        return "review", counts
+    if counts["final"] < total:
+        return "final", counts
+    return "done", counts
+
+
+def cmd_repair_all(args):
+    project = Path(args.project).resolve()
+    config = load_config(project)
+    total = config["total_chapters"]
+    while True:
+        step, counts = next_required_step(project, total)
+        print(f"当前质量门: draft={counts['draft']} review={counts['review']} final={counts['final']} / {total}")
+        if step == "done":
+            print("全部质量门已通过")
+            return 0
+        extra = ["--mode", step]
+        if args.limit:
+            extra += ["--limit", str(args.limit)]
+        if args.dry_run:
+            extra.append("--dry-run")
+        rc = run("repair_quality.py", args.project, extra)
+        if rc != 0 or args.dry_run:
+            return rc
 
 
 def cmd_notify(args):
@@ -158,18 +201,16 @@ def cmd_resume(args):
     print("-" * 50)
     print(f"当前质量门: draft={draft_ok} review={review_ok} final={final_ok} / {total}")
 
-    suggestions = []
-    if draft_ok < total:
-        suggestions.append(f"novel_workflow.py generate --project {args.project}")
-    if review_ok < total:
-        suggestions.append(f"novel_workflow.py review --project {args.project}")
-    if final_ok < total:
-        suggestions.append(f"novel_workflow.py repair --project {args.project} --mode final")
-
-    if suggestions:
-        print("建议续跑命令:")
-        for s in suggestions:
-            print(f"  {s}")
+    step, _ = next_required_step(project, total)
+    if step == "draft":
+        print("下一步: 先修复初稿质量门")
+        print(f"  novel_workflow.py repair --project {args.project} --mode draft")
+    elif step == "review":
+        print("下一步: 初稿已达标，补齐审查")
+        print(f"  novel_workflow.py review --project {args.project}")
+    elif step == "final":
+        print("下一步: 审查已达标，修复终稿")
+        print(f"  novel_workflow.py repair --project {args.project} --mode final")
     else:
         print("全部完成，无需续跑。")
 
@@ -214,6 +255,10 @@ def main():
     rep.add_argument("--dry-run", action="store_true", help="只列命令不执行")
     rep.add_argument("--ignore-state", action="store_true", help="忽略断点状态")
 
+    rep_all = sub.add_parser("repair-all", help="按 draft -> review -> final 顺序修复")
+    rep_all.add_argument("--limit", type=int, default=0, help="每轮最多处理多少章")
+    rep_all.add_argument("--dry-run", action="store_true", help="只执行下一步计划")
+
     sub.add_parser("notify", help="推送当前进度到企业微信")
     sub.add_parser("resume", help="读取进度文件，给出续跑建议")
 
@@ -228,6 +273,7 @@ def main():
         "generate": cmd_generate,
         "review": cmd_review,
         "repair": cmd_repair,
+        "repair-all": cmd_repair_all,
         "notify": cmd_notify,
         "resume": cmd_resume,
     }

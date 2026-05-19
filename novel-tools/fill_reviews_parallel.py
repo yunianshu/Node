@@ -10,8 +10,10 @@ import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from novel_config import get_webhook_url, load_config
+from novel_config import configure_stdio, get_webhook_url, load_config
 from workflow_state import load_review_status, scan_chapter_status, write_status_file
+
+configure_stdio()
 
 NOVELS_DIR = None
 REVIEWS_DIR = None

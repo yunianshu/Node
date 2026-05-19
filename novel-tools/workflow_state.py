@@ -10,11 +10,23 @@ from pathlib import Path
 from typing import Dict, Iterable
 
 MIN_CHAPTER_WORDS = 4500
-MAX_CHAPTER_WORDS = 8000
+MAX_CHAPTER_WORDS = 5500
 WARN_MIN_CHAPTER_WORDS = 4300
-WARN_MAX_CHAPTER_WORDS = 8500
+WARN_MAX_CHAPTER_WORDS = 5800
 HARD_FAIL_MIN_CHAPTER_WORDS = 3000
 MIN_EXISTING_BYTES = 1000
+MIN_PARAGRAPHS = 20
+MAX_DUPLICATE_PARAGRAPH_RATIO = 0.25
+VALID_ENDINGS = tuple("。！？.!?」”’）)")
+FORBIDDEN_PHRASES = (
+    "无法生成",
+    "抱歉",
+    "作为AI",
+    "未完待续",
+    "内容省略",
+    "此处省略",
+    "TODO",
+)
 
 
 @dataclass
@@ -41,8 +53,66 @@ def now_text() -> str:
 
 
 def is_valid_chapter_text(text: str) -> bool:
-    length = len(text.strip())
-    return MIN_CHAPTER_WORDS <= length <= MAX_CHAPTER_WORDS
+    return analyze_chapter_text(text)[2]
+
+
+def _non_empty_lines(text: str) -> list[str]:
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _has_chapter_title(lines: list[str]) -> bool:
+    if not lines:
+        return False
+    first = lines[0]
+    return first.startswith("第") and "章" in first[:16]
+
+
+def _duplicate_paragraph_ratio(lines: list[str]) -> float:
+    paragraphs = [line for line in lines if len(line) >= 20]
+    if not paragraphs:
+        return 0.0
+    counts: dict[str, int] = {}
+    for paragraph in paragraphs:
+        counts[paragraph] = counts.get(paragraph, 0) + 1
+    duplicate_count = sum(count - 1 for count in counts.values() if count > 1)
+    return duplicate_count / len(paragraphs)
+
+
+def analyze_chapter_text(text: str, exists: bool = True) -> tuple[int, str, bool, list[str]]:
+    if not exists:
+        return 0, "missing", False, ["missing"]
+    stripped = text.strip()
+    length = len(stripped)
+    lines = _non_empty_lines(stripped)
+    issues: list[str] = []
+
+    if length < MIN_CHAPTER_WORDS:
+        issues.append("length_too_short")
+    elif length > MAX_CHAPTER_WORDS:
+        issues.append("length_too_long")
+
+    notes: list[str] = []
+    if not _has_chapter_title(lines):
+        notes.append("missing_title")
+    if len(lines) < MIN_PARAGRAPHS:
+        notes.append("paragraphs_too_few")
+    if stripped and not stripped.endswith(VALID_ENDINGS):
+        issues.append("ending_maybe_truncated")
+    for phrase in FORBIDDEN_PHRASES:
+        if phrase in stripped:
+            issues.append("forbidden_text")
+            break
+    if _duplicate_paragraph_ratio(lines) > MAX_DUPLICATE_PARAGRAPH_RATIO:
+        issues.append("duplicate_paragraphs")
+
+    if not issues:
+        return length, "ok", True, []
+    if length < HARD_FAIL_MIN_CHAPTER_WORDS or any(
+        issue in issues
+        for issue in ("ending_maybe_truncated", "forbidden_text", "duplicate_paragraphs")
+    ):
+        return length, "hard_fail", False, issues
+    return length, "warn", False, issues + notes
 
 
 def read_text_length(path: Path) -> tuple[bool, int, bool]:
@@ -52,8 +122,8 @@ def read_text_length(path: Path) -> tuple[bool, int, bool]:
         text = path.read_text(encoding="utf-8", errors="ignore")
     except Exception:
         return True, 0, False
-    length = len(text.strip())
-    return True, length, MIN_CHAPTER_WORDS <= length <= MAX_CHAPTER_WORDS
+    length, _, ok, _ = analyze_chapter_text(text)
+    return True, length, ok
 
 
 def grade_chapter_words(length: int, exists: bool = True) -> str:
@@ -66,6 +136,17 @@ def grade_chapter_words(length: int, exists: bool = True) -> str:
     if WARN_MIN_CHAPTER_WORDS <= length <= WARN_MAX_CHAPTER_WORDS:
         return "warn"
     return "hard_fail"
+
+
+def load_text_quality(path: Path) -> tuple[bool, int, str, bool, list[str]]:
+    if not path.exists():
+        return False, 0, "missing", False, ["missing"]
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return True, 0, "hard_fail", False, ["read_error"]
+    length, grade, ok, issues = analyze_chapter_text(text)
+    return True, length, grade, ok, issues
 
 
 def load_review_status(path: Path) -> tuple[bool, str, float | None, bool]:
@@ -89,20 +170,18 @@ def scan_one_chapter(base_dir: Path, chapter: int) -> ChapterStatus:
     final_file = base_dir / "chapters" / "final" / f"chapter_{chapter:04d}.txt"
     review_file = base_dir / "reviews" / f"chapter_{chapter:04d}_review.json"
 
-    draft_exists, draft_words, draft_ok = read_text_length(draft_file)
-    final_exists, final_words, final_length_ok = read_text_length(final_file)
-    draft_grade = grade_chapter_words(draft_words, draft_exists)
-    final_grade = grade_chapter_words(final_words, final_exists)
+    draft_exists, draft_words, draft_grade, draft_ok, draft_issues = load_text_quality(draft_file)
+    final_exists, final_words, final_grade, final_length_ok, final_issues = load_text_quality(final_file)
     review_exists, review_status, review_score, review_ok = load_review_status(review_file)
     final_ok = final_exists and final_length_ok and review_ok
 
     failed_reason = ""
     if draft_exists and not draft_ok:
-        failed_reason = "draft_length_invalid"
+        failed_reason = "draft_" + ",".join(draft_issues)
     if review_exists and not review_ok:
         failed_reason = review_status
     if final_exists and not final_length_ok:
-        failed_reason = "final_length_invalid"
+        failed_reason = "final_" + ",".join(final_issues)
 
     return ChapterStatus(
         chapter=chapter,

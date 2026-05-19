@@ -19,6 +19,7 @@ def _load_tool_module():
 
 _tool = _load_tool_module()
 init_project = _tool.init_project
+classify_failure = _tool.classify_failure
 record_repair_result = _tool.record_repair_result
 should_skip_by_state = _tool.should_skip_by_state
 main = _tool.main

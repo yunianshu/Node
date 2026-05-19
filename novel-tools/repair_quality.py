@@ -8,8 +8,10 @@ import sys
 import time
 from pathlib import Path
 
-from novel_config import load_config
+from novel_config import configure_stdio, load_config
 from workflow_state import atomic_write_json, scan_chapter_status, write_status_file
+
+configure_stdio()
 
 NOVELS_DIR = None
 SCRIPTS_DIR = None
@@ -49,6 +51,31 @@ def run_chapter(script: str, chapter: int, dry_run: bool) -> int:
     return subprocess.run(cmd, check=False, text=True, encoding="utf-8").returncode
 
 
+def classify_failure(mode: str, chapter: int, rc: int, statuses: dict | None = None) -> str:
+    if rc != 0:
+        return "command_failed"
+    statuses = statuses or scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"])
+    status = statuses.get(chapter)
+    if not status:
+        return "status_missing"
+    if mode == "draft":
+        if not status.draft_exists:
+            return "draft_missing"
+        if not status.draft_ok:
+            return status.failed_reason or "draft_quality_failed"
+    if mode == "review":
+        if not status.review_exists:
+            return "review_missing"
+        if not status.review_ok:
+            return status.review_status or "review_quality_failed"
+    if mode == "final":
+        if not status.final_exists:
+            return "final_missing"
+        if not status.final_ok:
+            return status.failed_reason or "final_quality_failed"
+    return ""
+
+
 def load_repair_state() -> dict:
     if not REPAIR_STATE_FILE.exists():
         return {"chapters": {}}
@@ -72,16 +99,17 @@ def should_skip_by_state(state: dict, mode: str, chapter: int) -> bool:
     return next_retry_at > time.time()
 
 
-def record_repair_result(state: dict, mode: str, chapter: int, rc: int) -> None:
+def record_repair_result(state: dict, mode: str, chapter: int, rc: int, failure_reason: str = "") -> None:
     key = f"{chapter:04d}"
     chapters = state.setdefault("chapters", {})
     old = chapters.get(key, {})
     attempts = int(old.get("attempts", 0)) + 1
     now = time.time()
-    success = rc == 0
+    success = rc == 0 and not failure_reason
     chapters[key] = {
         "mode": mode,
         "status": "success" if success else "failed",
+        "failure_reason": failure_reason,
         "attempts": attempts,
         "last_rc": rc,
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -124,9 +152,11 @@ def main():
     for chapter in chapters:
         rc = run_chapter(script, chapter, args.dry_run)
         if not args.dry_run:
-            record_repair_result(state, args.mode, chapter, rc)
+            current_statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"])
+            failure_reason = classify_failure(args.mode, chapter, rc, current_statuses)
+            record_repair_result(state, args.mode, chapter, rc, failure_reason)
             save_repair_state(state)
-        if rc != 0:
+        if rc != 0 or (not args.dry_run and failure_reason):
             failed.append(chapter)
 
     statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"])

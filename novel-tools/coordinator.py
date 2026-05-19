@@ -15,8 +15,10 @@ from pathlib import Path
 import urllib.request
 import urllib.error
 
-from novel_config import get_webhook_url, load_config
+from novel_config import configure_stdio, get_webhook_url, load_config
 from workflow_state import highest_contiguous, scan_chapter_status, write_status_file
+
+configure_stdio()
 
 NOVELS_DIR = None
 MMX_CLI_PATH = "C:/Users/Administrator/AppData/Roaming/npm/node_modules/mmx-cli/dist/mmx.mjs"
