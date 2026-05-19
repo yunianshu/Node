@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """按质量门修复历史产物。"""
 import argparse
+from collections import Counter
 import json
 import os
 import subprocess
@@ -17,14 +18,16 @@ NOVELS_DIR = None
 SCRIPTS_DIR = None
 CONFIG = None
 REPAIR_STATE_FILE = None
+REPAIR_REPORT_FILE = None
 
 
 def init_project(project_dir: str | Path) -> None:
-    global NOVELS_DIR, SCRIPTS_DIR, CONFIG, REPAIR_STATE_FILE
+    global NOVELS_DIR, SCRIPTS_DIR, CONFIG, REPAIR_STATE_FILE, REPAIR_REPORT_FILE
     NOVELS_DIR = Path(project_dir).resolve()
     SCRIPTS_DIR = Path(__file__).parent
     CONFIG = load_config(NOVELS_DIR)
     REPAIR_STATE_FILE = NOVELS_DIR / "repair_state.json"
+    REPAIR_REPORT_FILE = NOVELS_DIR / "repair_report.json"
 
 
 def select_chapters(mode: str) -> list[int]:
@@ -117,6 +120,22 @@ def record_repair_result(state: dict, mode: str, chapter: int, rc: int, failure_
     }
 
 
+def quality_counts(statuses: dict) -> dict:
+    return {
+        "draft": sum(1 for s in statuses.values() if s.draft_ok),
+        "review": sum(1 for s in statuses.values() if s.review_ok),
+        "final": sum(1 for s in statuses.values() if s.final_ok),
+    }
+
+
+def write_repair_report(report: dict) -> None:
+    report["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    report["failure_reasons"] = dict(Counter(
+        item["failure_reason"] for item in report["processed"] if item.get("failure_reason")
+    ))
+    atomic_write_json(REPAIR_REPORT_FILE, report)
+
+
 def main():
     parser = argparse.ArgumentParser(description="按质量门修复小说历史产物")
     parser.add_argument("--project", "-p", type=str,
@@ -135,6 +154,19 @@ def main():
     init_project(args.project)
 
     state = load_repair_state()
+    before_statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"])
+    report = {
+        "project": str(NOVELS_DIR),
+        "mode": args.mode,
+        "dry_run": args.dry_run,
+        "limit": args.limit,
+        "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "finished_at": "",
+        "quality_before": quality_counts(before_statuses),
+        "quality_after": {},
+        "processed": [],
+        "failure_reasons": {},
+    }
     chapters = sort_by_severity(args.mode, select_chapters(args.mode))
     if not args.ignore_state:
         chapters = [ch for ch in chapters if not should_skip_by_state(state, args.mode, ch)]
@@ -159,6 +191,12 @@ def main():
             failure_reason = classify_failure(args.mode, chapter, rc, current_statuses)
             record_repair_result(state, args.mode, chapter, rc, failure_reason)
             save_repair_state(state)
+        report["processed"].append({
+            "chapter": chapter,
+            "rc": rc,
+            "status": "planned" if args.dry_run else ("success" if rc == 0 and not failure_reason else "failed"),
+            "failure_reason": failure_reason,
+        })
         if rc != 0 or (not args.dry_run and failure_reason):
             failed.append(chapter)
             consecutive_failures += 1
@@ -169,6 +207,8 @@ def main():
             consecutive_failures = 0
 
     statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"])
+    report["quality_after"] = quality_counts(statuses)
+    write_repair_report(report)
     write_status_file(NOVELS_DIR, statuses.values())
     print(
         f"质量门: draft={sum(1 for s in statuses.values() if s.draft_ok)}/{CONFIG['total_chapters']}, "
@@ -177,6 +217,7 @@ def main():
     )
     if failed:
         print(f"失败章节: {failed}")
+    print(f"修复报告: {REPAIR_REPORT_FILE}")
 
 
 if __name__ == "__main__":

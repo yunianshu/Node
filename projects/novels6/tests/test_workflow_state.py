@@ -45,6 +45,21 @@ class WorkflowStateTest(unittest.TestCase):
             self.assertFalse(status.review_ok)
             self.assertFalse(status.final_ok)
 
+    def test_completed_review_requires_schema_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            reviews_dir = base / "reviews"
+            reviews_dir.mkdir(parents=True)
+            (reviews_dir / "chapter_0001_review.json").write_text(
+                json.dumps({"status": "completed", "overall_score": 8, "verdict": "通过"}),
+                encoding="utf-8",
+            )
+
+            status = scan_chapter_status(base, 1, 1)[1]
+
+            self.assertEqual(status.review_status, "schema_missing_scores")
+            self.assertFalse(status.review_ok)
+
     def test_short_draft_is_not_completed(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -82,6 +97,24 @@ class WorkflowStateTest(unittest.TestCase):
 
             self.assertTrue(status.draft_ok)
             self.assertEqual(status.draft_grade, "ok")
+
+    def test_similar_paragraphs_are_hard_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            draft_dir = base / "chapters" / "draft"
+            draft_dir.mkdir(parents=True)
+            base_paragraph = "青石长街尽头，苏长空缓缓收起纸伞，目光越过雨幕，看见远处灯火在风中摇晃。"
+            paragraphs = ["第一章 相似段落"] + [
+                base_paragraph + f"第{index}次细节稍有变化，衣袂仍被夜风卷起。"
+                for index in range(30)
+            ]
+            (draft_dir / "chapter_0005.txt").write_text("\n".join(paragraphs) + "。", encoding="utf-8")
+
+            status = scan_chapter_status(base, 5, 5)[5]
+
+            self.assertFalse(status.draft_ok)
+            self.assertEqual(status.draft_grade, "hard_fail")
+            self.assertIn("similar_paragraphs", status.failed_reason)
 
 
 if __name__ == "__main__":

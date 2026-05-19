@@ -8,6 +8,7 @@ projects/*/summary_report.json
 projects/**/chapter_status.json
 projects/**/repair_state.json
 projects/**/summary_report.json
+projects/**/repair_report.json
 novel-tools/fill_gaps_quick.py
 novel-tools/fill_last_gaps.py
 scratch/

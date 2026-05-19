@@ -112,9 +112,20 @@ def check_content_risks(project: Path, strict: bool = False) -> bool:
         return True
 
     statuses = scan_chapter_status(project, 1, total)
-    draft_bad = [ch for ch, status in statuses.items() if not status.draft_ok]
-    review_bad = [ch for ch, status in statuses.items() if not status.review_ok]
-    final_bad = [ch for ch, status in statuses.items() if not status.final_ok]
+    risks = {
+        "blocker": {
+            "draft": [ch for ch, status in statuses.items() if not status.draft_ok],
+            "review": [ch for ch, status in statuses.items() if not status.review_ok],
+            "final": [ch for ch, status in statuses.items() if not status.final_ok],
+        },
+        "warn": {
+            "title": [],
+            "paragraph": [],
+        },
+        "info": {
+            "summary_report": [] if (project / "summary_report.json").exists() else ["missing"],
+        },
+    }
     title_missing = []
     paragraph_sparse = []
     for chapter in range(1, total + 1):
@@ -127,7 +138,17 @@ def check_content_risks(project: Path, strict: bool = False) -> bool:
             title_missing.append(chapter)
         if len(lines) < 20:
             paragraph_sparse.append(chapter)
+    risks["warn"]["title"] = title_missing
+    risks["warn"]["paragraph"] = paragraph_sparse
 
+    draft_bad = risks["blocker"]["draft"]
+    review_bad = risks["blocker"]["review"]
+    final_bad = risks["blocker"]["final"]
+    blocker_count = sum(len(items) for items in risks["blocker"].values())
+    warn_count = sum(len(items) for items in risks["warn"].values())
+    info_count = sum(len(items) for items in risks["info"].values())
+
+    print(f"风险分级: blocker={blocker_count}, warn={warn_count}, info={info_count}")
     print(f"初稿未达标: {len(draft_bad)}/{total}")
     print(f"审查未达标: {len(review_bad)}/{total}")
     print(f"终稿未达标: {len(final_bad)}/{total}")
@@ -141,6 +162,9 @@ def check_content_risks(project: Path, strict: bool = False) -> bool:
         if items:
             preview = ", ".join(str(ch) for ch in items[:10])
             print(f"  {name} 前10个风险章节: {preview}")
+    for name, items in risks["info"].items():
+        if items:
+            print(f"  info/{name}: {', '.join(items)}")
 
     if strict and (draft_bad or review_bad or final_bad):
         print("[失败] 严格内容检查未通过")

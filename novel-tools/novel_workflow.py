@@ -41,7 +41,9 @@ def cmd_status(args):
     project = Path(args.project).resolve()
     config = load_config(project)
     total = config["total_chapters"]
-    statuses = scan_chapter_status(project, 1, total)
+    start, end = normalize_range(args, total)
+    scan_total = end - start + 1
+    statuses = scan_chapter_status(project, start, end)
 
     draft_ok = sum(1 for s in statuses.values() if s.draft_ok)
     review_ok = sum(1 for s in statuses.values() if s.review_ok)
@@ -57,9 +59,10 @@ def cmd_status(args):
     print(f"项目: {project}")
     print("=" * 50)
     print(f"总章节数  : {total}")
-    print(f"初稿合格  : {draft_ok}/{total}  (hard_fail={hard_fail}, warn={warn})")
-    print(f"审查合格  : {review_ok}/{total}")
-    print(f"终稿合格  : {final_ok}/{total}")
+    print(f"扫描范围  : {start}-{end}")
+    print(f"初稿合格  : {draft_ok}/{scan_total}  (hard_fail={hard_fail}, warn={warn})")
+    print(f"审查合格  : {review_ok}/{scan_total}")
+    print(f"终稿合格  : {final_ok}/{scan_total}")
     print(f"总字数    : {total_words:,}")
     print(f"平均评分  : {avg_score:.2f}")
     print("=" * 50)
@@ -107,8 +110,16 @@ def cmd_repair(args):
     return run("repair_quality.py", args.project, extra)
 
 
-def _quality_counts(project: Path, total: int):
-    statuses = scan_chapter_status(project, 1, total)
+def normalize_range(args, total: int) -> tuple[int, int]:
+    start = max(1, int(getattr(args, "start", 0) or 1))
+    end = int(getattr(args, "end", 0) or total)
+    end = min(total, max(start, end))
+    return start, end
+
+
+def _quality_counts(project: Path, total: int, start: int = 1, end: int | None = None):
+    end = total if end is None else end
+    statuses = scan_chapter_status(project, start, end)
     return statuses, {
         "draft": sum(1 for s in statuses.values() if s.draft_ok),
         "review": sum(1 for s in statuses.values() if s.review_ok),
@@ -131,7 +142,11 @@ def cmd_repair_all(args):
     project = Path(args.project).resolve()
     config = load_config(project)
     total = config["total_chapters"]
+    rounds = 0
     while True:
+        if args.max_rounds > 0 and rounds >= args.max_rounds:
+            print(f"已达到最大轮次 {args.max_rounds}，停止 repair-all")
+            return 0
         step, counts = next_required_step(project, total)
         print(f"当前质量门: draft={counts['draft']} review={counts['review']} final={counts['final']} / {total}")
         if step == "done":
@@ -143,6 +158,7 @@ def cmd_repair_all(args):
         if args.dry_run:
             extra.append("--dry-run")
         rc = run("repair_quality.py", args.project, extra)
+        rounds += 1
         if rc != 0 or args.dry_run:
             return rc
 
@@ -217,10 +233,12 @@ def cmd_resume(args):
     return 0
 
 
-def build_summary(project: Path) -> dict:
+def build_summary(project: Path, start: int = 1, end: int | None = None) -> dict:
     config = load_config(project)
     total = config["total_chapters"]
-    statuses, counts = _quality_counts(project, total)
+    end = total if end is None else end
+    statuses, counts = _quality_counts(project, total, start, end)
+    scan_total = end - start + 1
     issue_top = {
         "draft": [ch for ch, status in statuses.items() if not status.draft_ok][:20],
         "review": [ch for ch, status in statuses.items() if not status.review_ok][:20],
@@ -230,20 +248,34 @@ def build_summary(project: Path) -> dict:
     return {
         "project": str(project),
         "total": total,
+        "scan_range": {"start": start, "end": end, "total": scan_total},
         "counts": counts,
         "avg_score": round(sum(scores) / len(scores), 2) if scores else 0,
-        "next_step": next_required_step(project, total)[0],
+        "next_step": next_required_step_for_counts(counts, scan_total),
         "issue_top": issue_top,
     }
 
 
+def next_required_step_for_counts(counts: dict, total: int) -> str:
+    if counts["draft"] < total:
+        return "draft"
+    if counts["review"] < total:
+        return "review"
+    if counts["final"] < total:
+        return "final"
+    return "done"
+
+
 def cmd_plan(args):
     project = Path(args.project).resolve()
-    summary = build_summary(project)
+    config = load_config(project)
+    start, end = normalize_range(args, config["total_chapters"])
+    summary = build_summary(project, start, end)
     print("=" * 50)
     print(f"执行计划 - {project}")
     print("=" * 50)
-    print(f"质量门: draft={summary['counts']['draft']} review={summary['counts']['review']} final={summary['counts']['final']} / {summary['total']}")
+    print(f"扫描范围: {start}-{end}")
+    print(f"质量门: draft={summary['counts']['draft']} review={summary['counts']['review']} final={summary['counts']['final']} / {summary['scan_range']['total']}")
     step = summary["next_step"]
     if step == "done":
         print("无需执行，全部质量门已通过")
@@ -261,7 +293,9 @@ def cmd_plan(args):
 
 def cmd_report(args):
     project = Path(args.project).resolve()
-    summary = build_summary(project)
+    config = load_config(project)
+    start, end = normalize_range(args, config["total_chapters"])
+    summary = build_summary(project, start, end)
     output = project / "summary_report.json"
     output.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"已写入报告: {output}")
@@ -292,7 +326,9 @@ def main():
                         help="小说项目目录（默认从环境变量 NOVEL_PROJECT_DIR 读取）")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("status", help="扫描并展示当前章节状态")
+    status = sub.add_parser("status", help="扫描并展示当前章节状态")
+    status.add_argument("--start", type=int, default=0, help="起始章节")
+    status.add_argument("--end", type=int, default=0, help="结束章节")
 
     gen = sub.add_parser("generate", help="调用 coordinator 生成初稿/终稿")
     gen.add_argument("--start", type=int, default=0, help="起始章节")
@@ -312,11 +348,16 @@ def main():
     rep_all = sub.add_parser("repair-all", help="按 draft -> review -> final 顺序修复")
     rep_all.add_argument("--limit", type=int, default=0, help="每轮最多处理多少章")
     rep_all.add_argument("--dry-run", action="store_true", help="只执行下一步计划")
+    rep_all.add_argument("--max-rounds", type=int, default=1, help="最多执行多少轮，0表示不限")
 
     sub.add_parser("notify", help="推送当前进度到企业微信")
     sub.add_parser("resume", help="读取进度文件，给出续跑建议")
-    sub.add_parser("plan", help="输出下一步执行计划")
-    sub.add_parser("report", help="写入 summary_report.json")
+    plan = sub.add_parser("plan", help="输出下一步执行计划")
+    plan.add_argument("--start", type=int, default=0, help="起始章节")
+    plan.add_argument("--end", type=int, default=0, help="结束章节")
+    report = sub.add_parser("report", help="写入 summary_report.json")
+    report.add_argument("--start", type=int, default=0, help="起始章节")
+    report.add_argument("--end", type=int, default=0, help="结束章节")
 
     args = parser.parse_args()
 

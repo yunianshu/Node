@@ -17,6 +17,8 @@ HARD_FAIL_MIN_CHAPTER_WORDS = 3000
 MIN_EXISTING_BYTES = 1000
 MIN_PARAGRAPHS = 20
 MAX_DUPLICATE_PARAGRAPH_RATIO = 0.25
+MAX_SIMILAR_PARAGRAPH_RATIO = 0.20
+SIMILAR_PARAGRAPH_THRESHOLD = 0.88
 VALID_ENDINGS = tuple("。！？.!?」”’）)")
 FORBIDDEN_PHRASES = (
     "无法生成",
@@ -27,6 +29,12 @@ FORBIDDEN_PHRASES = (
     "此处省略",
     "TODO",
 )
+COMPLETED_REVIEW_REQUIRED_FIELDS = {
+    "overall_score": (int, float),
+    "verdict": str,
+    "scores": dict,
+    "summary": str,
+}
 
 
 @dataclass
@@ -78,6 +86,41 @@ def _duplicate_paragraph_ratio(lines: list[str]) -> float:
     return duplicate_count / len(paragraphs)
 
 
+def _char_ngrams(text: str, size: int = 2) -> set[str]:
+    compact = "".join(text.split())
+    if len(compact) < size:
+        return set()
+    return {compact[index:index + size] for index in range(len(compact) - size + 1)}
+
+
+def _is_similarity_candidate(line: str) -> bool:
+    if len(line) < 40:
+        return False
+    compact = "".join(line.split())
+    return bool(compact) and len(set(compact)) / len(compact) >= 0.12
+
+
+def _jaccard_similarity(left: str, right: str) -> float:
+    left_grams = _char_ngrams(left)
+    right_grams = _char_ngrams(right)
+    if not left_grams or not right_grams:
+        return 0.0
+    return len(left_grams & right_grams) / len(left_grams | right_grams)
+
+
+def _similar_paragraph_ratio(lines: list[str]) -> float:
+    paragraphs = [line for line in lines if _is_similarity_candidate(line)]
+    if len(paragraphs) < 2:
+        return 0.0
+    similar_pairs = 0
+    for index, paragraph in enumerate(paragraphs[:-1]):
+        for other in paragraphs[index + 1:index + 4]:
+            if _jaccard_similarity(paragraph, other) >= SIMILAR_PARAGRAPH_THRESHOLD:
+                similar_pairs += 1
+                break
+    return similar_pairs / max(1, len(paragraphs) - 1)
+
+
 def analyze_chapter_text(text: str, exists: bool = True) -> tuple[int, str, bool, list[str]]:
     if not exists:
         return 0, "missing", False, ["missing"]
@@ -103,12 +146,14 @@ def analyze_chapter_text(text: str, exists: bool = True) -> tuple[int, str, bool
             break
     if _duplicate_paragraph_ratio(lines) > MAX_DUPLICATE_PARAGRAPH_RATIO:
         issues.append("duplicate_paragraphs")
+    if _similar_paragraph_ratio(lines) > MAX_SIMILAR_PARAGRAPH_RATIO:
+        issues.append("similar_paragraphs")
 
     if not issues:
         return length, "ok", True, []
     if length < HARD_FAIL_MIN_CHAPTER_WORDS or any(
         issue in issues
-        for issue in ("ending_maybe_truncated", "forbidden_text", "duplicate_paragraphs")
+        for issue in ("ending_maybe_truncated", "forbidden_text", "duplicate_paragraphs", "similar_paragraphs")
     ):
         return length, "hard_fail", False, issues
     return length, "warn", False, issues + notes
@@ -160,8 +205,26 @@ def load_review_status(path: Path) -> tuple[bool, str, float | None, bool]:
     score = data.get("overall_score")
     score_value = score if isinstance(score, (int, float)) else None
     verdict = data.get("verdict", "")
+    schema_errors = validate_review_schema(data)
+    if schema_errors:
+        return True, "schema_" + schema_errors[0], score_value, False
     ok = status == "completed" and verdict != "需重写" and (score_value is None or score_value >= 7)
     return True, status or "unknown", score_value, ok
+
+
+def validate_review_schema(data: dict) -> list[str]:
+    if not isinstance(data.get("status"), str) or not data.get("status"):
+        return ["missing_status"]
+    if data.get("status") != "completed":
+        return []
+    errors: list[str] = []
+    for field, expected_type in COMPLETED_REVIEW_REQUIRED_FIELDS.items():
+        value = data.get(field)
+        if value is None:
+            errors.append(f"missing_{field}")
+        elif not isinstance(value, expected_type):
+            errors.append(f"invalid_{field}")
+    return errors
 
 
 def scan_one_chapter(base_dir: Path, chapter: int) -> ChapterStatus:
