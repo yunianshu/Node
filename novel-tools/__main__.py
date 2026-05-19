@@ -6,12 +6,12 @@ import sys
 from pathlib import Path
 
 
-SCRIPTS_DIR = Path(__file__).resolve().parent
+TOOLS_ROOT = Path(__file__).resolve().parent
 
 
 def main() -> None:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-    runpy.run_path(str(SCRIPTS_DIR / "novel_workflow.py"), run_name="__main__")
+    sys.path.insert(0, str(TOOLS_ROOT))
+    runpy.run_path(str(TOOLS_ROOT / "cli" / "novel_workflow.py"), run_name="__main__")
 
 
 if __name__ == "__main__":

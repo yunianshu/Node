@@ -1,5 +1,6 @@
 param(
-    [string]$Project = "projects/novels6"
+    [Parameter(Mandatory = $true)]
+    [string]$Project
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,6 +10,6 @@ if ([System.IO.Path]::IsPathRooted($Project)) {
 } else {
     $ProjectPath = Join-Path $Root $Project
 }
-$Preflight = Join-Path $Root "novel-tools/preflight_check.py"
+$Preflight = Join-Path $Root "novel-tools/cli/preflight_check.py"
 
 python $Preflight --project $ProjectPath
