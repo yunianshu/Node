@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from core.novel_config import configure_stdio, get_webhook_url, load_config
 from tool_paths import script_path
-from core.workflow_state import load_review_status, scan_chapter_status, write_status_file
+from core.workflow_state import load_review_status, review_dir, scan_chapter_status, write_status_file
 
 configure_stdio()
 
@@ -34,7 +34,7 @@ CONFIG = None
 def init_project(project_dir: str | Path) -> None:
     global NOVELS_DIR, REVIEWS_DIR, LOG_FILE, SCRIPTS_DIR, CONFIG
     NOVELS_DIR = Path(project_dir).resolve()
-    REVIEWS_DIR = NOVELS_DIR / "reviews"
+    REVIEWS_DIR = review_dir(NOVELS_DIR)
     LOG_FILE = NOVELS_DIR / "logs" / "fill_reviews_parallel.log"
     SCRIPTS_DIR = Path(__file__).parent
     CONFIG = load_config(NOVELS_DIR)

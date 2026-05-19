@@ -29,8 +29,8 @@ def init_project(project_dir: str | Path) -> None:
     global PROJECT_DIR, WORLD_FILE, IMAGES_DIR, VIDEOS_DIR
     PROJECT_DIR = Path(project_dir).resolve()
     WORLD_FILE = PROJECT_DIR / "world.json"
-    IMAGES_DIR = PROJECT_DIR / "images"
-    VIDEOS_DIR = PROJECT_DIR / "videos"
+    IMAGES_DIR = PROJECT_DIR / "media" / "images"
+    VIDEOS_DIR = PROJECT_DIR / "media" / "videos"
     IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
 

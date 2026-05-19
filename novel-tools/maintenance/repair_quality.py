@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 from core.novel_config import configure_stdio, load_config
-from core.workflow_state import atomic_write_json, scan_chapter_status, write_status_file
+from core.workflow_state import atomic_write_json, report_path, scan_chapter_status, write_status_file
 from tool_paths import script_path
 
 configure_stdio()
@@ -35,8 +35,8 @@ def init_project(project_dir: str | Path) -> None:
     NOVELS_DIR = Path(project_dir).resolve()
     SCRIPTS_DIR = Path(__file__).parent
     CONFIG = load_config(NOVELS_DIR)
-    REPAIR_STATE_FILE = NOVELS_DIR / "repair_state.json"
-    REPAIR_REPORT_FILE = NOVELS_DIR / "repair_report.json"
+    REPAIR_STATE_FILE = report_path(NOVELS_DIR, "repair_state.json")
+    REPAIR_REPORT_FILE = report_path(NOVELS_DIR, "repair_report.json")
 
 
 def select_chapters(mode: str, statuses: dict, reason: str = "") -> list[int]:

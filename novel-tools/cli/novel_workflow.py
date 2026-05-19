@@ -31,7 +31,7 @@ import subprocess
 import time
 
 from core.novel_config import configure_stdio, load_config
-from core.workflow_state import atomic_write_json, scan_chapter_status
+from core.workflow_state import atomic_write_json, report_path, review_dir, scan_chapter_status
 from tool_paths import script_path
 
 configure_stdio()
@@ -185,8 +185,8 @@ def cmd_resume(args):
     config = load_config(project)
     total = config["total_chapters"]
 
-    progress_file = project / "progress.json"
-    repair_file = project / "repair_state.json"
+    progress_file = report_path(project, "progress.json")
+    repair_file = report_path(project, "repair_state.json")
 
     statuses = scan_chapter_status(project, 1, total)
     draft_ok = sum(1 for s in statuses.values() if s.draft_ok)
@@ -311,7 +311,7 @@ def cmd_issues_report(args):
     config = load_config(project)
     start, end = normalize_range(args, config["total_chapters"])
     report = build_issues_report(project, start, end, use_cache=args.cache)
-    output = project / "issues_report.json"
+    output = report_path(project, "issues_report.json")
     atomic_write_json(output, report)
     print(f"已写入问题报告: {output}")
     for gate, counts in report["issue_counts"].items():
@@ -322,7 +322,7 @@ def cmd_issues_report(args):
 
 def cmd_migrate_review_schema(args):
     project = Path(args.project).resolve()
-    reviews_dir = project / "reviews"
+    reviews_dir = review_dir(project)
     changed = []
     skipped = []
     for path in sorted(reviews_dir.glob("chapter_*_review.json")):
@@ -409,7 +409,7 @@ def cmd_report(args):
     config = load_config(project)
     start, end = normalize_range(args, config["total_chapters"])
     summary = build_summary(project, start, end, use_cache=args.cache)
-    output = project / "summary_report.json"
+    output = report_path(project, "summary_report.json")
     output.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"已写入报告: {output}")
     print(f"下一阶段: {summary['next_step']}")

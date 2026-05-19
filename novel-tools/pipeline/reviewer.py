@@ -21,7 +21,7 @@ from pathlib import Path
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
 from core.novel_config import configure_stdio, load_config
-from core.workflow_state import load_review_status
+from core.workflow_state import load_outline_chapter, load_review_status, outline_index_path, review_dir
 
 configure_stdio()
 
@@ -38,9 +38,9 @@ def init_project(project_dir: str | Path) -> None:
     global NOVELS_DIR, CHAPTERS_DIR, OUTLINE_FILE, CHARACTERS_FILE, REVIEWS_DIR, LOG_FILE, CONFIG
     NOVELS_DIR = Path(project_dir).resolve()
     CHAPTERS_DIR = NOVELS_DIR / "chapters" / "draft"
-    OUTLINE_FILE = NOVELS_DIR / "outline.json"
     CHARACTERS_FILE = NOVELS_DIR / "characters.json"
-    REVIEWS_DIR = NOVELS_DIR / "reviews"
+    OUTLINE_FILE = outline_index_path(NOVELS_DIR)
+    REVIEWS_DIR = review_dir(NOVELS_DIR)
     LOG_FILE = NOVELS_DIR / "logs" / "reviewer.log"
     CONFIG = load_config(NOVELS_DIR)
 
@@ -126,12 +126,7 @@ def review_chapter(chapter_number: int) -> dict:
         chapter_content = f.read()
     local_analysis = analyze_chapter_text(chapter_content)
 
-    outline = load_json(OUTLINE_FILE)
-    chapter_outline = None
-    for ch in outline.get("chapters", []):
-        if ch.get("chapter_number") == chapter_number:
-            chapter_outline = ch
-            break
+    chapter_outline = load_outline_chapter(NOVELS_DIR, chapter_number)
 
     characters = load_json(CHARACTERS_FILE)
 

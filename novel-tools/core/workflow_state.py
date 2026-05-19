@@ -54,6 +54,78 @@ DEFAULT_QUALITY_RULES = {
 CACHE_FILE_NAME = ".workflow_status_cache.json"
 
 
+def chapters_dir(base_dir: Path) -> Path:
+    return base_dir / "chapters"
+
+
+def draft_dir(base_dir: Path) -> Path:
+    return chapters_dir(base_dir) / "draft"
+
+
+def final_dir(base_dir: Path) -> Path:
+    return chapters_dir(base_dir) / "final"
+
+
+def outline_dir(base_dir: Path) -> Path:
+    return chapters_dir(base_dir) / "outline"
+
+
+def outline_index_path(base_dir: Path) -> Path:
+    return outline_dir(base_dir) / "index.json"
+
+
+def review_dir(base_dir: Path) -> Path:
+    return chapters_dir(base_dir) / "review"
+
+
+def reports_dir(base_dir: Path) -> Path:
+    return base_dir / "reports"
+
+
+def report_path(base_dir: Path, name: str) -> Path:
+    return reports_dir(base_dir) / name
+
+
+def status_cache_path(base_dir: Path) -> Path:
+    return report_path(base_dir, CACHE_FILE_NAME)
+
+
+def outline_chapter_path(base_dir: Path, chapter: int) -> Path:
+    return outline_dir(base_dir) / f"chapter_{chapter:04d}.json"
+
+
+def load_outline_chapter(base_dir: Path, chapter: int) -> dict:
+    chapter_file = outline_chapter_path(base_dir, chapter)
+    if chapter_file.exists():
+        try:
+            return json.loads(chapter_file.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    outline_file = outline_index_path(base_dir)
+    if not outline_file.exists():
+        outline_file = base_dir / "outline.json"
+    if not outline_file.exists():
+        return {}
+    try:
+        outline = json.loads(outline_file.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    for item in outline.get("chapters", []):
+        if item.get("chapter_number") == chapter:
+            return item
+    return {}
+
+
+def write_outline_chapters(base_dir: Path, outline: dict) -> None:
+    chapters = outline.get("chapters", []) if isinstance(outline, dict) else []
+    target_dir = outline_dir(base_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for item in chapters:
+        chapter_number = item.get("chapter_number")
+        if isinstance(chapter_number, int):
+            atomic_write_json(outline_chapter_path(base_dir, chapter_number), item)
+
+
 @dataclass
 class ChapterStatus:
     chapter: int
@@ -274,9 +346,9 @@ def validate_review_schema(data: dict) -> list[str]:
 
 def scan_one_chapter(base_dir: Path, chapter: int, rules: dict | None = None) -> ChapterStatus:
     rules = rules or load_quality_rules(base_dir)
-    draft_file = base_dir / "chapters" / "draft" / f"chapter_{chapter:04d}.txt"
-    final_file = base_dir / "chapters" / "final" / f"chapter_{chapter:04d}.txt"
-    review_file = base_dir / "reviews" / f"chapter_{chapter:04d}_review.json"
+    draft_file = draft_dir(base_dir) / f"chapter_{chapter:04d}.txt"
+    final_file = final_dir(base_dir) / f"chapter_{chapter:04d}.txt"
+    review_file = review_dir(base_dir) / f"chapter_{chapter:04d}_review.json"
 
     draft_exists, draft_words, draft_grade, draft_ok, draft_issues = load_text_quality(draft_file, rules)
     final_exists, final_words, final_grade, final_length_ok, final_issues = load_text_quality(final_file, rules)
@@ -316,9 +388,9 @@ def scan_one_chapter(base_dir: Path, chapter: int, rules: dict | None = None) ->
 
 def _chapter_inputs(base_dir: Path, chapter: int) -> dict:
     paths = {
-        "draft": base_dir / "chapters" / "draft" / f"chapter_{chapter:04d}.txt",
-        "final": base_dir / "chapters" / "final" / f"chapter_{chapter:04d}.txt",
-        "review": base_dir / "reviews" / f"chapter_{chapter:04d}_review.json",
+        "draft": draft_dir(base_dir) / f"chapter_{chapter:04d}.txt",
+        "final": final_dir(base_dir) / f"chapter_{chapter:04d}.txt",
+        "review": review_dir(base_dir) / f"chapter_{chapter:04d}_review.json",
     }
     result = {}
     for name, path in paths.items():
@@ -340,7 +412,7 @@ def scan_chapter_status(base_dir: Path, start: int, end: int, use_cache: bool = 
     if not use_cache:
         return {chapter: scan_one_chapter(base_dir, chapter, rules) for chapter in range(start, end + 1)}
 
-    cache_file = base_dir / CACHE_FILE_NAME
+    cache_file = status_cache_path(base_dir)
     try:
         cache = json.loads(cache_file.read_text(encoding="utf-8")) if cache_file.exists() else {"chapters": {}}
     except Exception:
@@ -383,4 +455,4 @@ def atomic_write_json(path: Path, data) -> None:
 
 def write_status_file(base_dir: Path, statuses: Iterable[ChapterStatus]) -> None:
     data = {f"{s.chapter:04d}": asdict(s) for s in statuses}
-    atomic_write_json(base_dir / "chapter_status.json", data)
+    atomic_write_json(report_path(base_dir, "chapter_status.json"), data)

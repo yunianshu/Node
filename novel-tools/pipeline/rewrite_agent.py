@@ -24,6 +24,7 @@ from pathlib import Path
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
 from core.novel_config import configure_stdio, load_config
+from core.workflow_state import load_outline_chapter, outline_index_path, review_dir
 from core.workflow_state import is_valid_chapter_text, load_review_status, read_text_length
 
 configure_stdio()
@@ -44,9 +45,9 @@ def init_project(project_dir: str | Path) -> None:
     NOVELS_DIR = Path(project_dir).resolve()
     DRAFT_DIR = NOVELS_DIR / "chapters" / "draft"
     FINAL_DIR = NOVELS_DIR / "chapters" / "final"
-    REVIEWS_DIR = NOVELS_DIR / "reviews"
+    REVIEWS_DIR = review_dir(NOVELS_DIR)
     WORLD_FILE = NOVELS_DIR / "world.json"
-    OUTLINE_FILE = NOVELS_DIR / "outline.json"
+    OUTLINE_FILE = outline_index_path(NOVELS_DIR)
     CHARACTERS_FILE = NOVELS_DIR / "characters.json"
     LOG_FILE = NOVELS_DIR / "logs" / "rewrite_agent.log"
     CONFIG = load_config(NOVELS_DIR)
@@ -125,26 +126,16 @@ def rewrite_chapter(chapter_number: int, retry: int = 0) -> str:
             return "copied"
 
     world = load_json(WORLD_FILE)
-    outline = load_json(OUTLINE_FILE)
     characters = load_json(CHARACTERS_FILE)
 
-    chapter_outline = None
-    for ch in outline.get("chapters", []):
-        if ch.get("chapter_number") == chapter_number:
-            chapter_outline = ch
-            break
+    chapter_outline = load_outline_chapter(NOVELS_DIR, chapter_number)
 
     if not chapter_outline:
         log(f"[Rewrite] 第{chapter_number}章大纲不存在")
         return "no_outline"
 
-    prev_summary = ""
-    next_summary = ""
-    for ch in outline.get("chapters", []):
-        if ch.get("chapter_number") == chapter_number - 1:
-            prev_summary = ch.get("summary", "")
-        if ch.get("chapter_number") == chapter_number + 1:
-            next_summary = ch.get("summary", "")
+    prev_summary = load_outline_chapter(NOVELS_DIR, chapter_number - 1).get("summary", "")
+    next_summary = load_outline_chapter(NOVELS_DIR, chapter_number + 1).get("summary", "")
 
     prev_ending = ""
     if chapter_number > 1:

@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 from core.novel_config import get_webhook_url, load_config
-from core.workflow_state import scan_chapter_status
+from core.workflow_state import outline_index_path, scan_chapter_status
 
 NOVELS_DIR = None
 CONFIG = None
@@ -31,7 +31,7 @@ def init_project(project_dir: str | Path) -> None:
 
 
 def get_progress():
-    outline_file = NOVELS_DIR / "outline.json"
+    outline_file = outline_index_path(NOVELS_DIR)
     outline_count = 0
     if outline_file.exists():
         try:

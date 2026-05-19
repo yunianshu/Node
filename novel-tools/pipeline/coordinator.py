@@ -25,7 +25,7 @@ import urllib.request
 import urllib.error
 
 from core.novel_config import configure_stdio, get_webhook_url, load_config
-from core.workflow_state import highest_contiguous, scan_chapter_status, write_status_file
+from core.workflow_state import highest_contiguous, outline_index_path, report_path, review_dir, scan_chapter_status, write_status_file
 from tool_paths import script_path as resolve_script_path
 
 configure_stdio()
@@ -62,12 +62,12 @@ def init_project(project_dir: str | Path) -> None:
     global default_num_workers, num_workers, default_review_workers, review_workers
     NOVELS_DIR = Path(project_dir).resolve()
     CHAPTERS_DIR = NOVELS_DIR / "chapters" / "draft"
-    REVIEWS_DIR = NOVELS_DIR / "reviews"
+    REVIEWS_DIR = review_dir(NOVELS_DIR)
     LOGS_DIR = NOVELS_DIR / "logs"
     WORLD_FILE = NOVELS_DIR / "world.json"
-    OUTLINE_FILE = NOVELS_DIR / "outline.json"
+    OUTLINE_FILE = outline_index_path(NOVELS_DIR)
     CHARACTERS_FILE = NOVELS_DIR / "characters.json"
-    PROGRESS_FILE = NOVELS_DIR / "progress.json"
+    PROGRESS_FILE = report_path(NOVELS_DIR, "progress.json")
     LOG_FILE = LOGS_DIR / "coordinator.log"
     CONFIG = load_config(NOVELS_DIR)
     SCRIPTS_DIR = TOOLS_ROOT
@@ -235,6 +235,7 @@ def load_progress():
 
 
 def save_progress(progress):
+    PROGRESS_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
         json.dump(progress, f, ensure_ascii=False, indent=2)
 
@@ -435,7 +436,7 @@ def generate_summary_report():
         "completed_chapters": completed
     }
 
-    report_file = NOVELS_DIR / "summary_report.json"
+    report_file = report_path(NOVELS_DIR, "summary_report.json")
     with open(report_file, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 

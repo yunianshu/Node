@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""补全 outline.json 中缺失的章节大纲。"""
+"""补全按章大纲索引中缺失的章节大纲。"""
 
 from pathlib import Path
 import sys
@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from core.mmx_client import call_mmx, MmxError
 from core.novel_config import load_config
+from core.workflow_state import outline_index_path
 
 
 def log(msg: str):
@@ -31,7 +32,7 @@ def main():
         sys.exit(1)
 
     novels_dir = Path(project_dir).resolve()
-    outline_file = novels_dir / "outline.json"
+    outline_file = outline_index_path(novels_dir)
     config = load_config(novels_dir)
     total = config["total_chapters"]
 
@@ -166,7 +167,7 @@ def main():
             except Exception as e2:
                 log(f"第 {batch_start}-{batch_end} 章解析失败: {e2}")
                 # 保存原始内容供调试
-                raw_file = novels_dir / f"outline_gap_{batch_start:04d}.raw"
+                raw_file = novels_dir / "logs" / f"outline_gap_{batch_start:04d}.raw"
                 with open(raw_file, "w", encoding="utf-8") as f:
                     f.write(content)
 

@@ -21,6 +21,7 @@ from pathlib import Path
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
 from core.novel_config import configure_stdio, load_config
+from core.workflow_state import load_outline_chapter, outline_index_path, review_dir
 from core.workflow_state import is_valid_chapter_text, read_text_length
 
 configure_stdio()
@@ -39,7 +40,7 @@ def init_project(project_dir: str | Path) -> None:
     NOVELS_DIR = Path(project_dir).resolve()
     CHAPTERS_DIR = NOVELS_DIR / "chapters" / "draft"
     WORLD_FILE = NOVELS_DIR / "world.json"
-    OUTLINE_FILE = NOVELS_DIR / "outline.json"
+    OUTLINE_FILE = outline_index_path(NOVELS_DIR)
     CHARACTERS_FILE = NOVELS_DIR / "characters.json"
     LOG_FILE = NOVELS_DIR / "logs" / "writer.log"
     CONFIG = load_config(NOVELS_DIR)
@@ -93,26 +94,16 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
         log(f"[Writer] 第{chapter_number}章已存在但字数不合格（{existing_words}字），重新生成")
 
     world = load_json(WORLD_FILE)
-    outline = load_json(OUTLINE_FILE)
     characters = load_json(CHARACTERS_FILE)
 
-    chapter_outline = None
-    for ch in outline.get("chapters", []):
-        if ch.get("chapter_number") == chapter_number:
-            chapter_outline = ch
-            break
+    chapter_outline = load_outline_chapter(NOVELS_DIR, chapter_number)
 
     if not chapter_outline:
         log(f"[Writer] 第{chapter_number}章大纲不存在")
         return "no_outline"
 
-    prev_summary = ""
-    next_summary = ""
-    for ch in outline.get("chapters", []):
-        if ch.get("chapter_number") == chapter_number - 1:
-            prev_summary = ch.get("summary", "")
-        if ch.get("chapter_number") == chapter_number + 1:
-            next_summary = ch.get("summary", "")
+    prev_summary = load_outline_chapter(NOVELS_DIR, chapter_number - 1).get("summary", "")
+    next_summary = load_outline_chapter(NOVELS_DIR, chapter_number + 1).get("summary", "")
 
     prev_ending = ""
     if chapter_number > 1:
@@ -122,7 +113,7 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
                 content = f.read()
             prev_ending = content[-500:] if len(content) > 500 else content
 
-    review_file = NOVELS_DIR / "reviews" / f"chapter_{chapter_number:04d}_review.json"
+    review_file = review_dir(NOVELS_DIR) / f"chapter_{chapter_number:04d}_review.json"
     review_data = None
     is_rewrite = False
     if review_file.exists():

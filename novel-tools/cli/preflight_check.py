@@ -15,7 +15,7 @@ import subprocess
 import json
 
 from core.novel_config import configure_stdio
-from core.workflow_state import analyze_chapter_text, load_quality_rules, scan_chapter_status
+from core.workflow_state import analyze_chapter_text, load_quality_rules, report_path, scan_chapter_status
 from tool_paths import script_path
 
 configure_stdio()
@@ -131,7 +131,7 @@ def check_content_risks(project: Path, strict: bool = False, fast: bool = False,
             "paragraph": [],
         },
         "info": {
-            "summary_report": [] if (project / "summary_report.json").exists() else ["missing"],
+            "summary_report": [] if report_path(project, "summary_report.json").exists() else ["missing"],
         },
     }
     title_missing = []

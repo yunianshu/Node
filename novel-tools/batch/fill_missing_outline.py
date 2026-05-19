@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 from core.novel_config import load_config
+from core.workflow_state import outline_index_path
 from tool_paths import script_path
 
 NOVELS_DIR = None
@@ -68,7 +69,7 @@ def main():
     log(f"项目: {NOVELS_DIR}")
     log("=" * 60)
 
-    with open(NOVELS_DIR / "outline.json", "r", encoding="utf-8") as f:
+    with open(outline_index_path(NOVELS_DIR), "r", encoding="utf-8") as f:
         data = json.load(f)
 
     seen = set(ch.get("chapter_number", 0) for ch in data.get("chapters", []))

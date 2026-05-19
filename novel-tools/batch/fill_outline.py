@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 from core.novel_config import load_config
+from core.workflow_state import outline_index_path, write_outline_chapters
 from tool_paths import script_path
 
 NOVELS_DIR = None
@@ -30,7 +31,7 @@ MISSING_RANGES = []
 def init_project(project_dir: str | Path) -> None:
     global NOVELS_DIR, OUTLINE_FILE, SCRIPTS_DIR, CONFIG
     NOVELS_DIR = Path(project_dir).resolve()
-    OUTLINE_FILE = NOVELS_DIR / "outline.json"
+    OUTLINE_FILE = outline_index_path(NOVELS_DIR)
     SCRIPTS_DIR = Path(__file__).parent
     CONFIG = load_config(NOVELS_DIR)
 
@@ -80,8 +81,10 @@ def merge_outlines():
             unique.append(ch)
     unique.sort(key=lambda ch: ch.get("chapter_number", 0))
 
+    outline = {"chapters": unique}
     with open(OUTLINE_FILE, "w", encoding="utf-8") as f:
-        json.dump({"chapters": unique}, f, ensure_ascii=False, indent=2)
+        json.dump(outline, f, ensure_ascii=False, indent=2)
+    write_outline_chapters(NOVELS_DIR, outline)
 
     log(f"合并完成: {len(unique)}/{CONFIG['total_chapters']} 章")
     return len(unique)

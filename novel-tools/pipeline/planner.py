@@ -21,6 +21,7 @@ from pathlib import Path
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
 from core.novel_config import load_config
+from core.workflow_state import outline_index_path, write_outline_chapters
 
 NOVELS_DIR = None
 WORLD_FILE = None
@@ -34,7 +35,7 @@ def init_project(project_dir: str | Path) -> None:
     global NOVELS_DIR, WORLD_FILE, OUTLINE_FILE, CHARACTERS_FILE, CONFIG, NOVEL_PREMISE
     NOVELS_DIR = Path(project_dir).resolve()
     WORLD_FILE = NOVELS_DIR / "world.json"
-    OUTLINE_FILE = NOVELS_DIR / "outline.json"
+    OUTLINE_FILE = outline_index_path(NOVELS_DIR)
     CHARACTERS_FILE = NOVELS_DIR / "characters.json"
     CONFIG = load_config(NOVELS_DIR)
     total = CONFIG["total_chapters"]
@@ -301,9 +302,11 @@ def generate_outline_range(start: int, end: int, outline_file: Path = None):
             print(f"[Planner] 第 {batch_start}-{batch_end} 章大纲已生成（{len(new_chapters)}章）")
             with open(output_file, "w", encoding="utf-8") as f:
                 json.dump(outline, f, ensure_ascii=False, indent=2)
+            if output_file == OUTLINE_FILE:
+                write_outline_chapters(NOVELS_DIR, outline)
         except Exception as e:
             print(f"[Planner] 第 {batch_start}-{batch_end} 章解析失败: {e}")
-            with open(NOVELS_DIR / f"outline_batch_{batch_start:04d}.raw", "w", encoding="utf-8") as f:
+            with open(NOVELS_DIR / "logs" / f"outline_batch_{batch_start:04d}.raw", "w", encoding="utf-8") as f:
                 f.write(content)
 
     print(f"[Planner] 大纲范围 {start}-{end} 已完成，共 {len(outline['chapters'])} 章")

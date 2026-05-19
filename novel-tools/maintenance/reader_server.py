@@ -21,6 +21,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, unquote
 
+from core.workflow_state import outline_index_path
+
 NOVELS_PARENT = None
 PORT = 8889
 
@@ -965,7 +967,7 @@ def discover_books(parent_dir):
             continue
         if entry.name in ("audio", "logs", "scripts", "node_modules"):
             continue
-        outline_file = entry / "outline.json"
+        outline_file = outline_index_path(entry)
         chapters_dir = entry / "chapters"
         if not outline_file.exists() or not chapters_dir.exists():
             continue
@@ -1072,7 +1074,7 @@ def make_handler(parent_dir, port):
                 if len(parts) >= 4:
                     book_id = unquote(parts[3])
                     book_dir = Path(parent_dir) / book_id
-                    outline_file = book_dir / "outline.json"
+                    outline_file = outline_index_path(book_dir)
                     chapters_dir = book_dir / "chapters"
 
                     if not outline_file.exists():

@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 from core.novel_config import load_config
+from core.workflow_state import outline_index_path, write_outline_chapters
 from tool_paths import script_path
 
 NOVELS_DIR = None
@@ -84,8 +85,9 @@ def merge_outlines():
             unique.append(ch)
 
     outline = {"chapters": unique}
-    with open(NOVELS_DIR / "outline.json", "w", encoding="utf-8") as f:
+    with open(outline_index_path(NOVELS_DIR), "w", encoding="utf-8") as f:
         json.dump(outline, f, ensure_ascii=False, indent=2)
+    write_outline_chapters(NOVELS_DIR, outline)
     log(f"合并完成: {len(unique)}/{CONFIG['total_chapters']} 章")
 
 

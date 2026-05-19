@@ -8,7 +8,7 @@ import sys
 TOOLS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS_DIR))
 
-from core.workflow_state import ChapterStatus, analyze_chapter_text, scan_chapter_status
+from core.workflow_state import ChapterStatus, analyze_chapter_text, report_path, review_dir, scan_chapter_status
 
 
 def chapter_text(words: int = 5000, title: str = "第一章 测试章节") -> str:
@@ -27,7 +27,7 @@ class WorkflowStateTest(unittest.TestCase):
             base = Path(tmp)
             draft_dir = base / "chapters" / "draft"
             final_dir = base / "chapters" / "final"
-            reviews_dir = base / "reviews"
+            reviews_dir = review_dir(base)
             draft_dir.mkdir(parents=True)
             final_dir.mkdir(parents=True)
             reviews_dir.mkdir(parents=True)
@@ -48,7 +48,7 @@ class WorkflowStateTest(unittest.TestCase):
     def test_completed_review_requires_schema_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            reviews_dir = base / "reviews"
+            reviews_dir = review_dir(base)
             reviews_dir.mkdir(parents=True)
             (reviews_dir / "chapter_0001_review.json").write_text(
                 json.dumps({"status": "completed", "overall_score": 8, "verdict": "通过"}),
@@ -117,7 +117,7 @@ class WorkflowStateTest(unittest.TestCase):
             first = scan_chapter_status(base, 6, 6, use_cache=True)[6]
             second = scan_chapter_status(base, 6, 6, use_cache=True)[6]
 
-            self.assertTrue((base / ".workflow_status_cache.json").exists())
+            self.assertTrue(report_path(base, ".workflow_status_cache.json").exists())
             self.assertEqual(first.draft_words, second.draft_words)
 
     def test_similar_paragraphs_are_hard_fail(self):
