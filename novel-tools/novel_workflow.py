@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import os
 import subprocess
@@ -24,7 +25,7 @@ import time
 from pathlib import Path
 
 from novel_config import configure_stdio, load_config
-from workflow_state import scan_chapter_status
+from workflow_state import atomic_write_json, scan_chapter_status
 
 configure_stdio()
 
@@ -43,7 +44,7 @@ def cmd_status(args):
     total = config["total_chapters"]
     start, end = normalize_range(args, total)
     scan_total = end - start + 1
-    statuses = scan_chapter_status(project, start, end)
+    statuses = scan_chapter_status(project, start, end, use_cache=args.cache)
 
     draft_ok = sum(1 for s in statuses.values() if s.draft_ok)
     review_ok = sum(1 for s in statuses.values() if s.review_ok)
@@ -101,8 +102,14 @@ def cmd_review(args):
 
 def cmd_repair(args):
     extra = ["--mode", args.mode]
+    if args.start:
+        extra += ["--start", str(args.start)]
+    if args.end:
+        extra += ["--end", str(args.end)]
     if args.limit:
         extra += ["--limit", str(args.limit)]
+    if args.reason:
+        extra += ["--reason", args.reason]
     if args.dry_run:
         extra.append("--dry-run")
     if args.ignore_state:
@@ -155,6 +162,8 @@ def cmd_repair_all(args):
         extra = ["--mode", step]
         if args.limit:
             extra += ["--limit", str(args.limit)]
+        if args.reason:
+            extra += ["--reason", args.reason]
         if args.dry_run:
             extra.append("--dry-run")
         rc = run("repair_quality.py", args.project, extra)
@@ -233,11 +242,16 @@ def cmd_resume(args):
     return 0
 
 
-def build_summary(project: Path, start: int = 1, end: int | None = None) -> dict:
+def build_summary(project: Path, start: int = 1, end: int | None = None, use_cache: bool = False) -> dict:
     config = load_config(project)
     total = config["total_chapters"]
     end = total if end is None else end
-    statuses, counts = _quality_counts(project, total, start, end)
+    statuses = scan_chapter_status(project, start, end, use_cache=use_cache)
+    counts = {
+        "draft": sum(1 for s in statuses.values() if s.draft_ok),
+        "review": sum(1 for s in statuses.values() if s.review_ok),
+        "final": sum(1 for s in statuses.values() if s.final_ok),
+    }
     scan_total = end - start + 1
     issue_top = {
         "draft": [ch for ch, status in statuses.items() if not status.draft_ok][:20],
@@ -256,6 +270,101 @@ def build_summary(project: Path, start: int = 1, end: int | None = None) -> dict
     }
 
 
+def _issue_list(status, gate: str) -> list[str]:
+    if gate == "draft":
+        return [] if status.draft_ok else (status.draft_issues or [status.failed_reason or "draft_quality_failed"])
+    if gate == "review":
+        return [] if status.review_ok else (status.review_issues or [status.review_status or "review_quality_failed"])
+    return [] if status.final_ok else (status.final_issues or [status.failed_reason or "final_quality_failed"])
+
+
+def build_issues_report(project: Path, start: int = 1, end: int | None = None, use_cache: bool = False) -> dict:
+    config = load_config(project)
+    total = config["total_chapters"]
+    end = total if end is None else end
+    statuses = scan_chapter_status(project, start, end, use_cache=use_cache)
+    gates = ("draft", "review", "final")
+    issue_counts = {gate: Counter() for gate in gates}
+    chapters = {}
+    for chapter, status in statuses.items():
+        item = {}
+        for gate in gates:
+            issues = _issue_list(status, gate)
+            item[gate] = issues
+            issue_counts[gate].update(issues)
+        if any(item.values()):
+            chapters[f"{chapter:04d}"] = item
+    return {
+        "project": str(project),
+        "scan_range": {"start": start, "end": end, "total": end - start + 1},
+        "issue_counts": {gate: dict(counts.most_common()) for gate, counts in issue_counts.items()},
+        "chapters": chapters,
+    }
+
+
+def cmd_issues_report(args):
+    project = Path(args.project).resolve()
+    config = load_config(project)
+    start, end = normalize_range(args, config["total_chapters"])
+    report = build_issues_report(project, start, end, use_cache=args.cache)
+    output = project / "issues_report.json"
+    atomic_write_json(output, report)
+    print(f"已写入问题报告: {output}")
+    for gate, counts in report["issue_counts"].items():
+        top = list(counts.items())[:5]
+        print(f"{gate} TOP: {top}")
+    return 0
+
+
+def cmd_migrate_review_schema(args):
+    project = Path(args.project).resolve()
+    reviews_dir = project / "reviews"
+    changed = []
+    skipped = []
+    for path in sorted(reviews_dir.glob("chapter_*_review.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            skipped.append(path.name)
+            continue
+        if data.get("status") != "completed":
+            continue
+        before = json.dumps(data, ensure_ascii=False, sort_keys=True)
+        data.setdefault("scores", {})
+        data.setdefault("summary", str(data.get("raw_response", "") or "")[:500])
+        if not isinstance(data.get("verdict"), str):
+            data["verdict"] = "通过"
+        if not isinstance(data.get("overall_score"), (int, float)):
+            data["overall_score"] = 0
+        after = json.dumps(data, ensure_ascii=False, sort_keys=True)
+        if before != after:
+            changed.append(path.name)
+            if not args.dry_run:
+                atomic_write_json(path, data)
+    print(f"可迁移 review: {len(changed)}")
+    if changed:
+        print("前10个:", ", ".join(changed[:10]))
+    if skipped:
+        print(f"跳过无效 JSON: {len(skipped)}")
+    return 0
+
+
+def cmd_cleanup_logs(args):
+    project = Path(args.project).resolve()
+    logs_dir = project / "logs"
+    if not logs_dir.exists():
+        print("logs 目录不存在")
+        return 0
+    cutoff = time.time() - args.days * 86400
+    candidates = [path for path in logs_dir.rglob("*.log") if path.is_file() and path.stat().st_mtime < cutoff]
+    for path in candidates:
+        print(path)
+        if not args.dry_run:
+            path.unlink()
+    print(f"{'计划清理' if args.dry_run else '已清理'}日志: {len(candidates)} 个")
+    return 0
+
+
 def next_required_step_for_counts(counts: dict, total: int) -> str:
     if counts["draft"] < total:
         return "draft"
@@ -270,7 +379,7 @@ def cmd_plan(args):
     project = Path(args.project).resolve()
     config = load_config(project)
     start, end = normalize_range(args, config["total_chapters"])
-    summary = build_summary(project, start, end)
+    summary = build_summary(project, start, end, use_cache=args.cache)
     print("=" * 50)
     print(f"执行计划 - {project}")
     print("=" * 50)
@@ -295,7 +404,7 @@ def cmd_report(args):
     project = Path(args.project).resolve()
     config = load_config(project)
     start, end = normalize_range(args, config["total_chapters"])
-    summary = build_summary(project, start, end)
+    summary = build_summary(project, start, end, use_cache=args.cache)
     output = project / "summary_report.json"
     output.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"已写入报告: {output}")
@@ -329,6 +438,7 @@ def main():
     status = sub.add_parser("status", help="扫描并展示当前章节状态")
     status.add_argument("--start", type=int, default=0, help="起始章节")
     status.add_argument("--end", type=int, default=0, help="结束章节")
+    status.add_argument("--cache", action="store_true", help="启用状态缓存")
 
     gen = sub.add_parser("generate", help="调用 coordinator 生成初稿/终稿")
     gen.add_argument("--start", type=int, default=0, help="起始章节")
@@ -341,12 +451,16 @@ def main():
 
     rep = sub.add_parser("repair", help="按质量门修复历史产物")
     rep.add_argument("--mode", choices=["draft", "review", "final"], default="final")
+    rep.add_argument("--start", type=int, default=0, help="扫描起始章节")
+    rep.add_argument("--end", type=int, default=0, help="扫描结束章节")
     rep.add_argument("--limit", type=int, default=0, help="最多处理多少章")
+    rep.add_argument("--reason", type=str, default="", help="只处理包含指定失败原因的章节")
     rep.add_argument("--dry-run", action="store_true", help="只列命令不执行")
     rep.add_argument("--ignore-state", action="store_true", help="忽略断点状态")
 
     rep_all = sub.add_parser("repair-all", help="按 draft -> review -> final 顺序修复")
     rep_all.add_argument("--limit", type=int, default=0, help="每轮最多处理多少章")
+    rep_all.add_argument("--reason", type=str, default="", help="只处理包含指定失败原因的章节")
     rep_all.add_argument("--dry-run", action="store_true", help="只执行下一步计划")
     rep_all.add_argument("--max-rounds", type=int, default=1, help="最多执行多少轮，0表示不限")
 
@@ -355,9 +469,20 @@ def main():
     plan = sub.add_parser("plan", help="输出下一步执行计划")
     plan.add_argument("--start", type=int, default=0, help="起始章节")
     plan.add_argument("--end", type=int, default=0, help="结束章节")
+    plan.add_argument("--cache", action="store_true", help="启用状态缓存")
     report = sub.add_parser("report", help="写入 summary_report.json")
     report.add_argument("--start", type=int, default=0, help="起始章节")
     report.add_argument("--end", type=int, default=0, help="结束章节")
+    report.add_argument("--cache", action="store_true", help="启用状态缓存")
+    issues = sub.add_parser("issues-report", help="写入 issues_report.json")
+    issues.add_argument("--start", type=int, default=0, help="起始章节")
+    issues.add_argument("--end", type=int, default=0, help="结束章节")
+    issues.add_argument("--cache", action="store_true", help="启用状态缓存")
+    migrate = sub.add_parser("migrate-review-schema", help="补齐旧 review JSON 的 schema 字段")
+    migrate.add_argument("--dry-run", action="store_true", help="只预览不写入")
+    cleanup = sub.add_parser("cleanup-logs", help="清理过期调试日志")
+    cleanup.add_argument("--days", type=int, default=7, help="保留最近多少天日志")
+    cleanup.add_argument("--dry-run", action="store_true", help="只预览不删除")
 
     args = parser.parse_args()
 
@@ -375,6 +500,9 @@ def main():
         "resume": cmd_resume,
         "plan": cmd_plan,
         "report": cmd_report,
+        "issues-report": cmd_issues_report,
+        "migrate-review-schema": cmd_migrate_review_schema,
+        "cleanup-logs": cmd_cleanup_logs,
     }
 
     rc = handlers[args.command](args)

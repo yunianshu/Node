@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 from novel_config import configure_stdio
-from workflow_state import scan_chapter_status
+from workflow_state import analyze_chapter_text, load_quality_rules, scan_chapter_status
 
 configure_stdio()
 
@@ -98,7 +98,7 @@ def check_python_syntax(paths: list[Path]) -> bool:
     return True
 
 
-def check_content_risks(project: Path, strict: bool = False) -> bool:
+def check_content_risks(project: Path, strict: bool = False, fast: bool = False, use_cache: bool = False) -> bool:
     print("\n[检查] 内容产物风险")
     config_file = project / "config.json"
     total = 0
@@ -111,7 +111,9 @@ def check_content_risks(project: Path, strict: bool = False) -> bool:
         print("[提示] 未找到 total_chapters，跳过内容产物风险检查")
         return True
 
-    statuses = scan_chapter_status(project, 1, total)
+    scan_total = min(total, 200) if fast else total
+    rules = load_quality_rules(project)
+    statuses = scan_chapter_status(project, 1, scan_total, use_cache=use_cache)
     risks = {
         "blocker": {
             "draft": [ch for ch, status in statuses.items() if not status.draft_ok],
@@ -128,14 +130,15 @@ def check_content_risks(project: Path, strict: bool = False) -> bool:
     }
     title_missing = []
     paragraph_sparse = []
-    for chapter in range(1, total + 1):
+    for chapter in range(1, scan_total + 1):
         draft_file = project / "chapters" / "draft" / f"chapter_{chapter:04d}.txt"
         if not draft_file.exists():
             continue
         text = draft_file.read_text(encoding="utf-8", errors="ignore")
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        if not lines or not (lines[0].startswith("第") and "章" in lines[0][:16]):
+        _, _, _, issues = analyze_chapter_text(text, rules=rules)
+        if "missing_title" in issues:
             title_missing.append(chapter)
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
         if len(lines) < 20:
             paragraph_sparse.append(chapter)
     risks["warn"]["title"] = title_missing
@@ -149,11 +152,12 @@ def check_content_risks(project: Path, strict: bool = False) -> bool:
     info_count = sum(len(items) for items in risks["info"].values())
 
     print(f"风险分级: blocker={blocker_count}, warn={warn_count}, info={info_count}")
-    print(f"初稿未达标: {len(draft_bad)}/{total}")
-    print(f"审查未达标: {len(review_bad)}/{total}")
-    print(f"终稿未达标: {len(final_bad)}/{total}")
-    print(f"初稿缺标题: {len(title_missing)}/{total}")
-    print(f"初稿段落偏少: {len(paragraph_sparse)}/{total}")
+    print(f"扫描范围: 1-{scan_total}{'（快速模式）' if fast else ''}")
+    print(f"初稿未达标: {len(draft_bad)}/{scan_total}")
+    print(f"审查未达标: {len(review_bad)}/{scan_total}")
+    print(f"终稿未达标: {len(final_bad)}/{scan_total}")
+    print(f"初稿缺标题: {len(title_missing)}/{scan_total}")
+    print(f"初稿段落偏少: {len(paragraph_sparse)}/{scan_total}")
     for name, items in (("draft", draft_bad), ("review", review_bad), ("final", final_bad)):
         if items:
             preview = ", ".join(str(ch) for ch in items[:10])
@@ -183,8 +187,37 @@ def main() -> int:
         help="小说项目目录，默认检查 projects/novels6",
     )
     parser.add_argument("--strict-content", action="store_true", help="内容产物不完整时返回失败")
+    parser.add_argument("--fast", action="store_true", help="快速模式，只扫描前200章内容风险")
+    parser.add_argument("--cache", action="store_true", help="内容风险扫描启用状态缓存")
     args = parser.parse_args()
     project = args.project.resolve()
+    repair_dry_run_cmd = [
+        sys.executable,
+        str(ROOT / "novel-tools" / "novel_workflow.py"),
+        "--project",
+        str(project),
+        "repair-all",
+        "--limit",
+        "2",
+        "--dry-run",
+    ]
+    if args.fast:
+        repair_dry_run_cmd = [
+            sys.executable,
+            str(ROOT / "novel-tools" / "novel_workflow.py"),
+            "--project",
+            str(project),
+            "repair",
+            "--mode",
+            "draft",
+            "--start",
+            "1",
+            "--end",
+            "200",
+            "--limit",
+            "2",
+            "--dry-run",
+        ]
 
     checks = [
         run_step(
@@ -202,18 +235,9 @@ def main() -> int:
         scan_secrets([ROOT / "novel-tools", project, ROOT / ".gitignore"]),
         run_step(
             "质量修复 dry-run",
-            [
-                sys.executable,
-                str(ROOT / "novel-tools" / "novel_workflow.py"),
-                "--project",
-                str(project),
-                "repair-all",
-                "--limit",
-                "2",
-                "--dry-run",
-            ],
+            repair_dry_run_cmd,
         ),
-        check_content_risks(project, strict=args.strict_content),
+        check_content_risks(project, strict=args.strict_content, fast=args.fast, use_cache=args.cache),
         show_git_status(),
     ]
 

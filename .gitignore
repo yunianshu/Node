@@ -9,7 +9,13 @@ projects/**/chapter_status.json
 projects/**/repair_state.json
 projects/**/summary_report.json
 projects/**/repair_report.json
+projects/**/issues_report.json
+projects/**/.workflow_status_cache.json
 novel-tools/fill_gaps_quick.py
 novel-tools/fill_last_gaps.py
 scratch/
 novel-tools/one_off/
+/.idea/
+/.claude/
+/.spec-workflow/
+/.spec-workflow

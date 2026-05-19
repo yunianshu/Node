@@ -30,17 +30,28 @@ def init_project(project_dir: str | Path) -> None:
     REPAIR_REPORT_FILE = NOVELS_DIR / "repair_report.json"
 
 
-def select_chapters(mode: str) -> list[int]:
-    statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"])
+def select_chapters(mode: str, statuses: dict, reason: str = "") -> list[int]:
     if mode == "draft":
-        return [ch for ch, status in statuses.items() if not status.draft_ok]
+        chapters = [ch for ch, status in statuses.items() if not status.draft_ok]
+    elif mode == "review":
+        chapters = [ch for ch, status in statuses.items() if not status.review_ok]
+    else:
+        chapters = [ch for ch, status in statuses.items() if not status.final_ok]
+    if not reason:
+        return chapters
+    return [ch for ch in chapters if reason_matches(statuses[ch], mode, reason)]
+
+
+def reason_matches(status, mode: str, reason: str) -> bool:
+    if reason in (status.failed_reason or ""):
+        return True
     if mode == "review":
-        return [ch for ch, status in statuses.items() if not status.review_ok]
-    return [ch for ch, status in statuses.items() if not status.final_ok]
+        return reason in (status.review_status or "")
+    issues = status.draft_issues if mode == "draft" else status.final_issues
+    return reason in (issues or [])
 
 
-def sort_by_severity(mode: str, chapters: list[int]) -> list[int]:
-    statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"])
+def sort_by_severity(mode: str, chapters: list[int], statuses: dict) -> list[int]:
     grade_attr = "draft_grade" if mode == "draft" else "final_grade"
     rank = {"missing": 0, "hard_fail": 1, "warn": 2, "ok": 3}
     return sorted(chapters, key=lambda ch: (rank.get(getattr(statuses[ch], grade_attr, "hard_fail"), 1), ch))
@@ -142,7 +153,10 @@ def main():
                         default=os.getenv("NOVEL_PROJECT_DIR", ""),
                         help="小说项目目录（默认从环境变量 NOVEL_PROJECT_DIR 读取）")
     parser.add_argument("--mode", choices=["draft", "review", "final"], default="final")
+    parser.add_argument("--start", type=int, default=1, help="扫描起始章节")
+    parser.add_argument("--end", type=int, default=0, help="扫描结束章节，0表示总章节数")
     parser.add_argument("--limit", type=int, default=0, help="最多处理多少章，0表示全部")
+    parser.add_argument("--reason", type=str, default="", help="只处理包含指定失败原因的章节")
     parser.add_argument("--dry-run", action="store_true", help="只列出命令，不实际调用模型")
     parser.add_argument("--ignore-state", action="store_true", help="忽略断点状态，重新尝试")
     args = parser.parse_args()
@@ -154,12 +168,16 @@ def main():
     init_project(args.project)
 
     state = load_repair_state()
-    before_statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"])
+    start = max(1, args.start)
+    end = CONFIG["total_chapters"] if args.end <= 0 else min(CONFIG["total_chapters"], max(start, args.end))
+    before_statuses = scan_chapter_status(NOVELS_DIR, start, end)
     report = {
         "project": str(NOVELS_DIR),
         "mode": args.mode,
+        "reason": args.reason,
         "dry_run": args.dry_run,
         "limit": args.limit,
+        "scan_range": {"start": start, "end": end, "total": end - start + 1},
         "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "finished_at": "",
         "quality_before": quality_counts(before_statuses),
@@ -167,7 +185,7 @@ def main():
         "processed": [],
         "failure_reasons": {},
     }
-    chapters = sort_by_severity(args.mode, select_chapters(args.mode))
+    chapters = sort_by_severity(args.mode, select_chapters(args.mode, before_statuses, args.reason), before_statuses)
     if not args.ignore_state:
         chapters = [ch for ch in chapters if not should_skip_by_state(state, args.mode, ch)]
     if args.limit > 0:
@@ -187,7 +205,7 @@ def main():
         rc = run_chapter(script, chapter, args.dry_run)
         failure_reason = ""
         if not args.dry_run:
-            current_statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"])
+            current_statuses = scan_chapter_status(NOVELS_DIR, start, end)
             failure_reason = classify_failure(args.mode, chapter, rc, current_statuses)
             record_repair_result(state, args.mode, chapter, rc, failure_reason)
             save_repair_state(state)
@@ -206,14 +224,14 @@ def main():
         else:
             consecutive_failures = 0
 
-    statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"])
+    statuses = scan_chapter_status(NOVELS_DIR, start, end)
     report["quality_after"] = quality_counts(statuses)
     write_repair_report(report)
     write_status_file(NOVELS_DIR, statuses.values())
     print(
-        f"质量门: draft={sum(1 for s in statuses.values() if s.draft_ok)}/{CONFIG['total_chapters']}, "
-        f"review={sum(1 for s in statuses.values() if s.review_ok)}/{CONFIG['total_chapters']}, "
-        f"final={sum(1 for s in statuses.values() if s.final_ok)}/{CONFIG['total_chapters']}"
+        f"质量门({start}-{end}): draft={sum(1 for s in statuses.values() if s.draft_ok)}/{len(statuses)}, "
+        f"review={sum(1 for s in statuses.values() if s.review_ok)}/{len(statuses)}, "
+        f"final={sum(1 for s in statuses.values() if s.final_ok)}/{len(statuses)}"
     )
     if failed:
         print(f"失败章节: {failed}")

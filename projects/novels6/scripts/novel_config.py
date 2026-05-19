@@ -41,6 +41,20 @@ DEFAULT_CONFIG = {
     "repair": {
         "max_consecutive_failures": 5,
     },
+    "quality": {
+        "min_chapter_words": 4500,
+        "max_chapter_words": 5500,
+        "warn_min_chapter_words": 4300,
+        "warn_max_chapter_words": 5800,
+        "hard_fail_min_chapter_words": 3000,
+        "min_paragraphs": 20,
+        "max_duplicate_paragraph_ratio": 0.25,
+        "max_similar_paragraph_ratio": 0.20,
+        "similar_paragraph_threshold": 0.88,
+        "title_required": False,
+        "title_prefixes": ["第"],
+        "title_keywords": ["章", "节", "回"],
+    },
 }
 
 

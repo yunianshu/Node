@@ -8,7 +8,7 @@ import sys
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from workflow_state import ChapterStatus, scan_chapter_status
+from workflow_state import ChapterStatus, analyze_chapter_text, scan_chapter_status
 
 
 def chapter_text(words: int = 5000, title: str = "第一章 测试章节") -> str:
@@ -97,6 +97,28 @@ class WorkflowStateTest(unittest.TestCase):
 
             self.assertTrue(status.draft_ok)
             self.assertEqual(status.draft_grade, "ok")
+
+    def test_title_check_is_configurable(self):
+        text = "字" * 5000 + "。"
+
+        _, _, ok, issues = analyze_chapter_text(text, rules={"title_required": True})
+
+        self.assertTrue(ok)
+        self.assertIn("missing_title", issues)
+
+    def test_status_cache_reuses_existing_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            draft_dir = base / "chapters" / "draft"
+            draft_dir.mkdir(parents=True)
+            draft_file = draft_dir / "chapter_0006.txt"
+            draft_file.write_text(chapter_text(), encoding="utf-8")
+
+            first = scan_chapter_status(base, 6, 6, use_cache=True)[6]
+            second = scan_chapter_status(base, 6, 6, use_cache=True)[6]
+
+            self.assertTrue((base / ".workflow_status_cache.json").exists())
+            self.assertEqual(first.draft_words, second.draft_words)
 
     def test_similar_paragraphs_are_hard_fail(self):
         with tempfile.TemporaryDirectory() as tmp:

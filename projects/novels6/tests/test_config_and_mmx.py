@@ -28,6 +28,8 @@ class ConfigAndMmxTest(unittest.TestCase):
             self.assertEqual(cfg["api_qps"], 3)
             self.assertEqual(cfg["writer"]["max_retries"], 5)
             self.assertIn("reviewer", cfg)
+            self.assertIn("quality", cfg)
+            self.assertFalse(cfg["quality"]["title_required"])
 
     def test_get_webhook_url_prefers_env(self):
         old = os.environ.get("NOVEL_WEBHOOK_URL")
