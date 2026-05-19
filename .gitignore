@@ -4,5 +4,9 @@ __pycache__/
 *.pyc
 projects/*/chapter_status.json
 projects/*/repair_state.json
+projects/*/summary_report.json
+projects/**/summary_report.json
 novel-tools/fill_gaps_quick.py
 novel-tools/fill_last_gaps.py
+scratch/
+novel-tools/one_off/

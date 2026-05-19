@@ -38,6 +38,9 @@ DEFAULT_CONFIG = {
         "pause_between_batches": 3.0,
         "push_interval_seconds": 120,
     },
+    "repair": {
+        "max_consecutive_failures": 5,
+    },
 }
 
 

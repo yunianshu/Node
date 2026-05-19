@@ -180,11 +180,10 @@ def main() -> int:
             "质量修复 dry-run",
             [
                 sys.executable,
-                str(ROOT / "novel-tools" / "repair_quality.py"),
+                str(ROOT / "novel-tools" / "novel_workflow.py"),
                 "--project",
                 str(project),
-                "--mode",
-                "final",
+                "repair-all",
                 "--limit",
                 "2",
                 "--dry-run",

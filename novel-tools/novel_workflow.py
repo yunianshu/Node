@@ -217,6 +217,58 @@ def cmd_resume(args):
     return 0
 
 
+def build_summary(project: Path) -> dict:
+    config = load_config(project)
+    total = config["total_chapters"]
+    statuses, counts = _quality_counts(project, total)
+    issue_top = {
+        "draft": [ch for ch, status in statuses.items() if not status.draft_ok][:20],
+        "review": [ch for ch, status in statuses.items() if not status.review_ok][:20],
+        "final": [ch for ch, status in statuses.items() if not status.final_ok][:20],
+    }
+    scores = [s.review_score for s in statuses.values() if s.review_score is not None]
+    return {
+        "project": str(project),
+        "total": total,
+        "counts": counts,
+        "avg_score": round(sum(scores) / len(scores), 2) if scores else 0,
+        "next_step": next_required_step(project, total)[0],
+        "issue_top": issue_top,
+    }
+
+
+def cmd_plan(args):
+    project = Path(args.project).resolve()
+    summary = build_summary(project)
+    print("=" * 50)
+    print(f"执行计划 - {project}")
+    print("=" * 50)
+    print(f"质量门: draft={summary['counts']['draft']} review={summary['counts']['review']} final={summary['counts']['final']} / {summary['total']}")
+    step = summary["next_step"]
+    if step == "done":
+        print("无需执行，全部质量门已通过")
+        return 0
+    command = {
+        "draft": f"novel_workflow.py repair --project {args.project} --mode draft",
+        "review": f"novel_workflow.py review --project {args.project}",
+        "final": f"novel_workflow.py repair --project {args.project} --mode final",
+    }[step]
+    print(f"下一阶段: {step}")
+    print(f"建议命令: {command}")
+    print(f"问题章节预览: {summary['issue_top'][step]}")
+    return 0
+
+
+def cmd_report(args):
+    project = Path(args.project).resolve()
+    summary = build_summary(project)
+    output = project / "summary_report.json"
+    output.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"已写入报告: {output}")
+    print(f"下一阶段: {summary['next_step']}")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="小说生成工作流统一入口",
@@ -229,6 +281,8 @@ def main():
   repair    按质量门修复历史产物
   notify    推送当前进度到企业微信
   resume    读取进度文件，给出续跑建议
+  plan      输出下一步执行计划
+  report    写入 summary_report.json
 
 项目目录可通过 --project 指定，或设置 NOVEL_PROJECT_DIR 环境变量。
         """,
@@ -261,6 +315,8 @@ def main():
 
     sub.add_parser("notify", help="推送当前进度到企业微信")
     sub.add_parser("resume", help="读取进度文件，给出续跑建议")
+    sub.add_parser("plan", help="输出下一步执行计划")
+    sub.add_parser("report", help="写入 summary_report.json")
 
     args = parser.parse_args()
 
@@ -276,6 +332,8 @@ def main():
         "repair-all": cmd_repair_all,
         "notify": cmd_notify,
         "resume": cmd_resume,
+        "plan": cmd_plan,
+        "report": cmd_report,
     }
 
     rc = handlers[args.command](args)

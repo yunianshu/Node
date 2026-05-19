@@ -1,0 +1,8 @@
+{
+  "title": "工作流测试样本",
+  "total_chapters": 2,
+  "api_qps": 0,
+  "repair": {
+    "max_consecutive_failures": 2
+  }
+}

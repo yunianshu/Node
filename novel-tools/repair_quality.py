@@ -149,8 +149,11 @@ def main():
     }[args.mode]
 
     failed = []
+    consecutive_failures = 0
+    max_consecutive_failures = int(CONFIG.get("repair", {}).get("max_consecutive_failures", 5) or 5)
     for chapter in chapters:
         rc = run_chapter(script, chapter, args.dry_run)
+        failure_reason = ""
         if not args.dry_run:
             current_statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"])
             failure_reason = classify_failure(args.mode, chapter, rc, current_statuses)
@@ -158,6 +161,12 @@ def main():
             save_repair_state(state)
         if rc != 0 or (not args.dry_run and failure_reason):
             failed.append(chapter)
+            consecutive_failures += 1
+            if not args.dry_run and consecutive_failures >= max_consecutive_failures:
+                print(f"连续失败达到 {max_consecutive_failures} 次，触发熔断")
+                break
+        else:
+            consecutive_failures = 0
 
     statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"])
     write_status_file(NOVELS_DIR, statuses.values())
