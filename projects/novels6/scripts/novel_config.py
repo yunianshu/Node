@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from pathlib import Path
 
 
@@ -37,6 +38,19 @@ DEFAULT_CONFIG = {
         "push_interval_seconds": 120,
     },
 }
+
+
+def get_webhook_url(config: dict) -> str:
+    env_url = os.getenv("NOVEL_WEBHOOK_URL", "").strip()
+    if env_url:
+        return env_url
+    url = str(config.get("webhook_url", "") or "").strip()
+    if url:
+        return url
+    coordinator = config.get("coordinator", {})
+    if isinstance(coordinator, dict):
+        return str(coordinator.get("wechat_webhook", "") or "").strip()
+    return ""
 
 
 def deep_merge(base: dict, override: dict) -> dict:

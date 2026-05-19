@@ -28,7 +28,7 @@
   "coordinator": {
     "batch_size": 20,
     "num_workers": 5,
-    "wechat_webhook": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=22ea4574-b1f0-4c36-af2d-b13c6c2d471b",
+    "wechat_webhook": "",
     "push_interval_seconds": 120,
     "auto_fill_missing": true,
     "auto_rewrite": true,

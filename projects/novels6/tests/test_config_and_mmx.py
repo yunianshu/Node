@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,7 +9,7 @@ import sys
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from novel_config import load_config
+from novel_config import get_webhook_url, load_config
 from mmx_client import compute_wait_seconds, extract_content
 from reviewer import analyze_chapter_text
 
@@ -27,6 +28,20 @@ class ConfigAndMmxTest(unittest.TestCase):
             self.assertEqual(cfg["api_qps"], 3)
             self.assertEqual(cfg["writer"]["max_retries"], 5)
             self.assertIn("reviewer", cfg)
+
+    def test_get_webhook_url_prefers_env(self):
+        old = os.environ.get("NOVEL_WEBHOOK_URL")
+        os.environ["NOVEL_WEBHOOK_URL"] = "https://example.test/webhook"
+        try:
+            self.assertEqual(
+                get_webhook_url({"webhook_url": "https://config.test/webhook"}),
+                "https://example.test/webhook",
+            )
+        finally:
+            if old is None:
+                os.environ.pop("NOVEL_WEBHOOK_URL", None)
+            else:
+                os.environ["NOVEL_WEBHOOK_URL"] = old
 
     def test_extract_content_handles_response_prefix(self):
         raw = 'log\nResponse: {"content": "正文"}'
