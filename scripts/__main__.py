@@ -1,4 +1,4 @@
-"""支持 `python novel-tools ...` 调用统一工作流。"""
+"""支持 `python -m scripts ...` 调用统一工作流。"""
 from __future__ import annotations
 
 import runpy

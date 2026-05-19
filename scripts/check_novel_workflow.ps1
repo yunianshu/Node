@@ -10,6 +10,6 @@ if ([System.IO.Path]::IsPathRooted($Project)) {
 } else {
     $ProjectPath = Join-Path $Root $Project
 }
-$Preflight = Join-Path $Root "novel-tools/cli/preflight_check.py"
+$Preflight = Join-Path $Root "scripts/cli/preflight_check.py"
 
 python $Preflight --project $ProjectPath
