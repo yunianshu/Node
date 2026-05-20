@@ -9,7 +9,7 @@
     "max_tokens": 8192,
     "temperature": 0.7,
     "context_chapters": 3,
-    "max_retries": 3,
+    "max_retries": 5,
     "retry_delay": 5.0
   },
   "reviewer": {
@@ -32,12 +32,26 @@
   },
   "coordinator": {
     "batch_size": 50,
-    "num_workers": 20,
-    "review_workers": 5,
+    "num_workers": 1,
+    "review_workers": 60,
     "wechat_webhook": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=22ea4574-b1f0-4c36-af2d-b13c6c2d471b",
     "push_interval_seconds": 120,
     "auto_fill_missing": true,
     "auto_rewrite": true,
     "pause_between_batches": 3.0
+  },
+  "quality": {
+    "min_chapter_words": 5000,
+    "max_chapter_words": 12000,
+    "warn_min_chapter_words": 4800,
+    "warn_max_chapter_words": 15000,
+    "hard_fail_min_chapter_words": 3000,
+    "min_paragraphs": 20,
+    "max_duplicate_paragraph_ratio": 0.25,
+    "max_similar_paragraph_ratio": 0.20,
+    "similar_paragraph_threshold": 0.88,
+    "title_required": false,
+    "title_prefixes": ["第"],
+    "title_keywords": ["章", "节", "回"]
   }
 }

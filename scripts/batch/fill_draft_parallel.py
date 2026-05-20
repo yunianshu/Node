@@ -16,10 +16,10 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.request
 from pathlib import Path
 
-from core.novel_config import configure_stdio, get_webhook_url, load_config
+from core.novel_config import configure_stdio, load_config
+from core.push_notifier import push_progress as _push_progress, push_stage_complete as _push_stage_complete
 from tool_paths import script_path
 from core.workflow_state import scan_chapter_status
 
@@ -56,22 +56,17 @@ def log(msg: str):
         f.write(line + "\n")
 
 
-def push_wechat(msg: str):
-    url = get_webhook_url(CONFIG)
-    if not url:
-        return
-    try:
-        data = json.dumps({"msgtype": "text", "text": {"content": msg}}).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST"
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            resp.read()
-    except Exception as e:
-        log(f"[WeChat] 推送失败: {e}")
+def _get_book_title():
+    """获取书名，从 world.json 读取"""
+    world_file = NOVELS_DIR / "world.json"
+    if world_file.exists():
+        try:
+            with open(world_file, "r", encoding="utf-8") as f:
+                world = json.load(f)
+            return world.get("title", NOVELS_DIR.name)
+        except Exception:
+            pass
+    return NOVELS_DIR.name
 
 
 def get_progress_summary():
@@ -97,16 +92,18 @@ def progress_pusher_thread(interval_seconds: int = 120):
             _last_push_time = now
 
         p = get_progress_summary()
-        separator = "━━━━━━━━━━━━━━━━━━━━"
-        msg = (
-            f"📖 生成进度 ({time.strftime('%Y-%m-%d %H:%M:%S')})\n"
-            f"{separator}\n"
-            f"✍ 初稿: {p['draft']}/{CONFIG['total_chapters']} 章\n"
-            f"📝 字数: {p['total_words']:,}\n"
-            f"🔧 状态: 并行补全缺失章节中...\n"
-            f"{separator}"
+        title = _get_book_title()
+        _push_progress(
+            config=CONFIG,
+            title=title,
+            outline=0,
+            draft=p["draft"],
+            reviewed=0,
+            final=0,
+            total_words=p["total_words"],
+            total_chapters=CONFIG["total_chapters"],
+            active_writers=0,
         )
-        push_wechat(msg)
         log(f"[WeChat] 进度已推送: 初稿{p['draft']}/{CONFIG['total_chapters']}")
 
 
@@ -220,17 +217,23 @@ def main():
                 failed += 1
 
     p = get_progress_summary()
+    title = _get_book_title()
     log(f"[Main] 补全完成: 初稿 {p['draft']}/{CONFIG['total_chapters']} 章, 总字数 {p['total_words']:,}")
 
-    separator = "━━━━━━━━━━━━━━━━━━━━"
-    push_wechat(
-        f"📖 补全完成 ({time.strftime('%Y-%m-%d %H:%M:%S')})\n"
-        f"{separator}\n"
-        f"✍ 初稿: {p['draft']}/{CONFIG['total_chapters']} 章\n"
-        f"📝 字数: {p['total_words']:,}\n"
-        f"✅ 成功段: {completed}\n"
-        f"❌ 失败段: {failed}\n"
-        f"{separator}"
+    if missing_ranges:
+        first_start = missing_ranges[0][0]
+        last_end = missing_ranges[-1][1]
+    else:
+        first_start = last_end = 0
+
+    _push_stage_complete(
+        config=CONFIG,
+        title=title,
+        stage="补全",
+        start_chapter=first_start,
+        end_chapter=last_end,
+        processed=p["draft"],
+        failed=failed,
     )
 
 

@@ -21,11 +21,25 @@ import sys
 import threading
 import time
 from pathlib import Path
-import urllib.request
-import urllib.error
 
 from core.novel_config import configure_stdio, get_webhook_url, load_config
-from core.workflow_state import highest_contiguous, outline_index_path, report_path, review_dir, scan_chapter_status, write_status_file
+from core.push_notifier import (
+    push_progress as _push_progress,
+    push_stage_event as _push_stage_event,
+    push_task_complete as _push_task_complete,
+    push_interrupted as _push_interrupted,
+    push_error as _push_error,
+)
+from core.workflow_state import (
+    highest_contiguous,
+    outline_completed_count,
+    outline_index_path,
+    outlines_complete,
+    report_path,
+    review_dir,
+    scan_chapter_status,
+    write_status_file,
+)
 from tool_paths import script_path as resolve_script_path
 
 configure_stdio()
@@ -100,23 +114,6 @@ def log(msg: str):
         f.write(line + "\n")
 
 
-def push_wechat(msg: str):
-    if not WECHAT_WEBHOOK:
-        return
-    try:
-        data = json.dumps({"msgtype": "text", "text": {"content": msg}}).encode("utf-8")
-        req = urllib.request.Request(
-            WECHAT_WEBHOOK,
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST"
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            resp.read()
-    except Exception as e:
-        log(f"[WeChat] 推送失败: {e}")
-
-
 def get_progress_summary():
     statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"])
     total_words = sum(s.draft_words for s in statuses.values() if s.draft_exists)
@@ -124,14 +121,7 @@ def get_progress_summary():
     reviewed = sum(1 for s in statuses.values() if s.review_ok)
     final_count = sum(1 for s in statuses.values() if s.final_ok)
 
-    outline_count = 0
-    if OUTLINE_FILE.exists():
-        try:
-            with open(OUTLINE_FILE, "r", encoding="utf-8") as f:
-                o = json.load(f)
-            outline_count = len(o.get("chapters", []))
-        except Exception:
-            pass
+    outline_count = outline_completed_count(NOVELS_DIR, 1, CONFIG["total_chapters"])
 
     return {
         "outline": outline_count,
@@ -154,29 +144,78 @@ def progress_pusher_thread(interval_seconds: int = 120):
 
         p = get_progress_summary()
         title = get_book_title()
-        writer_count = _active_writers
-        separator = "━━━━━━━━━━━━━━━━━━━━"
-        msg = (
-            f"📖 《{title}》生成进度 ({time.strftime('%Y-%m-%d %H:%M:%S')})\n"
-            f"{separator}\n"
-            f"📋 大纲: {p['outline']}/{CONFIG['total_chapters']} 章\n"
-            f"✍ 初稿: {p['draft']}/{CONFIG['total_chapters']} 章\n"
-            f"📝 字数: {p['total_words']:,}\n"
-            f"🔍 审查: {p['reviewed']}/{CONFIG['total_chapters']} 章\n"
-            f"📤 终稿: {p['final']}/{CONFIG['total_chapters']} 章\n"
-            f"🤖 进程: 1 Coordinator + {writer_count} Writer\n"
-            f"{separator}"
+        ok = _push_progress(
+            config=CONFIG,
+            title=title,
+            outline=p["outline"],
+            draft=p["draft"],
+            reviewed=p["reviewed"],
+            final=p["final"],
+            total_words=p["total_words"],
+            total_chapters=CONFIG["total_chapters"],
+            active_writers=_active_writers,
         )
-        push_wechat(msg)
-        log(f"[WeChat] 进度已推送: 初稿{p['draft']}/{CONFIG['total_chapters']}, 审查{p['reviewed']}/{CONFIG['total_chapters']}")
+        status = "已推送" if ok else "跳过(无webhook)"
+        log(f"[WeChat] 进度{status}: 初稿{p['draft']}/{CONFIG['total_chapters']}, 审查{p['reviewed']}/{CONFIG['total_chapters']}")
+
+
+def notify_stage(stage: str, status: str, start: int | None = None, end: int | None = None,
+                 processed: int = 0, failed: int = 0, error: str = "") -> None:
+    """记录阶段事件（不再推送微信，由 progress_pusher_thread 定时推送）。"""
+    scope = f" 第{start}-{end}章" if start is not None and end is not None else ""
+    extra = f", 成功{processed}章" if processed > 0 else ""
+    extra += f", 失败{failed}章" if failed > 0 else ""
+    extra += f", 错误: {error}" if error else ""
+    log(f"[{stage}] {status}{scope}{extra}")
+
+
+def run_streaming_process(cmd: list[str], child_log: Path) -> int:
+    """运行子进程，并将输出同时写入子日志和 Coordinator CLI 日志。"""
+    child_log.parent.mkdir(parents=True, exist_ok=True)
+    with open(child_log, "a", encoding="utf-8") as lf:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        assert proc.stdout is not None
+        try:
+            for line in proc.stdout:
+                text = line.rstrip("\n")
+                lf.write(text + "\n")
+                lf.flush()
+                if text:
+                    log(f"[Child] {text}")
+        finally:
+            proc.stdout.close()
+        return proc.wait()
+
+
+def _stream_child_output(proc: subprocess.Popen, child_log: Path) -> None:
+    child_log.parent.mkdir(parents=True, exist_ok=True)
+    with open(child_log, "a", encoding="utf-8") as lf:
+        if proc.stdout is None:
+            return
+        try:
+            for line in proc.stdout:
+                text = line.rstrip("\n")
+                lf.write(text + "\n")
+                lf.flush()
+                if text:
+                    log(f"[Child] {text}")
+        finally:
+            proc.stdout.close()
 
 
 def run_script(script_name: str, *args) -> int:
     script_file = resolve_script_path(script_name)
     cmd = [sys.executable, str(script_file), "--project", str(NOVELS_DIR)] + list(args)
     log(f"[Coordinator] 执行: {' '.join(cmd)}")
-    result = subprocess.run(cmd, capture_output=False, text=True, encoding="utf-8")
-    return result.returncode
+    child_log = LOGS_DIR / f"coordinator_{Path(script_name).stem}.log"
+    return run_streaming_process(cmd, child_log)
 
 
 def check_all_quotas():
@@ -254,27 +293,33 @@ def get_completed_chapters():
 
 
 def check_outline_complete():
-    if not OUTLINE_FILE.exists():
-        return False
-    try:
-        with open(OUTLINE_FILE, "r", encoding="utf-8") as f:
-            outline = json.load(f)
-        count = len(outline.get("chapters", []))
-        log(f"[Coordinator] 当前大纲: {count}/{CONFIG['total_chapters']} 章")
-        return count >= CONFIG["total_chapters"]
-    except Exception:
-        return False
+    count = outline_completed_count(NOVELS_DIR, 1, CONFIG["total_chapters"])
+    log(f"[Coordinator] 当前单章大纲: {count}/{CONFIG['total_chapters']} 章")
+    return outlines_complete(NOVELS_DIR, 1, CONFIG["total_chapters"])
 
 
-def check_all_files_exist():
-    return WORLD_FILE.exists() and OUTLINE_FILE.exists() and CHARACTERS_FILE.exists()
+def check_base_files_exist():
+    return WORLD_FILE.exists() and CHARACTERS_FILE.exists()
 
 
 def run_planner():
     log("=" * 60)
     log("[Coordinator] 启动 Planner Agent")
     log("=" * 60)
-    return run_script("planner.py")
+    notify_stage("世界观/角色", "开始")
+    rc = run_script("planner.py")
+    notify_stage("世界观/角色", "完成" if rc == 0 else "异常", error="" if rc == 0 else f"退出码 {rc}")
+    return rc
+
+
+def run_outliner():
+    log("=" * 60)
+    log("[Coordinator] 启动 Outliner Agent")
+    log("=" * 60)
+    notify_stage("大纲", "开始")
+    rc = run_script("outliner.py")
+    notify_stage("大纲", "完成" if rc == 0 else "异常", error="" if rc == 0 else f"退出码 {rc}")
+    return rc
 
 
 def run_writer_batch(start: int, end: int) -> list:
@@ -320,7 +365,85 @@ def adjust_workers(agent_name: str, results: list):
             log(f"[Coordinator] Reviewer 失败率 {failure_rate:.0%}，并发从 {current} 升至 {review_workers}")
 
 
-def run_parallel_agents(agent_name: str, start: int, end: int, agent_workers: int = None) -> list:
+def adjust_workers_by_quota(batch_size: int, text_remaining: int, skip_review: bool) -> tuple[int, int]:
+    """根据剩余API配额动态调整Writer和Reviewer并发数
+
+    策略：
+    - 每章Writer约1次调用，Reviewer约1次，Rewrite约1次
+    - 如果配额紧张，按比例缩减并发，避免触发限流
+    - 最少保持1个worker，最多不超过默认值
+    - 返回值: (writer_workers, reviewer_workers)
+    """
+    global num_workers, review_workers, default_num_workers, default_review_workers
+
+    calls_per_chapter = 1 if skip_review else 2  # writer + reviewer
+    calls_needed = batch_size * calls_per_chapter
+
+    if calls_needed <= 0 or text_remaining <= 0:
+        return 1, 1
+
+    # 配额充足，使用默认配置
+    if text_remaining >= calls_needed * 3:
+        return default_num_workers, default_review_workers
+
+    # 配额紧张，按比例缩减
+    ratio = text_remaining / (calls_needed * 1.5)  # 留50%余量给重试和rewrite
+    ratio = max(0.1, min(1.0, ratio))
+
+    new_writer = max(1, int(default_num_workers * ratio))
+    new_reviewer = max(1, int(default_review_workers * ratio))
+
+    # 如果当前值已经更低（被失败率调低），取较小值
+    new_writer = min(new_writer, num_workers if num_workers > 0 else default_num_workers)
+    new_reviewer = min(new_reviewer, review_workers if review_workers > 0 else default_review_workers)
+
+    if new_writer != num_workers or new_reviewer != review_workers:
+        log(f"[Coordinator] 配额紧张（剩余{text_remaining}，需约{calls_needed}），"
+            f"并发调整 Writer={num_workers}->{new_writer}, Reviewer={review_workers}->{new_reviewer} "
+            f"(比例{ratio:.0%})")
+        num_workers = new_writer
+        review_workers = new_reviewer
+
+    return new_writer, new_reviewer
+
+
+def collect_failed_writer_chapters(writer_results: list, statuses: dict, start: int, end: int) -> list[int]:
+    failed = set()
+    for s, e, rc in writer_results:
+        if rc != 0:
+            failed.update(range(max(start, s), min(end, e) + 1))
+    for ch in range(start, end + 1):
+        status = statuses.get(ch)
+        if status is None or not status.draft_ok:
+            failed.add(ch)
+    return sorted(failed)
+
+
+def run_writer_repair_queue(chapters: list[int], max_passes: int = 2) -> list[int]:
+    remaining = sorted(set(chapters))
+    if not remaining:
+        return []
+
+    for attempt in range(1, max_passes + 1):
+        log(f"[Coordinator] Writer补偿第{attempt}/{max_passes}轮，待补齐 {len(remaining)} 章: {remaining}")
+        # 并行补偿：传入整个区间，writer.py 内部会跳过已存在的有效章节
+        # 使用当前动态并发数（由配额和失败率共同控制），不再强制单章单进程
+        # 补偿队列为内部机制，不发送企业微信阶段通知
+        run_parallel_agents("writer.py", min(remaining), max(remaining), notify=False)
+
+        statuses = scan_chapter_status(NOVELS_DIR, min(remaining), max(remaining))
+        remaining = [chapter for chapter in remaining if not statuses.get(chapter) or not statuses[chapter].draft_ok]
+        if not remaining:
+            log("[Coordinator] Writer补偿完成，失败章节已补齐")
+            return []
+
+        time.sleep(CONFIG["coordinator"]["pause_between_batches"])
+
+    log(f"[WARNING] Writer补偿后仍未完成章节: {remaining}")
+    return remaining
+
+
+def run_parallel_agents(agent_name: str, start: int, end: int, agent_workers: int = None, notify: bool = True) -> list:
     global _active_writers, num_workers, review_workers
     total = end - start + 1
     if total <= 0:
@@ -346,48 +469,60 @@ def run_parallel_agents(agent_name: str, start: int, end: int, agent_workers: in
         ranges.append((s, e))
 
     log(f"[Coordinator] 并行启动 {len(ranges)} 个 {agent_name} 实例 (并发={use_workers})")
+    stage_name = "初稿" if agent_name == "writer.py" else "审查" if agent_name == "reviewer.py" else Path(agent_name).stem
+    if notify:
+        notify_stage(stage_name, "开始", start, end)
 
     if agent_name == "writer.py":
         _active_writers = len(ranges)
 
     procs = []
+    stream_threads = []
     script_file = resolve_script_path(agent_name)
     for s, e in ranges:
         cmd = [sys.executable, str(script_file), "--project", str(NOVELS_DIR), "--start", str(s), "--end", str(e)]
         log(f"[Coordinator] 执行: {' '.join(cmd)}")
         try:
             child_log = LOGS_DIR / f"{Path(agent_name).stem}_{s:04d}_{e:04d}.log"
-            lf = open(child_log, "a", encoding="utf-8")
-            proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT)
-            procs.append((s, e, proc, lf))
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            thread = threading.Thread(target=_stream_child_output, args=(proc, child_log), daemon=True)
+            thread.start()
+            stream_threads.append(thread)
+            procs.append((s, e, proc))
         except Exception as exc:
             log(f"[Coordinator] {agent_name} {s}-{e} 启动失败: {exc}")
-            procs.append((s, e, None, None))
+            procs.append((s, e, None))
 
     results = []
-    active = [(s, e, p, lf) for s, e, p, lf in procs if p is not None]
+    active = [(s, e, p) for s, e, p in procs if p is not None]
     while active:
         new_active = []
-        for s, e, proc, lf in active:
+        for s, e, proc in active:
             try:
                 ret = proc.poll()
                 if ret is not None:
-                    if lf:
-                        lf.close()
                     results.append((s, e, ret))
                     log(f"[Coordinator] {agent_name} {s}-{e} 完成 (rc={ret})")
                 else:
-                    new_active.append((s, e, proc, lf))
+                    new_active.append((s, e, proc))
             except Exception as exc:
-                if lf:
-                    lf.close()
                 log(f"[Coordinator] {agent_name} {s}-{e} 轮询异常: {exc}")
                 results.append((s, e, -1))
         active = new_active
         if active:
             time.sleep(3)
 
-    for s, e, p, lf in procs:
+    for thread in stream_threads:
+        thread.join(timeout=5)
+
+    for s, e, p in procs:
         if p is None:
             results.append((s, e, -1))
 
@@ -396,6 +531,18 @@ def run_parallel_agents(agent_name: str, start: int, end: int, agent_workers: in
 
     # 动态调整并发数
     adjust_workers(agent_name, results)
+    success_count = sum(1 for _, _, rc in results if rc == 0)
+    failed_count = len(results) - success_count
+    if notify:
+        notify_stage(
+            stage_name,
+            "完成" if failed_count == 0 else "异常",
+            start,
+            end,
+            processed=success_count,
+            failed=failed_count,
+            error="" if failed_count == 0 else f"{failed_count} 个子进程失败",
+        )
 
     return results
 
@@ -413,6 +560,14 @@ def check_rewrites(start: int, end: int) -> list:
                 rewrite_list.append(ch)
                 log(f"[Coordinator] 第{ch}章评分{score}， verdict: {verdict}，标记为需重写")
     return rewrite_list
+
+
+def all_reviews_finished(statuses: dict, start: int, end: int) -> bool:
+    for ch in range(start, end + 1):
+        status = statuses.get(ch)
+        if not status or not status.review_exists or status.review_status != "completed":
+            return False
+    return True
 
 
 def generate_summary_report():
@@ -480,9 +635,10 @@ def main():
     global _pusher_started
     if not _pusher_started:
         _pusher_started = True
-        pusher = threading.Thread(target=progress_pusher_thread, args=(120,), daemon=True)
+        push_interval = int(CONFIG["coordinator"].get("push_interval_seconds", 120))
+        pusher = threading.Thread(target=progress_pusher_thread, args=(push_interval,), daemon=True)
         pusher.start()
-        log("[Coordinator] 企业微信进度推送已启动（每2分钟）")
+        log(f"[Coordinator] 企业微信进度推送已启动（每{push_interval}秒）")
     else:
         log("[Coordinator] 企业微信进度推送线程已存在，跳过")
 
@@ -492,31 +648,16 @@ def main():
     batch_size = args.batch_size or CONFIG["coordinator"]["batch_size"]
     end_chapter = args.end or CONFIG["total_chapters"]
 
-    need_planner = not args.skip_planner and not check_all_files_exist()
+    need_planner = not args.skip_planner and not check_base_files_exist()
     if need_planner:
-        log("[Coordinator] 检测到必要文件缺失，启动Planner...")
-        if args.planner_parallel:
-            log("[Coordinator] 使用60 Agent并行生成大纲...")
-            rc = run_script("planner_parallel.py")
-            if rc != 0:
-                log("[ERROR] Planner并行执行失败，请检查日志")
-                return
-        else:
-            if run_planner() != 0:
-                log("[ERROR] Planner执行失败，请检查日志")
-                return
+        log("[Coordinator] 检测到世界观或角色档案缺失，启动Planner...")
+        if run_planner() != 0:
+            log("[ERROR] Planner执行失败，请检查日志")
+            return
         progress["planner_done"] = True
         save_progress(progress)
-    elif check_all_files_exist():
-        outline_count = 0
-        if OUTLINE_FILE.exists():
-            try:
-                with open(OUTLINE_FILE, "r", encoding="utf-8") as f:
-                    o = json.load(f)
-                outline_count = len(o.get("chapters", []))
-            except Exception:
-                pass
-        log(f"[Coordinator] 世界观、大纲({outline_count}章)、角色档案已存在")
+    elif check_base_files_exist():
+        log("[Coordinator] 世界观、角色档案已存在")
         progress["planner_done"] = True
         save_progress(progress)
 
@@ -524,16 +665,34 @@ def main():
         log("[ERROR] Planner未完成且跳过标志未设置")
         return
 
-    actual_outline_count = 0
-    if OUTLINE_FILE.exists():
-        try:
-            with open(OUTLINE_FILE, "r", encoding="utf-8") as f:
-                o = json.load(f)
-            actual_outline_count = max(ch.get("chapter_number", 0) for ch in o.get("chapters", [])) if o.get("chapters") else 0
-        except Exception:
-            pass
+    if not check_outline_complete():
+        if args.skip_planner:
+            log("[ERROR] 大纲未完成且设置了 --skip-planner，停止后续 Writer/Reviewer/Rewrite")
+            return
+        if args.planner_parallel:
+            log("[Coordinator] 使用批量Outliner并行生成大纲...")
+            notify_stage("大纲", "开始", 1, CONFIG["total_chapters"])
+            rc = run_script("planner_parallel.py")
+            outline_count = outline_completed_count(NOVELS_DIR, 1, CONFIG["total_chapters"])
+            notify_stage(
+                "大纲",
+                "完成" if rc == 0 else "异常",
+                1,
+                CONFIG["total_chapters"],
+                processed=outline_count,
+                failed=max(0, CONFIG["total_chapters"] - outline_count),
+                error="" if rc == 0 else f"退出码 {rc}",
+            )
+        else:
+            rc = run_outliner()
+        if rc != 0:
+            log("[ERROR] Outliner执行失败，请检查日志")
+            return
+        if not check_outline_complete():
+            log("[ERROR] 大纲仍未完成，停止后续 Writer/Reviewer/Rewrite")
+            return
 
-    end_chapter = min(end_chapter, actual_outline_count) if actual_outline_count > 0 else end_chapter
+    actual_outline_count = outline_completed_count(NOVELS_DIR, 1, CONFIG["total_chapters"])
     existing_statuses = scan_chapter_status(NOVELS_DIR, args.start, end_chapter)
     write_status_file(NOVELS_DIR, existing_statuses.values())
     first_invalid = next(
@@ -542,7 +701,7 @@ def main():
     )
     start_chapter = max(args.start, first_invalid)
 
-    log(f"[Coordinator] 生成范围: 第{start_chapter}-{end_chapter}章（大纲共{actual_outline_count}章），批次大小: {batch_size}")
+    log(f"[Coordinator] 生成范围: 第{start_chapter}-{end_chapter}章（单章大纲共{actual_outline_count}章），批次大小: {batch_size}")
 
     for batch_start in range(start_chapter, end_chapter + 1, batch_size):
         batch_end = min(batch_start + batch_size - 1, end_chapter)
@@ -576,9 +735,14 @@ def main():
                 log("[Coordinator] 配额仍然不足，生成暂停")
                 break
 
+        # 根据配额动态调整并发数
+        writer_workers, reviewer_workers = adjust_workers_by_quota(
+            batch_end - batch_start + 1, text_remaining, args.skip_review
+        )
+
         log(f"[Coordinator] ===== 开始第 {batch_start}-{batch_end} 章 =====")
 
-        writer_results = run_parallel_agents("writer.py", batch_start, batch_end)
+        writer_results = run_parallel_agents("writer.py", batch_start, batch_end, agent_workers=writer_workers, notify=False)
         failed_writers = [r for r in writer_results if r[2] != 0]
         if failed_writers:
             for s, e, rc in failed_writers:
@@ -586,11 +750,20 @@ def main():
 
         batch_statuses = scan_chapter_status(NOVELS_DIR, args.start, end_chapter)
         write_status_file(NOVELS_DIR, batch_statuses.values())
+        failed_writer_chapters = collect_failed_writer_chapters(writer_results, batch_statuses, batch_start, batch_end)
+        if failed_writer_chapters:
+            failed_writer_chapters = run_writer_repair_queue(failed_writer_chapters)
+            batch_statuses = scan_chapter_status(NOVELS_DIR, args.start, end_chapter)
+            write_status_file(NOVELS_DIR, batch_statuses.values())
+        progress["failed_chapters"] = failed_writer_chapters
         progress["last_generated_chapter"] = highest_contiguous(batch_statuses, args.start, "draft_ok")
         save_progress(progress)
 
-        if not args.skip_review:
-            reviewer_results = run_parallel_agents("reviewer.py", batch_start, batch_end)
+        if failed_writer_chapters:
+            log(f"[WARNING] 第 {batch_start}-{batch_end} 章存在未完成初稿，跳过本批 reviewer: {failed_writer_chapters}")
+
+        if not args.skip_review and not failed_writer_chapters:
+            reviewer_results = run_parallel_agents("reviewer.py", batch_start, batch_end, agent_workers=reviewer_workers)
             failed_reviewers = [r for r in reviewer_results if r[2] != 0]
             if failed_reviewers:
                 for s, e, rc in failed_reviewers:
@@ -613,12 +786,26 @@ def main():
         log(f"[Coordinator] 第 {batch_start}-{batch_end} 章完成，暂停{pause_seconds}秒...")
         time.sleep(pause_seconds)
 
-    if progress["rewrite_queue"] and not args.rewrite_only:
+    final_review_statuses = scan_chapter_status(NOVELS_DIR, args.start, end_chapter)
+    if progress["rewrite_queue"] and not all_reviews_finished(final_review_statuses, args.start, end_chapter):
+        log("[Coordinator] 审查未全部完成，暂不执行 Rewrite")
+
+    if progress["rewrite_queue"] and not args.rewrite_only and all_reviews_finished(final_review_statuses, args.start, end_chapter):
         log("=" * 60)
         log(f"[Coordinator] 处理重写队列: {len(progress['rewrite_queue'])} 章")
         log("=" * 60)
+        notify_stage("终稿重写", "开始", min(progress["rewrite_queue"]), max(progress["rewrite_queue"]))
         rc = run_script("rewrite_agent.py")
         log(f"[Coordinator] Rewrite Agent 完成 (rc={rc})")
+        notify_stage(
+            "终稿重写",
+            "完成" if rc == 0 else "异常",
+            args.start,
+            end_chapter,
+            processed=len(progress["rewrite_queue"]) if rc == 0 else 0,
+            failed=0 if rc == 0 else len(progress["rewrite_queue"]),
+            error="" if rc == 0 else f"退出码 {rc}",
+        )
 
         progress["rewrite_queue"] = []
         final_statuses = scan_chapter_status(NOVELS_DIR, args.start, end_chapter)
@@ -633,17 +820,13 @@ def main():
     log("=" * 60)
 
     title = get_book_title()
-    separator = "━━━━━━━━━━━━━━━━━━━━"
-    push_wechat(
-        f"📖 《{title}》生成任务完成! ({time.strftime('%Y-%m-%d %H:%M:%S')})\n"
-        f"{separator}\n"
-        f"📋 大纲: {CONFIG['total_chapters']}/{CONFIG['total_chapters']} 章\n"
-        f"✍ 初稿: {report['total_chapters']}/{CONFIG['total_chapters']} 章\n"
-        f"📝 字数: {report['total_words']:,}\n"
-        f"🔍 审查: {report['total_chapters']}/{CONFIG['total_chapters']} 章\n"
-        f"📤 终稿: {report['total_chapters']}/{CONFIG['total_chapters']} 章\n"
-        f"⭐ 平均评分: {report['average_score']:.2f}\n"
-        f"{separator}"
+    _push_task_complete(
+        config=CONFIG,
+        title=title,
+        total_chapters=CONFIG["total_chapters"],
+        total_words=report["total_words"],
+        avg_score=report["average_score"],
+        rewrite_count=report["rewrite_count"],
     )
 
 
@@ -656,22 +839,10 @@ if __name__ == "__main__":
         save_progress(progress)
         log("[Coordinator] 进度已保存，可断点续传")
         title = get_book_title()
-        separator = "━━━━━━━━━━━━━━━━━━━━"
-        push_wechat(
-            f"⚠️ 《{title}》生成任务中断 ({time.strftime('%Y-%m-%d %H:%M:%S')})\n"
-            f"{separator}\n"
-            f"进度已保存，可断点续传\n"
-            f"{separator}"
-        )
+        _push_interrupted(config=CONFIG, title=title, reason="用户中断")
     except Exception as e:
         log(f"[ERROR] 发生异常: {e}")
         import traceback
         log(traceback.format_exc())
         title = get_book_title()
-        separator = "━━━━━━━━━━━━━━━━━━━━"
-        push_wechat(
-            f"❌ 《{title}》生成任务异常 ({time.strftime('%Y-%m-%d %H:%M:%S')})\n"
-            f"{separator}\n"
-            f"错误: {str(e)[:200]}\n"
-            f"{separator}"
-        )
+        _push_error(config=CONFIG, title=title, error=str(e))

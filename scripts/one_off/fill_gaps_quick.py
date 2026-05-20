@@ -14,19 +14,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from core.mmx_client import call_mmx, MmxError
 from core.novel_config import load_config
+from core.workflow_state import list_outline_chapters, write_outline_chapters
 
 def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
-novels_dir = Path('D:/AiProject/Node/projects/novels8')
-outline_file = novels_dir / 'outline.json'
+ROOT_DIR = Path(__file__).resolve().parents[2]
+novels_dir = ROOT_DIR / 'projects' / 'novels8'
 config = load_config(novels_dir)
 
-with open(outline_file, 'r', encoding='utf-8') as f:
-    outline = json.load(f)
-
-chapters = outline.get('chapters', [])
-existing = {c.get('chapter_number', 0): c for c in chapters}
+existing = {c.get('chapter_number', 0): c for c in list_outline_chapters(novels_dir)}
 missing = [i for i in range(1, 2001) if i not in existing]
 
 intervals = []
@@ -78,9 +75,7 @@ for s, e in intervals:
     except Exception as ex:
         log(f"{s}-{e} 解析失败: {ex}")
 
-    # 保存
-    outline['chapters'] = sorted(existing.values(), key=lambda c: c.get('chapter_number', 0))
-    with open(outline_file, 'w', encoding='utf-8') as f:
-        json.dump(outline, f, ensure_ascii=False, indent=2)
+    # 保存为单章大纲文件
+    write_outline_chapters(novels_dir, {'chapters': existing.values()})
 
 log(f"完成，共 {len(existing)} 章")

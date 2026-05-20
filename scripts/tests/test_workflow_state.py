@@ -8,7 +8,16 @@ import sys
 TOOLS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS_DIR))
 
-from core.workflow_state import ChapterStatus, analyze_chapter_text, report_path, review_dir, scan_chapter_status
+from core.workflow_state import (
+    ChapterStatus,
+    analyze_chapter_text,
+    outline_completed_count,
+    outline_chapter_path,
+    outlines_complete,
+    report_path,
+    review_dir,
+    scan_chapter_status,
+)
 
 
 def chapter_text(words: int = 5000, title: str = "第一章 测试章节") -> str:
@@ -137,6 +146,25 @@ class WorkflowStateTest(unittest.TestCase):
             self.assertFalse(status.draft_ok)
             self.assertEqual(status.draft_grade, "hard_fail")
             self.assertIn("similar_paragraphs", status.failed_reason)
+
+    def test_outlines_complete_counts_single_chapter_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            outline_chapter_path(base, 1).parent.mkdir(parents=True)
+            outline_chapter_path(base, 1).write_text(
+                json.dumps({"chapter_number": 1, "title": "第一章"}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(outline_completed_count(base, 1, 2), 1)
+            self.assertFalse(outlines_complete(base, 1, 2))
+
+            outline_chapter_path(base, 2).write_text(
+                json.dumps({"chapter_number": 2, "title": "第二章"}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            self.assertTrue(outlines_complete(base, 1, 2))
 
 
 if __name__ == "__main__":

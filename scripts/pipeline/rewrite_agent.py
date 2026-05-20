@@ -24,8 +24,10 @@ from pathlib import Path
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
 from core.novel_config import configure_stdio, load_config
+from core.push_notifier import push_stage_complete
 from core.workflow_state import load_outline_chapter, outline_index_path, review_dir
-from core.workflow_state import is_valid_chapter_text, load_review_status, read_text_length
+from core.workflow_state import analyze_chapter_text, is_valid_chapter_text, load_review_status, read_text_length
+from core.workflow_state import scan_chapter_status, write_status_file, highest_contiguous, report_path
 
 configure_stdio()
 
@@ -38,6 +40,7 @@ OUTLINE_FILE = None
 CHARACTERS_FILE = None
 LOG_FILE = None
 CONFIG = None
+MAX_REWRITE_ATTEMPTS = 5
 
 
 def init_project(project_dir: str | Path) -> None:
@@ -88,6 +91,53 @@ def load_json(filepath: Path) -> dict:
         return {}
     with open(filepath, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def rewrite_attempt_dir(chapter_number: int) -> Path:
+    return NOVELS_DIR / "chapters" / "rewrite" / f"chapter_{chapter_number:04d}"
+
+
+def score_rewrite_attempt(content: str) -> dict:
+    word_count, grade, passed, issues = analyze_chapter_text(content)
+    score = 10.0 if passed else 0.0
+    if not passed:
+        if word_count >= 4500:
+            score += 5.0
+        elif word_count > 0:
+            score += min(4.0, word_count / 4500 * 4.0)
+        if grade == "warn":
+            score += 2.0
+        score -= min(3.0, len(issues) * 0.5)
+    return {
+        "word_count": word_count,
+        "grade": grade,
+        "passed": passed,
+        "issues": issues,
+        "score": round(max(0.0, min(10.0, score)), 2),
+    }
+
+
+def save_rewrite_attempt(chapter_number: int, attempt: int, content: str, review: dict) -> dict:
+    target_dir = rewrite_attempt_dir(chapter_number)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    text_file = target_dir / f"attempt_{attempt:02d}.txt"
+    review_file = target_dir / f"attempt_{attempt:02d}_review.json"
+    text_file.write_text(content, encoding="utf-8")
+    review_file.write_text(json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {
+        "attempt": attempt,
+        "content_file": str(text_file),
+        "review_file": str(review_file),
+        **review,
+    }
+
+
+def select_best_attempt(attempts: list[dict]) -> dict | None:
+    if not attempts:
+        return None
+    passed = [item for item in attempts if item.get("passed")]
+    candidates = passed or attempts
+    return max(candidates, key=lambda item: (item.get("score", 0), item.get("word_count", 0)))
 
 
 def rewrite_chapter(chapter_number: int, retry: int = 0) -> str:
@@ -232,31 +282,30 @@ def rewrite_chapter(chapter_number: int, retry: int = 0) -> str:
 
 请开始重写："""
 
-    log(f"[Rewrite] 正在重写第{chapter_number}章（初稿{len(draft_content)}字，评分{score}）...")
-    content = call_mmx(system, prompt, max_tokens=12000, temperature=0.75)
+    attempts = []
+    for attempt in range(1, MAX_REWRITE_ATTEMPTS + 1):
+        log(f"[Rewrite] 正在重写第{chapter_number}章（第{attempt}/{MAX_REWRITE_ATTEMPTS}次，初稿{len(draft_content)}字，评分{score}）...")
+        content = call_mmx(system, prompt, max_tokens=12000, temperature=0.75)
 
-    if not content:
-        if retry < 3:
-            log(f"[Rewrite] 第{chapter_number}章重写失败，重试({retry+1}/3)...")
+        if not content:
+            log(f"[Rewrite] 第{chapter_number}章第{attempt}次重写失败，无返回内容")
             time.sleep(CONFIG["writer"]["retry_delay"])
-            return rewrite_chapter(chapter_number, retry + 1)
-        log(f"[Rewrite] 第{chapter_number}章重写失败，已达最大重试次数")
-        return "failed"
+            continue
 
-    content = content.strip()
-    if content.startswith("```"):
-        lines = content.split("\n")
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        content = "\n".join(lines).strip()
+        content = content.strip()
+        if content.startswith("```"):
+            lines = content.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            content = "\n".join(lines).strip()
 
-    word_count = len(content)
+        word_count = len(content)
 
-    if word_count < 4500:
-        log(f"[Rewrite] 第{chapter_number}章字数不足({word_count}字)，尝试补充...")
-        supplement_prompt = f"""以下是一章小说的内容，但字数只有{word_count}字，需要扩展到至少4500字。
+        if word_count < 4500:
+            log(f"[Rewrite] 第{chapter_number}章第{attempt}次字数不足({word_count}字)，尝试补充...")
+            supplement_prompt = f"""以下是一章小说的内容，但字数只有{word_count}字，需要扩展到至少4500字。
 请在保持原有情节和风格的基础上，通过以下方式扩充：
 1. 增加环境描写的细节
 2. 扩展对话内容，让对话更完整
@@ -267,27 +316,98 @@ def rewrite_chapter(chapter_number: int, retry: int = 0) -> str:
 请直接在原文基础上扩充，输出完整的4500字以上版本：
 
 {content}"""
-        supplement = call_mmx(system, supplement_prompt, max_tokens=12000, temperature=0.7)
-        if supplement and len(supplement) > word_count:
-            content = supplement.strip()
-            word_count = len(content)
-            log(f"[Rewrite] 第{chapter_number}章扩充后{word_count}字")
+            supplement = call_mmx(system, supplement_prompt, max_tokens=12000, temperature=0.7)
+            if supplement and len(supplement) > word_count:
+                content = supplement.strip()
+                word_count = len(content)
+                log(f"[Rewrite] 第{chapter_number}章第{attempt}次扩充后{word_count}字")
 
-    if not is_valid_chapter_text(content):
-        if retry < 3:
-            log(f"[Rewrite] 第{chapter_number}章终稿字数不合格（{word_count}字），重试({retry+1}/3)...")
-            time.sleep(CONFIG["writer"]["retry_delay"])
-            return rewrite_chapter(chapter_number, retry + 1)
-        log(f"[Rewrite] 第{chapter_number}章终稿字数不合格（{word_count}字），保存并标记失败")
+        attempt_review = score_rewrite_attempt(content)
+        attempts.append(save_rewrite_attempt(chapter_number, attempt, content, attempt_review))
+        log(
+            f"[Rewrite] 第{chapter_number}章第{attempt}次评分{attempt_review['score']}，"
+            f"字数{attempt_review['word_count']}，通过={attempt_review['passed']}"
+        )
+        if attempt_review["passed"]:
+            break
+        time.sleep(CONFIG["writer"]["retry_delay"])
 
-    FINAL_DIR.mkdir(parents=True, exist_ok=True)
-    with open(final_file, "w", encoding="utf-8") as f:
-        f.write(content)
-
-    log(f"[Rewrite] 第{chapter_number}章终稿已保存（{word_count}字） -> {final_file}")
-    if not is_valid_chapter_text(content):
+    best = select_best_attempt(attempts)
+    if not best:
+        log(f"[Rewrite] 第{chapter_number}章重写失败，{MAX_REWRITE_ATTEMPTS}次均无有效内容")
         return "failed"
-    return "success"
+
+    selected_content = Path(best["content_file"]).read_text(encoding="utf-8")
+    FINAL_DIR.mkdir(parents=True, exist_ok=True)
+    final_file.write_text(selected_content, encoding="utf-8")
+
+    meta = {
+        "chapter": chapter_number,
+        "max_attempts": MAX_REWRITE_ATTEMPTS,
+        "selected_attempt": best["attempt"],
+        "selected_reason": "quality_passed" if best.get("passed") else "best_score_fallback",
+        "attempts": attempts,
+    }
+    meta_file = rewrite_attempt_dir(chapter_number) / "rewrite_meta.json"
+    meta_file.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    log(
+        f"[Rewrite] 第{chapter_number}章终稿已保存（选用第{best['attempt']}次，"
+        f"评分{best.get('score')}，{best.get('word_count')}字） -> {final_file}"
+    )
+    return "success" if best.get("passed") else "best_effort"
+
+
+def _refresh_status(start: int, end: int) -> None:
+    """扫描处理过的章节，增量更新 chapter_status.json 和 progress.json"""
+    try:
+        log(f"[Rewrite] 刷新状态文件 ({start}-{end})...")
+        statuses = scan_chapter_status(NOVELS_DIR, start, end, use_cache=False)
+        write_status_file(NOVELS_DIR, statuses.values())
+
+        progress_file = report_path(NOVELS_DIR, "progress.json")
+        if progress_file.exists():
+            with open(progress_file, "r", encoding="utf-8") as f:
+                progress = json.load(f)
+        else:
+            progress = {
+                "planner_done": True,
+                "last_generated_chapter": 0,
+                "last_reviewed_chapter": 0,
+                "failed_chapters": [],
+                "rewrite_queue": [],
+            }
+
+        all_statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"], use_cache=False)
+        progress["last_reviewed_chapter"] = highest_contiguous(all_statuses, 1, "review_ok")
+
+        # 清理 rewrite_queue：移除已有终稿的章节
+        queue = set(progress.get("rewrite_queue", []))
+        for ch in range(start, end + 1):
+            key = f"{ch:04d}"
+            s = all_statuses.get(ch)
+            if s and s.final_ok and ch in queue:
+                queue.discard(ch)
+        progress["rewrite_queue"] = sorted(queue)
+
+        progress_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(progress_file, "w", encoding="utf-8") as f:
+            json.dump(progress, f, ensure_ascii=False, indent=2)
+
+        log(f"[Rewrite] 状态刷新完成，last_reviewed_chapter={progress['last_reviewed_chapter']}, rewrite_queue={len(progress['rewrite_queue'])}")
+    except Exception as e:
+        log(f"[Rewrite] 状态刷新失败: {e}")
+
+
+def _get_book_title() -> str:
+    title = "书生武道通神"
+    if WORLD_FILE.exists():
+        try:
+            with open(WORLD_FILE, "r", encoding="utf-8") as f:
+                title = json.load(f).get("title", title)
+        except Exception:
+            pass
+    return title
 
 
 def get_rewrite_candidates() -> list:
@@ -347,8 +467,17 @@ def main():
             print(f"  第{num}章: 评分{score} [{verdict}]")
         return
 
+    title = _get_book_title()
+
     if args.chapter > 0:
-        rewrite_chapter(args.chapter)
+        result = rewrite_chapter(args.chapter)
+        _refresh_status(args.chapter, args.chapter)
+        push_stage_complete(
+            config=CONFIG, title=title, stage="终稿",
+            start_chapter=args.chapter, end_chapter=args.chapter,
+            processed=1 if result in ("success", "best_effort", "copied", "exists") else 0,
+            failed=1 if result == "failed" else 0,
+        )
         return
 
     if args.all:
@@ -394,7 +523,7 @@ def main():
             futures = {executor.submit(process_single, item): item for item in chapters_to_process}
             for future in concurrent.futures.as_completed(futures):
                 ch, result = future.result()
-                if result in ("success", "copied"):
+                if result in ("success", "best_effort", "copied"):
                     completed += 1
                 elif result == "failed":
                     failed.append(ch)
@@ -403,6 +532,12 @@ def main():
         log(f"[Rewrite] 全部完成: 成功{completed}章, 失败{len(failed)}章")
         if failed:
             log(f"失败章节: {failed}")
+        _refresh_status(args.start, end)
+        push_stage_complete(
+            config=CONFIG, title=title, stage="终稿",
+            start_chapter=args.start, end_chapter=end,
+            processed=completed, failed=len(failed),
+        )
         return
 
     candidates = get_rewrite_candidates()
@@ -422,7 +557,7 @@ def main():
             ch = futures[future]
             try:
                 result = future.result()
-                if result == "success":
+                if result in ("success", "best_effort"):
                     completed += 1
                 elif result == "failed":
                     failed.append(ch)
@@ -433,6 +568,16 @@ def main():
     log(f"[Rewrite] 完成: 成功{completed}章, 失败{len(failed)}章")
     if failed:
         log(f"失败: {failed}")
+
+    # 刷新状态：使用 candidates 的章节范围
+    if candidates:
+        ch_nums = [num for num, _, _ in candidates]
+        _refresh_status(min(ch_nums), max(ch_nums))
+        push_stage_complete(
+            config=CONFIG, title=title, stage="终稿重写",
+            start_chapter=min(ch_nums), end_chapter=max(ch_nums),
+            processed=completed, failed=len(failed),
+        )
 
 
 if __name__ == "__main__":

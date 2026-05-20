@@ -17,21 +17,19 @@ import time
 from pathlib import Path
 
 from core.novel_config import load_config
-from core.workflow_state import outline_index_path, write_outline_chapters
+from core.workflow_state import list_outline_chapters
 from tool_paths import script_path
 
 NOVELS_DIR = None
 SCRIPTS_DIR = None
-OUTLINE_FILE = None
 CONFIG = None
 ALL_SEGMENTS = []
 
 
 def init_project(project_dir: str | Path) -> None:
-    global NOVELS_DIR, SCRIPTS_DIR, OUTLINE_FILE, CONFIG, ALL_SEGMENTS
+    global NOVELS_DIR, SCRIPTS_DIR, CONFIG, ALL_SEGMENTS
     NOVELS_DIR = Path(project_dir).resolve()
     SCRIPTS_DIR = Path(__file__).parent
-    OUTLINE_FILE = outline_index_path(NOVELS_DIR)
     CONFIG = load_config(NOVELS_DIR)
 
     total_chapters = CONFIG["total_chapters"]
@@ -68,10 +66,10 @@ def check_segment(start: int, end: int, outfile: Path) -> bool:
     return False
 
 
-def run_planner(start: int, end: int, outfile: Path) -> int:
-    """运行planner生成缺失段"""
+def run_outliner(start: int, end: int, outfile: Path) -> int:
+    """运行Outliner生成缺失段"""
     cmd = [
-        sys.executable, str(script_path("planner.py")),
+        sys.executable, str(script_path("outliner.py")),
         "--project", str(NOVELS_DIR),
         "--start", str(start), "--end", str(end),
         "--outline-file", str(outfile)
@@ -82,9 +80,9 @@ def run_planner(start: int, end: int, outfile: Path) -> int:
 
 
 def merge_outlines():
-    """合并所有段文件到 outline.json"""
-    log("合并所有大纲段...")
-    all_chapters = []
+    """汇总段文件数量，不再生成聚合大纲文件。"""
+    log("汇总所有大纲段...")
+    all_chapters = list_outline_chapters(NOVELS_DIR)
 
     for start, end, outfile in ALL_SEGMENTS:
         if not outfile.exists():
@@ -107,13 +105,8 @@ def merge_outlines():
             unique.append(ch)
     unique.sort(key=lambda ch: ch.get("chapter_number", 0))
 
-    outline = {"chapters": unique}
-    with open(OUTLINE_FILE, "w", encoding="utf-8") as f:
-        json.dump(outline, f, ensure_ascii=False, indent=2)
-    write_outline_chapters(NOVELS_DIR, outline)
-
     total = CONFIG["total_chapters"]
-    log(f"合并完成: {len(unique)}/{total} 章")
+    log(f"汇总完成: {len(unique)}/{total} 章")
     return len(unique)
 
 
@@ -166,7 +159,7 @@ def main():
         results = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(batch)) as executor:
             futures = {
-                executor.submit(run_planner, s, e, f): (s, e)
+                executor.submit(run_outliner, s, e, f): (s, e)
                 for s, e, f in batch
             }
             for future in concurrent.futures.as_completed(futures):

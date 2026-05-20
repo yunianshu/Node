@@ -16,12 +16,15 @@ import time
 import urllib.request
 from pathlib import Path
 
+from core.push_notifier import build_progress_message
+from core.workflow_state import list_outline_chapters
+
 # 修复 Windows 控制台 UTF-8 编码
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 
 # 默认配置
-DEFAULT_ROOT = Path("D:/AiProject/Node")
+DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_WEBHOOK = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=22ea4574-b1f0-4c36-af2d-b13c6c2d471b"
 
 
@@ -36,17 +39,15 @@ def discover_books(root_dir):
             continue
         if entry.name in ("audio", "logs", "scripts", "node_modules", ".claude"):
             continue
-        outline_file = entry / "outline.json"
         chapters_dir = entry / "chapters"
-        if not outline_file.exists() or not chapters_dir.exists():
+        outlines = list_outline_chapters(entry)
+        if not outlines or not chapters_dir.exists():
             continue
         try:
-            with open(outline_file, "r", encoding="utf-8") as f:
-                outline = json.load(f)
-            chapter_count = len(outline.get("chapters", []))
+            chapter_count = len(outlines)
             # 获取书名
             book_title = entry.name
-            first_ch = outline.get("chapters", [{}])[0]
+            first_ch = outlines[0] if outlines else {}
             if first_ch and "series_title" in first_ch:
                 book_title = first_ch["series_title"]
             elif first_ch and "title" in first_ch:
@@ -99,19 +100,12 @@ def get_book_progress(book_dir):
             pass
 
     # 大纲
-    outline_file = book_dir / "outline.json"
-    if outline_file.exists():
-        try:
-            with open(outline_file, "r", encoding="utf-8") as f:
-                outline = json.load(f)
-            chapters = outline.get("chapters", [])
-            result["outline"] = len(chapters)
-            result["outline_total"] = len(chapters)
-            result["draft_total"] = len(chapters)
-            result["final_total"] = len(chapters)
-            result["review_total"] = len(chapters)
-        except Exception:
-            pass
+    chapters = list_outline_chapters(book_dir)
+    result["outline"] = len(chapters)
+    result["outline_total"] = len(chapters)
+    result["draft_total"] = len(chapters)
+    result["final_total"] = len(chapters)
+    result["review_total"] = len(chapters)
 
     # 初稿
     draft_dir = book_dir / "chapters" / "draft"
@@ -165,19 +159,16 @@ def format_progress_line(label, current, total):
 def build_single_message(book):
     """构建单本小说的推送消息"""
     p = get_book_progress(book["path"])
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
-
-    msg = f"【{p['title']}】生成进度 ({now})\n"
-    msg += "━━━━━━━━━━━━━━━━━━━━\n"
-    msg += f"📋 大纲: {p['outline']}/{p['outline_total']} 章\n"
-    msg += f"✍ 初稿: {p['draft']}/{p['draft_total']} 章\n"
-    msg += f"📝 字数: {p['total_words']:,}\n"
-    msg += f"🔍 审查: {p['review']}/{p['review_total']} 章\n"
-    msg += f"📤 终稿: {p['final']}/{p['final_total']} 章\n"
-    if p["avg_score"] > 0:
-        msg += f"⭐ 平均评分: {p['avg_score']:.2f}\n"
-    msg += "━━━━━━━━━━━━━━━━━━━━"
-    return msg
+    return build_progress_message(
+        title=p["title"],
+        outline=p["outline"],
+        draft=p["draft"],
+        reviewed=p["review"],
+        final=p["final"],
+        total_words=p["total_words"],
+        total_chapters=p["outline_total"],
+        avg_score=p["avg_score"] if p["avg_score"] > 0 else None,
+    )
 
 
 def build_all_message(books):

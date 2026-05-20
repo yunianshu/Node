@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 from core.novel_config import load_config
-from core.workflow_state import outline_index_path, write_outline_chapters
+from core.workflow_state import outline_completed_count
 from tool_paths import script_path
 
 NOVELS_DIR = None
@@ -53,7 +53,7 @@ def run_batch(start, end):
 
     log(f"开始生成 {start}-{end} 章...")
     cmd = [
-        sys.executable, str(script_path("planner.py")),
+        sys.executable, str(script_path("outliner.py")),
         "--project", str(NOVELS_DIR),
         "--start", str(start), "--end", str(end),
         "--outline-file", str(outline_file)
@@ -84,10 +84,6 @@ def merge_outlines():
             seen.add(num)
             unique.append(ch)
 
-    outline = {"chapters": unique}
-    with open(outline_index_path(NOVELS_DIR), "w", encoding="utf-8") as f:
-        json.dump(outline, f, ensure_ascii=False, indent=2)
-    write_outline_chapters(NOVELS_DIR, outline)
     log(f"合并完成: {len(unique)}/{CONFIG['total_chapters']} 章")
 
 
@@ -105,7 +101,7 @@ def main():
     init_project(args.project)
 
     log("=" * 60)
-    log("Planner Batches - 分批生成大纲")
+    log("Outliner Batches - 分批生成大纲")
     log(f"项目: {NOVELS_DIR}")
     log("=" * 60)
 
@@ -124,7 +120,8 @@ def main():
             log(f"批次 {start}-{end} 失败")
 
     log(f"批次完成: {success} 成功, {fail} 失败")
-    merge_outlines()
+    total = outline_completed_count(NOVELS_DIR, 1, CONFIG["total_chapters"])
+    log(f"单章大纲文件: {total}/{CONFIG['total_chapters']} 章")
     log("全部完成")
 
 

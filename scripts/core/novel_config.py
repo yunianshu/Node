@@ -42,10 +42,10 @@ DEFAULT_CONFIG = {
         "max_consecutive_failures": 5,
     },
     "quality": {
-        "min_chapter_words": 4500,
-        "max_chapter_words": 5500,
-        "warn_min_chapter_words": 4300,
-        "warn_max_chapter_words": 5800,
+        "min_chapter_words": 5000,
+        "max_chapter_words": 12000,
+        "warn_min_chapter_words": 4800,
+        "warn_max_chapter_words": 15000,
         "hard_fail_min_chapter_words": 3000,
         "min_paragraphs": 20,
         "max_duplicate_paragraph_ratio": 0.25,
@@ -56,6 +56,26 @@ DEFAULT_CONFIG = {
         "title_keywords": ["章", "节", "回"],
     },
 }
+
+STANDARD_PROJECT_DIRS = (
+    "chapters/outline",
+    "chapters/draft",
+    "chapters/review",
+    "chapters/final",
+    "logs",
+    "media/audio",
+    "media/images",
+    "media/music",
+    "origin",
+    "reports",
+)
+
+
+def ensure_project_structure(project_dir: Path) -> None:
+    """确保小说项目目录符合统一结构。"""
+    project_dir.mkdir(parents=True, exist_ok=True)
+    for rel in STANDARD_PROJECT_DIRS:
+        (project_dir / rel).mkdir(parents=True, exist_ok=True)
 
 
 def get_webhook_url(config: dict) -> str:
@@ -89,6 +109,7 @@ def deep_merge(base: dict, override: dict) -> dict:
 
 
 def load_config(project_dir: Path) -> dict:
+    ensure_project_structure(project_dir)
     config_file = project_dir / "config.json"
     if not config_file.exists():
         return copy.deepcopy(DEFAULT_CONFIG)

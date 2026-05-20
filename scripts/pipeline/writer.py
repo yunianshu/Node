@@ -18,6 +18,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
 from core.novel_config import configure_stdio, load_config
@@ -83,6 +84,32 @@ def load_json(filepath: Path) -> dict:
         return json.load(f)
 
 
+def _cjk_count(text: str) -> int:
+    return sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
+
+
+def _repair_latin1_gbk_mojibake(text: str) -> str:
+    if not text or _cjk_count(text) > 0:
+        return text
+    try:
+        repaired = text.encode("latin1").decode("gbk")
+    except UnicodeError:
+        return text
+    if _cjk_count(repaired) > _cjk_count(text):
+        return repaired
+    return text
+
+
+def normalize_outline_text(value: Any) -> Any:
+    if isinstance(value, str):
+        return _repair_latin1_gbk_mojibake(value)
+    if isinstance(value, list):
+        return [normalize_outline_text(item) for item in value]
+    if isinstance(value, dict):
+        return {key: normalize_outline_text(item) for key, item in value.items()}
+    return value
+
+
 def generate_chapter(chapter_number: int, retry: int = 0) -> str:
     chapter_file = CHAPTERS_DIR / f"chapter_{chapter_number:04d}.txt"
 
@@ -96,14 +123,14 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
     world = load_json(WORLD_FILE)
     characters = load_json(CHARACTERS_FILE)
 
-    chapter_outline = load_outline_chapter(NOVELS_DIR, chapter_number)
+    chapter_outline = normalize_outline_text(load_outline_chapter(NOVELS_DIR, chapter_number))
 
     if not chapter_outline:
         log(f"[Writer] 第{chapter_number}章大纲不存在")
         return "no_outline"
 
-    prev_summary = load_outline_chapter(NOVELS_DIR, chapter_number - 1).get("summary", "")
-    next_summary = load_outline_chapter(NOVELS_DIR, chapter_number + 1).get("summary", "")
+    prev_summary = normalize_outline_text(load_outline_chapter(NOVELS_DIR, chapter_number - 1)).get("summary", "")
+    next_summary = normalize_outline_text(load_outline_chapter(NOVELS_DIR, chapter_number + 1)).get("summary", "")
 
     prev_ending = ""
     if chapter_number > 1:
@@ -263,8 +290,10 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
     content = call_mmx(system, prompt, max_tokens=8192, temperature=0.7)
 
     if not content:
-        if retry < 3:
-            log(f"[Writer] 第{chapter_number}章生成失败，重试({retry+1}/3)...")
+        log(f"[Writer] 第{chapter_number}章收到空响应")
+        max_retry = CONFIG["writer"].get("max_retries", 5)
+        if retry < max_retry:
+            log(f"[Writer] 第{chapter_number}章生成失败，重试({retry+1}/{max_retry})...")
             time.sleep(CONFIG["writer"]["retry_delay"])
             return generate_chapter(chapter_number, retry + 1)
         log(f"[Writer] 第{chapter_number}章生成失败，已达最大重试次数")

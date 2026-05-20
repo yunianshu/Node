@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 from core.novel_config import load_config
-from core.workflow_state import outline_index_path
+from core.workflow_state import outline_exists
 from tool_paths import script_path
 
 NOVELS_DIR = None
@@ -36,11 +36,11 @@ def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def run_planner(start, end):
+def run_outliner(start, end):
     outline_file = NOVELS_DIR / f"outline_fill_{start:04d}_{end:04d}.json"
-    log_file = NOVELS_DIR / f"logs/planner_fill_{start}_{end}.log"
+    log_file = NOVELS_DIR / f"logs/outliner_fill_{start}_{end}.log"
     cmd = [
-        sys.executable, str(script_path("planner.py")),
+        sys.executable, str(script_path("outliner.py")),
         "--project", str(NOVELS_DIR),
         "--start", str(start), "--end", str(end),
         "--outline-file", str(outline_file)
@@ -69,11 +69,7 @@ def main():
     log(f"项目: {NOVELS_DIR}")
     log("=" * 60)
 
-    with open(outline_index_path(NOVELS_DIR), "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    seen = set(ch.get("chapter_number", 0) for ch in data.get("chapters", []))
-    missing = [i for i in range(1, CONFIG["total_chapters"] + 1) if i not in seen]
+    missing = [i for i in range(1, CONFIG["total_chapters"] + 1) if not outline_exists(NOVELS_DIR, i)]
     log(f"缺失: {len(missing)} 章")
 
     batches = []
@@ -98,7 +94,7 @@ def main():
     while idx < len(batches) or active:
         while len(active) < max_concurrent and idx < len(batches):
             s, e = batches[idx]
-            proc = run_planner(s, e)
+            proc = run_outliner(s, e)
             active.append((s, e, proc))
             idx += 1
             time.sleep(3)

@@ -11,6 +11,7 @@ SCRIPT_PATHS = {
     "preflight_check.py": TOOLS_ROOT / "cli" / "preflight_check.py",
     "coordinator.py": TOOLS_ROOT / "pipeline" / "coordinator.py",
     "planner.py": TOOLS_ROOT / "pipeline" / "planner.py",
+    "outliner.py": TOOLS_ROOT / "pipeline" / "outliner.py",
     "planner_parallel.py": TOOLS_ROOT / "pipeline" / "planner_parallel.py",
     "writer.py": TOOLS_ROOT / "pipeline" / "writer.py",
     "reviewer.py": TOOLS_ROOT / "pipeline" / "reviewer.py",

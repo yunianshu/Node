@@ -31,6 +31,27 @@ class ConfigAndMmxTest(unittest.TestCase):
             self.assertIn("quality", cfg)
             self.assertFalse(cfg["quality"]["title_required"])
 
+    def test_load_config_creates_standard_project_structure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+
+            load_config(base)
+
+            expected_dirs = [
+                "chapters/outline",
+                "chapters/draft",
+                "chapters/review",
+                "chapters/final",
+                "logs",
+                "media/audio",
+                "media/images",
+                "media/music",
+                "origin",
+                "reports",
+            ]
+            for rel in expected_dirs:
+                self.assertTrue((base / rel).is_dir(), rel)
+
     def test_get_webhook_url_prefers_env(self):
         old = os.environ.get("NOVEL_WEBHOOK_URL")
         os.environ["NOVEL_WEBHOOK_URL"] = "https://example.test/webhook"

@@ -21,8 +21,9 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, unquote
 
-from core.workflow_state import outline_index_path
+from core.workflow_state import list_outline_chapters
 
+DEFAULT_NOVELS_PARENT_DIR = Path(__file__).resolve().parents[2] / "projects"
 NOVELS_PARENT = None
 PORT = 8889
 
@@ -967,14 +968,12 @@ def discover_books(parent_dir):
             continue
         if entry.name in ("audio", "logs", "scripts", "node_modules"):
             continue
-        outline_file = outline_index_path(entry)
         chapters_dir = entry / "chapters"
-        if not outline_file.exists() or not chapters_dir.exists():
+        outlines = list_outline_chapters(entry)
+        if not outlines or not chapters_dir.exists():
             continue
         try:
-            with open(outline_file, "r", encoding="utf-8") as f:
-                outline = json.load(f)
-            chapter_count = len(outline.get("chapters", []))
+            chapter_count = len(outlines)
             total_words = 0
             # 优先统计 final/ 目录，其次 draft/，最后 chapters/
             for src_dir in (entry / "chapters" / "final", entry / "chapters" / "draft", chapters_dir):
@@ -987,7 +986,7 @@ def discover_books(parent_dir):
                         break
 
             book_title = entry.name
-            first_ch = outline.get("chapters", [{}])[0]
+            first_ch = outlines[0] if outlines else {}
             if first_ch and "series_title" in first_ch:
                 book_title = first_ch["series_title"]
 
@@ -1074,15 +1073,15 @@ def make_handler(parent_dir, port):
                 if len(parts) >= 4:
                     book_id = unquote(parts[3])
                     book_dir = Path(parent_dir) / book_id
-                    outline_file = outline_index_path(book_dir)
                     chapters_dir = book_dir / "chapters"
+                    outlines = list_outline_chapters(book_dir)
 
-                    if not outline_file.exists():
+                    if not outlines:
                         self.send_json({"error": "Book not found"})
                         return
 
                     if len(parts) >= 5 and parts[4] == "chapters":
-                        self.send_json(self.get_chapters(outline_file))
+                        self.send_json(self.get_chapters(book_dir))
                         return
 
                     if len(parts) >= 6 and parts[4] == "chapter":
@@ -1141,14 +1140,9 @@ def make_handler(parent_dir, port):
             self.end_headers()
             self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
 
-        def get_chapters(self, outline_file):
+        def get_chapters(self, book_dir):
             results = []
-            try:
-                with open(outline_file, "r", encoding="utf-8") as f:
-                    outline = json.load(f)
-            except Exception:
-                return results
-            for ch in outline.get("chapters", []):
+            for ch in list_outline_chapters(book_dir):
                 num = ch.get("chapter_number", 0)
                 title = ch.get("title", "")
                 results.append({"number": num, "title": title})
@@ -1208,7 +1202,7 @@ def make_handler(parent_dir, port):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--novels-dir", "-d", type=str,
-                        default=os.getenv("NOVELS_PARENT_DIR", "D:/AiProject/Node/projects"),
+                        default=os.getenv("NOVELS_PARENT_DIR", str(DEFAULT_NOVELS_PARENT_DIR)),
                         help="小说父目录（包含多个小说项目）")
     parser.add_argument("--port", type=int, default=8889, help="服务端口")
     args = parser.parse_args()

@@ -1,3 +1,0 @@
-{
-  "content": "```json\n{\n  \"chapter_number\": 98,\n  \"overall_score\": 8.5,\n  \"verdict\": \"通过\",\n  \"scores\": {\n    \"writing_quality\": 8.5,\n    \"plot_coherence\": 8,\n    \"character_consistency\": 8.5,\n    \"scene_description\": 8,\n    \"dialogue_quality\": 7.5,\n    \"outline_adherence\": 9"
-}

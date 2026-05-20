@@ -1,0 +1,14 @@
+{
+  "chapter_number": 1590,
+  "status": "failed",
+  "local_analysis": {
+    "word_count": 6075,
+    "word_count_ok": false,
+    "paragraph_count": 174,
+    "dialogue_marker_count": 84,
+    "issues": [
+      "字数超过5500字，当前6075字"
+    ],
+    "local_ok": false
+  }
+}

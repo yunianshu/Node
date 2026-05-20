@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""企业微信机器人进度推送"""
+"""企业微信机器人进度推送 - 统一格式版本"""
 
 from pathlib import Path
 import sys
@@ -11,36 +11,26 @@ if str(TOOLS_ROOT) not in sys.path:
 import argparse
 import json
 import os
-import urllib.request
 import time
 from pathlib import Path
 
-from core.novel_config import get_webhook_url, load_config
-from core.workflow_state import outline_index_path, scan_chapter_status
+from core.novel_config import load_config
+from core.push_notifier import push_progress
+from core.workflow_state import outline_completed_count, scan_chapter_status
 
 NOVELS_DIR = None
 CONFIG = None
-WEBHOOK_URL = ""
 
 
 def init_project(project_dir: str | Path) -> None:
-    global NOVELS_DIR, CONFIG, WEBHOOK_URL
+    global NOVELS_DIR, CONFIG
     NOVELS_DIR = Path(project_dir).resolve()
     CONFIG = load_config(NOVELS_DIR)
-    WEBHOOK_URL = get_webhook_url(CONFIG)
 
 
-def get_progress():
-    outline_file = outline_index_path(NOVELS_DIR)
-    outline_count = 0
-    if outline_file.exists():
-        try:
-            with open(outline_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            chapters = data.get("chapters", [])
-            outline_count = len(chapters)
-        except Exception:
-            pass
+def get_progress_data():
+    """获取进度数据"""
+    outline_count = outline_completed_count(NOVELS_DIR, 1, CONFIG["total_chapters"])
 
     statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"])
     draft_count = sum(1 for s in statuses.values() if s.draft_exists)
@@ -48,34 +38,29 @@ def get_progress():
     final_count = sum(1 for s in statuses.values() if s.final_ok)
     total_words = sum(s.draft_words for s in statuses.values() if s.draft_exists)
     scores = [s.review_score for s in statuses.values() if s.review_score is not None]
-    avg_score = sum(scores) / len(scores) if scores else 0
+    avg_score = sum(scores) / len(scores) if scores else None
 
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
-    msg = f"""生成任务完成! ({now})
-
-━━━━━━━━━━━━━━━━━━━━
-大纲: {outline_count}/{CONFIG['total_chapters']} 章
-初稿: {draft_count}/{CONFIG['total_chapters']} 章
-字数: {total_words:,}
-审查: {review_count}/{CONFIG['total_chapters']} 章
-终稿: {final_count}/{CONFIG['total_chapters']} 章
-平均评分: {avg_score:.2f}
-━━━━━━━━━━━━━━━━━━━━"""
-
-    return msg
+    return {
+        "outline": outline_count,
+        "draft": draft_count,
+        "reviewed": review_count,
+        "final": final_count,
+        "total_words": total_words,
+        "avg_score": avg_score,
+    }
 
 
-def send_wechat(msg: str):
-    if not WEBHOOK_URL:
-        print("警告: 未配置 webhook_url，跳过推送")
-        return ""
-    data = json.dumps({"msgtype": "text", "text": {"content": msg}}, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(WEBHOOK_URL, data=data, headers={"Content-Type": "application/json"}, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.read().decode("utf-8")
-    except Exception as e:
-        return str(e)
+def _get_book_title():
+    """获取书名，从 world.json 读取"""
+    world_file = NOVELS_DIR / "world.json"
+    if world_file.exists():
+        try:
+            with open(world_file, "r", encoding="utf-8") as f:
+                world = json.load(f)
+            return world.get("title", NOVELS_DIR.name)
+        except Exception:
+            pass
+    return NOVELS_DIR.name
 
 
 def main():
@@ -90,9 +75,23 @@ def main():
         sys.exit(1)
 
     init_project(args.project)
-    msg = get_progress()
-    result = send_wechat(msg)
-    print(result)
+
+    p = get_progress_data()
+    title = _get_book_title()
+
+    ok = push_progress(
+        config=CONFIG,
+        title=title,
+        outline=p["outline"],
+        draft=p["draft"],
+        reviewed=p["reviewed"],
+        final=p["final"],
+        total_words=p["total_words"],
+        total_chapters=CONFIG["total_chapters"],
+        active_writers=0,
+        avg_score=p["avg_score"],
+    )
+    print("推送成功" if ok else "推送失败")
 
 
 if __name__ == "__main__":

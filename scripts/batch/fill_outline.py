@@ -17,11 +17,10 @@ import time
 from pathlib import Path
 
 from core.novel_config import load_config
-from core.workflow_state import outline_index_path, write_outline_chapters
+from core.workflow_state import list_outline_chapters, outline_completed_count
 from tool_paths import script_path
 
 NOVELS_DIR = None
-OUTLINE_FILE = None
 SCRIPTS_DIR = None
 CONFIG = None
 
@@ -29,9 +28,8 @@ MISSING_RANGES = []
 
 
 def init_project(project_dir: str | Path) -> None:
-    global NOVELS_DIR, OUTLINE_FILE, SCRIPTS_DIR, CONFIG
+    global NOVELS_DIR, SCRIPTS_DIR, CONFIG
     NOVELS_DIR = Path(project_dir).resolve()
-    OUTLINE_FILE = outline_index_path(NOVELS_DIR)
     SCRIPTS_DIR = Path(__file__).parent
     CONFIG = load_config(NOVELS_DIR)
 
@@ -41,10 +39,10 @@ def log(msg: str):
     print(f"[{timestamp}] {msg}")
 
 
-def run_planner(start: int, end: int) -> int:
+def run_outliner(start: int, end: int) -> int:
     outfile = NOVELS_DIR / f"outline_part_{start:04d}_{end:04d}.json"
     cmd = [
-        sys.executable, str(script_path("planner.py")),
+        sys.executable, str(script_path("outliner.py")),
         "--project", str(NOVELS_DIR),
         "--start", str(start), "--end", str(end),
         "--outline-file", str(outfile)
@@ -58,10 +56,7 @@ def merge_outlines():
     log("合并所有大纲段...")
     all_chapters = []
 
-    if OUTLINE_FILE.exists():
-        with open(OUTLINE_FILE, "r", encoding="utf-8") as f:
-            outline = json.load(f)
-        all_chapters.extend(outline.get("chapters", []))
+    all_chapters.extend(list_outline_chapters(NOVELS_DIR))
 
     for part_file in sorted(NOVELS_DIR.glob("outline_part_*.json")):
         try:
@@ -80,11 +75,6 @@ def merge_outlines():
             seen.add(num)
             unique.append(ch)
     unique.sort(key=lambda ch: ch.get("chapter_number", 0))
-
-    outline = {"chapters": unique}
-    with open(OUTLINE_FILE, "w", encoding="utf-8") as f:
-        json.dump(outline, f, ensure_ascii=False, indent=2)
-    write_outline_chapters(NOVELS_DIR, outline)
 
     log(f"合并完成: {len(unique)}/{CONFIG['total_chapters']} 章")
     return len(unique)
@@ -109,7 +99,7 @@ def main():
     print("=" * 60)
 
     for start, end in MISSING_RANGES:
-        rc = run_planner(start, end)
+        rc = run_outliner(start, end)
         if rc != 0:
             log(f"第{start}-{end}章生成失败 (rc={rc})")
         time.sleep(2)

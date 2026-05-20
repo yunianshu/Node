@@ -1,10 +1,24 @@
 {
   "planner_done": true,
-  "last_generated_chapter": 764,
+  "last_generated_chapter": 354,
   "last_reviewed_chapter": 57,
   "failed_chapters": [],
   "rewrite_queue": [
+    58,
     316,
-    435
+    435,
+    951,
+    1029,
+    1078,
+    1114,
+    1152,
+    1370,
+    1371,
+    1435,
+    1497,
+    1584,
+    1625,
+    1630,
+    1687
   ]
 }

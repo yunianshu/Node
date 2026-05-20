@@ -11,10 +11,10 @@ from typing import Dict, Iterable
 
 from core.novel_config import load_config
 
-MIN_CHAPTER_WORDS = 4500
-MAX_CHAPTER_WORDS = 5500
-WARN_MIN_CHAPTER_WORDS = 4300
-WARN_MAX_CHAPTER_WORDS = 5800
+MIN_CHAPTER_WORDS = 5000
+MAX_CHAPTER_WORDS = 12000
+WARN_MIN_CHAPTER_WORDS = 4800
+WARN_MAX_CHAPTER_WORDS = 15000
 HARD_FAIL_MIN_CHAPTER_WORDS = 3000
 MIN_EXISTING_BYTES = 1000
 MIN_PARAGRAPHS = 20
@@ -94,6 +94,39 @@ def outline_chapter_path(base_dir: Path, chapter: int) -> Path:
     return outline_dir(base_dir) / f"chapter_{chapter:04d}.json"
 
 
+def list_outline_chapters(base_dir: Path) -> list[dict]:
+    """读取单章大纲文件并按章节号排序。"""
+    results: list[dict] = []
+    for chapter_file in sorted(outline_dir(base_dir).glob("chapter_*.json")):
+        try:
+            data = json.loads(chapter_file.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(data.get("chapter_number"), int):
+            results.append(data)
+    return sorted(results, key=lambda item: item.get("chapter_number", 0))
+
+
+def outline_exists(base_dir: Path, chapter: int) -> bool:
+    """判断指定章节的单章大纲文件是否存在且可解析。"""
+    chapter_file = outline_chapter_path(base_dir, chapter)
+    if not chapter_file.exists():
+        return False
+    try:
+        data = json.loads(chapter_file.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return data.get("chapter_number") == chapter
+
+
+def outline_completed_count(base_dir: Path, start: int, end: int) -> int:
+    return sum(1 for chapter in range(start, end + 1) if outline_exists(base_dir, chapter))
+
+
+def outlines_complete(base_dir: Path, start: int, end: int) -> bool:
+    return outline_completed_count(base_dir, start, end) == max(0, end - start + 1)
+
+
 def load_outline_chapter(base_dir: Path, chapter: int) -> dict:
     chapter_file = outline_chapter_path(base_dir, chapter)
     if chapter_file.exists():
@@ -101,18 +134,6 @@ def load_outline_chapter(base_dir: Path, chapter: int) -> dict:
             return json.loads(chapter_file.read_text(encoding="utf-8"))
         except Exception:
             return {}
-    outline_file = outline_index_path(base_dir)
-    if not outline_file.exists():
-        outline_file = base_dir / "outline.json"
-    if not outline_file.exists():
-        return {}
-    try:
-        outline = json.loads(outline_file.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    for item in outline.get("chapters", []):
-        if item.get("chapter_number") == chapter:
-            return item
     return {}
 
 

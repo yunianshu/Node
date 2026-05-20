@@ -21,7 +21,12 @@ from pathlib import Path
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
 from core.novel_config import configure_stdio, load_config
-from core.workflow_state import load_outline_chapter, load_review_status, outline_index_path, review_dir
+# 微信推送已禁用，改由 coordinator 统一推送进度
+# from core.push_notifier import push_stage_complete
+from core.workflow_state import (
+    load_outline_chapter, load_review_status, outline_index_path, review_dir,
+    scan_chapter_status, write_status_file, highest_contiguous, report_path,
+)
 
 configure_stdio()
 
@@ -237,6 +242,37 @@ def review_chapter(chapter_number: int) -> dict:
     return review_data
 
 
+def _refresh_status(start: int, end: int) -> None:
+    """扫描处理过的章节，增量更新 chapter_status.json 和 progress.json"""
+    try:
+        log(f"[Reviewer] 刷新状态文件 ({start}-{end})...")
+        statuses = scan_chapter_status(NOVELS_DIR, start, end, use_cache=False)
+        write_status_file(NOVELS_DIR, statuses.values())
+
+        progress_file = report_path(NOVELS_DIR, "progress.json")
+        if progress_file.exists():
+            with open(progress_file, "r", encoding="utf-8") as f:
+                progress = json.load(f)
+        else:
+            progress = {
+                "planner_done": True,
+                "last_generated_chapter": 0,
+                "last_reviewed_chapter": 0,
+                "failed_chapters": [],
+                "rewrite_queue": [],
+            }
+
+        all_statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"], use_cache=False)
+        progress["last_reviewed_chapter"] = highest_contiguous(all_statuses, 1, "review_ok")
+        progress_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(progress_file, "w", encoding="utf-8") as f:
+            json.dump(progress, f, ensure_ascii=False, indent=2)
+
+        log(f"[Reviewer] 状态刷新完成，last_reviewed_chapter={progress['last_reviewed_chapter']}")
+    except Exception as e:
+        log(f"[Reviewer] 状态刷新失败: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--project", "-p", type=str,
@@ -262,12 +298,44 @@ def main():
     REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
+    total = 1 if args.chapter > 0 else (args.end - args.start + 1)
+    failed = 0
     if args.chapter > 0:
-        review_chapter(args.chapter)
+        result = review_chapter(args.chapter)
+        if result.get("status") in ("failed", "no_file", "parse_error"):
+            failed += 1
+        _refresh_status(args.chapter, args.chapter)
     else:
         for ch in range(args.start, args.end + 1):
-            review_chapter(ch)
+            result = review_chapter(ch)
+            if result.get("status") in ("failed", "no_file", "parse_error"):
+                failed += 1
             time.sleep(1)
+        _refresh_status(args.start, args.end)
+
+    # 获取书名并发送推送
+    title = "书生武道通神"
+    world_file = NOVELS_DIR / "world.json"
+    if world_file.exists():
+        try:
+            with open(world_file, "r", encoding="utf-8") as f:
+                title = json.load(f).get("title", title)
+        except Exception:
+            pass
+
+    start_ch = args.chapter if args.chapter > 0 else args.start
+    end_ch = args.chapter if args.chapter > 0 else args.end
+    # 微信推送已禁用，改由 coordinator 统一推送进度
+    # push_stage_complete(
+    #     config=CONFIG,
+    #     title=title,
+    #     stage="审查",
+    #     start_chapter=start_ch,
+    #     end_chapter=end_ch,
+    #     processed=total - failed,
+    #     failed=failed,
+    # )
+    log(f"[Reviewer] 完成 {total - failed} 章，失败 {failed} 章")
 
     log("[Reviewer] 全部完成")
 

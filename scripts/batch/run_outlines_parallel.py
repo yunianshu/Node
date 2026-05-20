@@ -39,7 +39,7 @@ def log(msg):
     print(line, flush=True)
 
 
-def run_planner(start, end):
+def run_outliner(start, end):
     outline_file = NOVELS_DIR / f"outline_part_{start:04d}_{end:04d}.json"
     if outline_file.exists():
         try:
@@ -52,9 +52,9 @@ def run_planner(start, end):
         except Exception:
             pass
 
-    log_file = LOGS_DIR / f"planner_{start}_{end}.log"
+    log_file = LOGS_DIR / f"outliner_{start}_{end}.log"
     cmd = [
-        sys.executable, str(script_path("planner.py")),
+        sys.executable, str(script_path("outliner.py")),
         "--project", str(NOVELS_DIR),
         "--start", str(start), "--end", str(end),
         "--outline-file", str(outline_file)
@@ -105,7 +105,7 @@ def main():
     while idx < len(batches) or active_procs:
         while len(active_procs) < max_concurrent and idx < len(batches):
             start, end = batches[idx]
-            proc = run_planner(start, end)
+            proc = run_outliner(start, end)
             if proc:
                 active_procs.append((start, end, proc))
             else:

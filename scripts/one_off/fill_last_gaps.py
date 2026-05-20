@@ -8,21 +8,19 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 import json, sys
-sys.path.insert(0, 'D:/AiProject/Node/scripts')
 from pathlib import Path
 from core.mmx_client import call_mmx
 from core.novel_config import load_config
+from core.workflow_state import list_outline_chapters, write_outline_chapters
 
-novels_dir = Path('D:/AiProject/Node/projects/novels8')
+ROOT_DIR = Path(__file__).resolve().parents[2]
+novels_dir = ROOT_DIR / 'projects' / 'novels8'
 config = load_config(novels_dir)
-outline_file = novels_dir / 'outline.json'
 world = json.load(open(novels_dir / 'world.json', 'r', encoding='utf-8'))
 premise = (novels_dir / 'premise.txt').read_text(encoding='utf-8')
 world_json = json.dumps(world, ensure_ascii=False, indent=2)
 
-with open(outline_file, 'r', encoding='utf-8') as f:
-    outline = json.load(f)
-existing = {c.get('chapter_number', 0): c for c in outline.get('chapters', [])}
+existing = {c.get('chapter_number', 0): c for c in list_outline_chapters(novels_dir)}
 
 for s, e in [(1146, 1160), (1461, 1475)]:
     print(f'生成 {s}-{e}...', flush=True)
@@ -55,7 +53,5 @@ for s, e in [(1146, 1160), (1461, 1475)]:
     except Exception as ex:
         print(f'{s}-{e} 解析失败: {ex}')
 
-outline['chapters'] = sorted(existing.values(), key=lambda c: c.get('chapter_number', 0))
-with open(outline_file, 'w', encoding='utf-8') as f:
-    json.dump(outline, f, ensure_ascii=False, indent=2)
+write_outline_chapters(novels_dir, {'chapters': existing.values()})
 print(f'完成: {len(existing)} 章', flush=True)

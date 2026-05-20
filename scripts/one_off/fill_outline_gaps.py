@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from core.mmx_client import call_mmx, MmxError
 from core.novel_config import load_config
-from core.workflow_state import outline_index_path
+from core.workflow_state import list_outline_chapters, write_outline_chapters
 
 
 def log(msg: str):
@@ -32,15 +32,9 @@ def main():
         sys.exit(1)
 
     novels_dir = Path(project_dir).resolve()
-    outline_file = outline_index_path(novels_dir)
     config = load_config(novels_dir)
     total = config["total_chapters"]
-
-    with open(outline_file, "r", encoding="utf-8") as f:
-        outline = json.load(f)
-
-    chapters = outline.get("chapters", [])
-    existing = {c.get("chapter_number", 0): c for c in chapters}
+    existing = {c.get("chapter_number", 0): c for c in list_outline_chapters(novels_dir)}
     missing = [i for i in range(1, total + 1) if i not in existing]
 
     if not missing:
@@ -171,11 +165,8 @@ def main():
                 with open(raw_file, "w", encoding="utf-8") as f:
                     f.write(content)
 
-            # 每批保存一次，防止中断丢失
-            all_chapters = sorted(existing.values(), key=lambda c: c.get("chapter_number", 0))
-            outline["chapters"] = all_chapters
-            with open(outline_file, "w", encoding="utf-8") as f:
-                json.dump(outline, f, ensure_ascii=False, indent=2)
+            # 每批保存一次，防止中断丢失；只写单章大纲文件。
+            write_outline_chapters(novels_dir, {"chapters": existing.values()})
 
     log(f"补全完成，共生成 {total_generated} 章，大纲总计 {len(existing)} 章")
 

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 Planner Agent - 框架总领Agent
-负责生成和维护小说世界观、章节大纲、角色档案
-支持 --start/--end 参数，可并行生成指定范围的大纲
+负责生成和维护小说世界观、角色档案
 """
 
 from pathlib import Path
@@ -21,7 +20,7 @@ from pathlib import Path
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
 from core.novel_config import load_config
-from core.workflow_state import outline_index_path, write_outline_chapters
+from core.workflow_state import list_outline_chapters, write_outline_chapters
 
 NOVELS_DIR = None
 WORLD_FILE = None
@@ -35,7 +34,7 @@ def init_project(project_dir: str | Path) -> None:
     global NOVELS_DIR, WORLD_FILE, OUTLINE_FILE, CHARACTERS_FILE, CONFIG, NOVEL_PREMISE
     NOVELS_DIR = Path(project_dir).resolve()
     WORLD_FILE = NOVELS_DIR / "world.json"
-    OUTLINE_FILE = outline_index_path(NOVELS_DIR)
+    OUTLINE_FILE = None
     CHARACTERS_FILE = NOVELS_DIR / "characters.json"
     CONFIG = load_config(NOVELS_DIR)
     total = CONFIG["total_chapters"]
@@ -202,7 +201,7 @@ def generate_characters():
 
 def generate_outline_range(start: int, end: int, outline_file: Path = None):
     batch_size = 15
-    output_file = outline_file or OUTLINE_FILE
+    output_file = outline_file
 
     world = {}
     characters = {}
@@ -218,17 +217,19 @@ def generate_outline_range(start: int, end: int, outline_file: Path = None):
 
     outline = {"chapters": []}
     last_chapter = 0
-    if output_file.exists():
+    if output_file and output_file.exists():
         with open(output_file, "r", encoding="utf-8") as f:
             outline = json.load(f)
         if outline.get("chapters"):
             last_chapter = max(ch.get("chapter_number", 0) for ch in outline["chapters"])
+    elif output_file is None:
+        outline = {"chapters": list_outline_chapters(NOVELS_DIR)}
 
-    if last_chapter >= end:
+    if output_file and last_chapter >= end:
         print(f"[Planner] 大纲已生成到第{last_chapter}章，范围{start}-{end}已覆盖，跳过")
         return
 
-    actual_start = max(start, last_chapter + 1)
+    actual_start = max(start, last_chapter + 1) if output_file else start
 
     system = """你是一位顶级东方玄幻/武侠/修仙小说大纲设计师。
 你需要设计详细的大纲，每章包含标题、核心事件、涉及角色、场景、情感基调。
@@ -300,10 +301,10 @@ def generate_outline_range(start: int, end: int, outline_file: Path = None):
             new_chapters = batch_outline.get("chapters", [])
             outline["chapters"].extend(new_chapters)
             print(f"[Planner] 第 {batch_start}-{batch_end} 章大纲已生成（{len(new_chapters)}章）")
-            with open(output_file, "w", encoding="utf-8") as f:
-                json.dump(outline, f, ensure_ascii=False, indent=2)
-            if output_file == OUTLINE_FILE:
-                write_outline_chapters(NOVELS_DIR, outline)
+            if output_file:
+                with open(output_file, "w", encoding="utf-8") as f:
+                    json.dump(outline, f, ensure_ascii=False, indent=2)
+            write_outline_chapters(NOVELS_DIR, outline)
         except Exception as e:
             print(f"[Planner] 第 {batch_start}-{batch_end} 章解析失败: {e}")
             with open(NOVELS_DIR / "logs" / f"outline_batch_{batch_start:04d}.raw", "w", encoding="utf-8") as f:
@@ -317,10 +318,10 @@ def main():
     parser.add_argument("--project", "-p", type=str,
                         default=os.getenv("NOVEL_PROJECT_DIR", ""),
                         help="小说项目目录")
-    parser.add_argument("--start", type=int, default=1, help="起始章节")
-    parser.add_argument("--end", type=int, default=0, help="结束章节")
-    parser.add_argument("--world-only", action="store_true", help="只生成世界观和角色")
-    parser.add_argument("--outline-file", type=str, default="", help="指定大纲输出文件路径（用于并行生成）")
+    parser.add_argument("--start", type=int, default=1, help="兼容参数，Planner不再生成大纲")
+    parser.add_argument("--end", type=int, default=0, help="兼容参数，Planner不再生成大纲")
+    parser.add_argument("--world-only", action="store_true", help="兼容参数，Planner默认只生成世界观和角色")
+    parser.add_argument("--outline-file", type=str, default="", help="兼容参数，大纲请使用 outliner.py")
     args = parser.parse_args()
 
     if not args.project:
@@ -329,10 +330,8 @@ def main():
 
     init_project(args.project)
 
-    end = args.end or CONFIG["total_chapters"]
-
     print("=" * 60)
-    print(f"Planner Agent 启动 - 范围: 第{args.start}章到第{end}章")
+    print("Planner Agent 启动 - 仅生成世界观和角色档案")
     print(f"项目: {NOVELS_DIR}")
     print("=" * 60)
 
@@ -340,10 +339,6 @@ def main():
 
     generate_world()
     generate_characters()
-
-    if not args.world_only:
-        outline_file = Path(args.outline_file) if args.outline_file else None
-        generate_outline_range(args.start, end, outline_file)
 
     print("[Planner] 全部完成")
 
