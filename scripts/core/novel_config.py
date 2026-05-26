@@ -12,7 +12,7 @@ from pathlib import Path
 DEFAULT_CONFIG = {
     "total_chapters": 2000,
     "model": "MiniMax-M2.7-highspeed",
-    "mmx_path": "C:/Users/Administrator/AppData/Roaming/npm/node_modules/mmx-cli/dist/mmx.mjs",
+    "mmx_path": "C:/Users/59290/AppData/Roaming/npm/node_modules/mmx-cli/dist/mmx.mjs",
     "webhook_url": "",
     "api_qps": 2.0,
     "writer": {

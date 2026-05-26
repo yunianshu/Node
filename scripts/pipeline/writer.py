@@ -84,6 +84,29 @@ def load_json(filepath: Path) -> dict:
         return json.load(f)
 
 
+_GENRE_KEYWORDS = {
+    "东方玄幻/仙侠": ["修仙", "武道", "真气", "灵气", "境界", "斗气", "魔法", "飞升", "宗门", "法宝", "神通", "筑基", "金丹", "元婴", "渡劫", "仙人", "神魔", "妖兽", "灵根", "天劫", "修炼", "炼气", "悟道", "儒道", "剑修", "魔教", "仙宫", "圣地"],
+    "都市重生/职场": ["重生", "都市", "现代", "职场", "校园", "商战", "创业", "房价", "互联网", "移动互联网", "智能手机", "时代", "金钱", "银行卡", "股票", "投资", "公司", "上班", "打工", "商业", "电商", "地产", "金融", "中年", "青年", "生活", "婚姻", "家庭"],
+    "灵异恐怖": ["鬼", "灵异", "恐怖", "诡异", "尸体", "死亡", "诅咒", "惊悚", "阴间", "黄泉", "冥界", "怨灵", "厉鬼", "驱鬼", "驭鬼", "复苏", "僵尸", "邪祟", "阴气", "灵魂"],
+    "科幻未来": ["星际", "飞船", "机甲", "基因", "未来", "太空", "人工智能", "AI", "机器人", "量子", "宇宙", "星球", "外星", "末世", "丧尸", "核战", "科技"],
+    "历史架空": ["古代", "王朝", "皇帝", "科举", "诸侯", "架空", "宫廷", "权谋", "宦官", "将士", "兵马", "江山", "天下", "登基", "丞相", "郡主", "王爷"],
+}
+
+
+def _infer_genre(world: dict) -> str:
+    """根据 world.json 内容推断题材类型，返回中文题材描述。"""
+    text = world.get("world_description", "") + " " + world.get("title", "") + " " + str(world.get("power_system", {}))
+    scores = {}
+    for genre, keywords in _GENRE_KEYWORDS.items():
+        score = sum(text.count(kw) for kw in keywords)
+        scores[genre] = score
+    if scores:
+        best = max(scores, key=scores.get)
+        if scores[best] > 0:
+            return best
+    return "网络小说"
+
+
 def _cjk_count(text: str) -> int:
     return sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
 
@@ -191,14 +214,19 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
             review_section += f"\n### 原文参考（前800字）\n{old_content[:800]}\n...\n"
 
     # 提取主角名和故事设定
+    # 优先从 characters.json 的 protagonist.name 读取，其次从 premise.txt 提取
     protagonist_name = "主角"
-    premise_file = NOVELS_DIR / "premise.txt"
-    if premise_file.exists():
-        premise_text = premise_file.read_text(encoding="utf-8")[:2000]
-        import re
-        m = re.search(r"主角(\S+?)(?:本|是|穿越|重生|携带|得到|拥有|来到|乃|为)", premise_text)
-        if m:
-            protagonist_name = m.group(1)
+    protagonist_data = characters.get("protagonist", {})
+    if isinstance(protagonist_data, dict) and protagonist_data.get("name"):
+        protagonist_name = protagonist_data["name"]
+    else:
+        premise_file = NOVELS_DIR / "premise.txt"
+        if premise_file.exists():
+            premise_text = premise_file.read_text(encoding="utf-8")[:2000]
+            import re
+            m = re.search(r"主角(\S+?)(?:本|是|穿越|重生|携带|得到|拥有|来到|乃|为)", premise_text)
+            if m:
+                protagonist_name = m.group(1)
 
     world_desc = world.get("world_description", "")[:300]
     power_system = world.get("power_system", {})
@@ -225,9 +253,14 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
 关键势力/角色：
 {key_chars_text}"""
 
+    genre = _infer_genre(world)
+    power_system = world.get("power_system", {})
+    power_name = power_system.get("name", "")
+
     if is_rewrite:
         system = f"""你是一位顶尖的中文网络小说作家，同时也是一位资深编辑。
 你现在需要对一篇已完成的章节进行**重写**，而不是从零创作。
+你擅长创作{genre}，文笔流畅、对话生动、场景描写细腻、节奏紧凑。
 重写原则：
 1. 保留原文的优点和核心情节框架
 2. 严格落实验编给出的具体修改建议
@@ -238,12 +271,12 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
 7. 文笔要比原文更加流畅、细腻、有张力
 8. 主角是{protagonist_name}，请参考故事设定保持角色一致性"""
     else:
-        system = f"""你是一位顶尖的中文网络小说作家，擅长创作东方玄幻/仙侠小说。
+        system = f"""你是一位顶尖的中文网络小说作家，擅长创作{genre}。
 你的文笔流畅、对话生动、场景描写细腻、节奏紧凑。
-你尤其擅长描写修炼成长、市井生活、帮派斗争和心理活动。
+你尤其擅长描写人物成长、社会百态、人际冲突和心理活动。
 每章约5000字，尽量控制在4500-8000字之间。
 注意保持角色性格一致性，前后情节衔接自然。
-要写出主角从底层一步步积累成长的独特风格。
+要写出主角在故事中逐步成长的独特风格。
 主角是{protagonist_name}，请参考故事设定保持角色一致性。"""
 
     prompt = f"""请根据以下信息，写出第{chapter_number}章《{chapter_outline.get('title', '未命名')}》的完整内容。
@@ -274,12 +307,12 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
 2. 开头要自然衔接前一章，结尾要留悬念或引出下一章
 3. 对话要符合角色性格，推动情节发展
 4. 场景描写要生动，让读者有画面感
-5. 战斗/冲突场面要紧张刺激，有层次感
+5. 冲突/对抗场面要紧张刺激，有层次感
 6. 心理描写要细腻，展现主角内心变化和成长
-7. 要体现"努力积累、厚积薄发"的核心爽点
-8. 主角说话要沉稳低调，不张扬，但关键时刻果决狠辣
+7. 要体现主角逐步成长、逆风翻盘的核心爽点
+8. 主角言行要符合其身份性格和故事背景，不能OOC
 9. 配角要有各自的剧情线和存在感，不是纯背景板
-10. 探索不同场景时要展现环境差异（市井、帮派、门派、妖魔等），增加趣味性
+10. 探索不同场景时要展现环境差异，增加趣味性
 11. 不要流水账，要有起伏和转折
 12. 不要输出章节标题，直接从正文开始
 13. 不要输出任何元信息（如"字数：""本章完"等），只输出正文

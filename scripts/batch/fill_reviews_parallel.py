@@ -31,13 +31,27 @@ SCRIPTS_DIR = None
 CONFIG = None
 
 
-def init_project(project_dir: str | Path) -> None:
+def init_project(project_dir: str | Path, final_mode: bool = False) -> None:
     global NOVELS_DIR, REVIEWS_DIR, LOG_FILE, SCRIPTS_DIR, CONFIG
     NOVELS_DIR = Path(project_dir).resolve()
-    REVIEWS_DIR = review_dir(NOVELS_DIR)
+    if final_mode:
+        REVIEWS_DIR = NOVELS_DIR / "chapters" / "review_final"
+    else:
+        REVIEWS_DIR = review_dir(NOVELS_DIR)
     LOG_FILE = NOVELS_DIR / "logs" / "fill_reviews_parallel.log"
     SCRIPTS_DIR = Path(__file__).parent
     CONFIG = load_config(NOVELS_DIR)
+
+
+def get_novel_title() -> str:
+    world_file = NOVELS_DIR / "world.json"
+    if world_file.exists():
+        try:
+            with open(world_file, "r", encoding="utf-8") as f:
+                return json.load(f).get("title", "未知小说")
+        except Exception:
+            pass
+    return "未知小说"
 
 
 def log(msg: str):
@@ -78,12 +92,14 @@ def get_missing_reviews():
     return missing
 
 
-def run_reviewer(start: int, end: int) -> tuple:
+def run_reviewer(start: int, end: int, final_mode: bool = False) -> tuple:
     cmd = [
         sys.executable, str(script_path("reviewer.py")),
         "--project", str(NOVELS_DIR),
         "--start", str(start), "--end", str(end)
     ]
+    if final_mode:
+        cmd.append("--final")
     result = subprocess.run(cmd, capture_output=False, text=True, encoding="utf-8")
     newly_completed = 0
     for ch in range(start, end + 1):
@@ -122,11 +138,12 @@ def chunk_ranges(missing: list, chunk_size: int = 30) -> list:
 
 
 def pusher_thread():
+    title = get_novel_title()
     while True:
         time.sleep(120)
         missing = get_missing_reviews()
         completed = CONFIG["total_chapters"] - len(missing)
-        msg = f"📊 小说生成进度\n审查: {completed}/{CONFIG['total_chapters']} 章\n缺失: {len(missing)} 章"
+        msg = f"📖 《{title}》\n📊 审查进度: {completed}/{CONFIG['total_chapters']} 章\n⏳ 缺失: {len(missing)} 章"
         push_wechat(msg)
         log(f"[WeChat] 进度已推送: 审查{completed}/{CONFIG['total_chapters']}")
 
@@ -136,13 +153,14 @@ def main():
     parser.add_argument("--project", "-p", type=str,
                         default=os.getenv("NOVEL_PROJECT_DIR", ""),
                         help="小说项目目录")
+    parser.add_argument("--final", action="store_true", help="终稿审查模式（review_final目录）")
     args = parser.parse_args()
 
     if not args.project:
         print("错误: 必须指定 --project 或设置 NOVEL_PROJECT_DIR 环境变量")
         sys.exit(1)
 
-    init_project(args.project)
+    init_project(args.project, final_mode=args.final)
 
     print("=" * 60)
     print("Fill Reviews Parallel Agent 启动")
@@ -165,7 +183,7 @@ def main():
     completed_total = CONFIG["total_chapters"] - len(missing)
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(run_reviewer, s, e): (s, e) for s, e in ranges}
+        futures = {executor.submit(run_reviewer, s, e, args.final): (s, e) for s, e in ranges}
         for future in as_completed(futures):
             s, e = futures[future]
             try:
@@ -183,7 +201,8 @@ def main():
         log(f"仍有缺失: {len(missing)} 章: {missing[:20]}...")
     else:
         log("全部审查完成！")
-        push_wechat(f"🎉 小说审查全部完成！{CONFIG['total_chapters']}/{CONFIG['total_chapters']} 章")
+        title = get_novel_title()
+        push_wechat(f"🎉 《{title}》审查全部完成！\n✅ {CONFIG['total_chapters']}/{CONFIG['total_chapters']} 章")
 
 
 if __name__ == "__main__":

@@ -34,16 +34,18 @@ NOVELS_DIR = None
 CHAPTERS_DIR = None
 OUTLINE_FILE = None
 CHARACTERS_FILE = None
+WORLD_FILE = None
 REVIEWS_DIR = None
 LOG_FILE = None
 CONFIG = None
 
 
 def init_project(project_dir: str | Path) -> None:
-    global NOVELS_DIR, CHAPTERS_DIR, OUTLINE_FILE, CHARACTERS_FILE, REVIEWS_DIR, LOG_FILE, CONFIG
+    global NOVELS_DIR, CHAPTERS_DIR, OUTLINE_FILE, CHARACTERS_FILE, WORLD_FILE, REVIEWS_DIR, LOG_FILE, CONFIG
     NOVELS_DIR = Path(project_dir).resolve()
     CHAPTERS_DIR = NOVELS_DIR / "chapters" / "draft"
     CHARACTERS_FILE = NOVELS_DIR / "characters.json"
+    WORLD_FILE = NOVELS_DIR / "world.json"
     OUTLINE_FILE = outline_index_path(NOVELS_DIR)
     REVIEWS_DIR = review_dir(NOVELS_DIR)
     LOG_FILE = NOVELS_DIR / "logs" / "reviewer.log"
@@ -56,17 +58,25 @@ def analyze_chapter_text(chapter_content: str) -> dict:
     paragraph_count = len([p for p in text.splitlines() if p.strip()])
     dialogue_count = text.count("\u201c") + text.count('"')
     issues = []
-    if length < 4500:
-        issues.append(f"字数低于4500字，当前{length}字")
-    if length > 5500:
-        issues.append(f"字数超过5500字，当前{length}字")
+
+    quality = CONFIG.get("quality", {}) if CONFIG else {}
+    min_words = int(quality.get("min_chapter_words", 5000))
+    max_words = int(quality.get("max_chapter_words", 12000))
+    hard_fail_min = int(quality.get("hard_fail_min_chapter_words", 3000))
+    warn_min = int(quality.get("warn_min_chapter_words", min_words - 200))
+    warn_max = int(quality.get("warn_max_chapter_words", max_words + 3000))
+
+    if length < warn_min:
+        issues.append(f"字数低于{warn_min}字，当前{length}字")
+    if length > warn_max:
+        issues.append(f"字数超过{warn_max}字，当前{length}字")
     if paragraph_count < 20:
         issues.append(f"段落数量偏少，当前{paragraph_count}段")
     if dialogue_count < 4:
         issues.append("对话标记偏少，可能缺少角色互动")
     return {
         "word_count": length,
-        "word_count_ok": 4500 <= length <= 5500,
+        "word_count_ok": min_words <= length <= max_words,
         "paragraph_count": paragraph_count,
         "dialogue_marker_count": dialogue_count,
         "issues": issues,
@@ -140,10 +150,35 @@ def review_chapter(chapter_number: int) -> dict:
     content_sample += "\n\n[中间部分...]\n\n" + chapter_content[mid_start:mid_start + 1000]
     content_sample += "\n\n[结尾部分...]\n\n" + chapter_content[-1000:]
 
-    system = """你是一位资深网络小说编辑，拥有20年审稿经验。
+    world = load_json(WORLD_FILE)
+    book_title = world.get("title", "本小说")
+    world_desc = world.get("world_description", "")[:300]
+    themes = world.get("themes", [])
+    power_system = world.get("power_system", {})
+    power_name = power_system.get("name", "")
+    power_desc = power_system.get("description", "")[:200]
+
+    genre_hints = []
+    if themes:
+        genre_hints.append(f"核心主题：{'; '.join(themes[:3])}")
+    if power_name:
+        genre_hints.append(f"力量体系：{power_name}（{power_desc}）")
+    if world_desc:
+        genre_hints.append(f"世界观：{world_desc}")
+    genre_text = "\n".join(genre_hints) if genre_hints else "请根据世界观和角色设定判断题材类型。"
+
+    quality = CONFIG.get("quality", {})
+    min_words = int(quality.get("min_chapter_words", 5000))
+    max_words = int(quality.get("max_chapter_words", 12000))
+    warn_min = int(quality.get("warn_min_chapter_words", min_words - 200))
+    warn_max = int(quality.get("warn_max_chapter_words", max_words + 3000))
+
+    system = f"""你是一位资深网络小说编辑，拥有20年审稿经验。
 你需要从多个维度审查章节质量，并给出具体的修改建议。
-本书是"书生武道通神"题材，主角外表文弱但实力深不可测。
-评分标准严格：9-10分优秀，7-8分良好，5-6分及格但需修改，低于5分需重写。
+本书是《{book_title}》。
+{genre_text}
+评分标准：9-10分优秀，8-9分良好，7-8分及格，低于7分需修改，低于5分需重写。
+优秀章节完全可以给出9分以上，请根据实际质量客观评分，不要人为压低分数。
 输出必须是合法的JSON格式。"""
 
     prompt = f"""请审查以下第{chapter_number}章的内容。
@@ -166,21 +201,21 @@ def review_chapter(chapter_number: int) -> dict:
 请输出以下JSON格式的审查报告：
 {{
   "chapter_number": {chapter_number},
-  "overall_score": 8.5,
+  "overall_score": "请给出0-10的客观评分，质量优秀的章节可给9分以上",
   "verdict": "通过/需修改/需重写",
   "scores": {{
-    "writing_quality": 8,
-    "plot_coherence": 8,
-    "character_consistency": 8,
-    "scene_description": 8,
-    "dialogue_quality": 8,
-    "outline_adherence": 8,
-    "pacing": 8,
-    "emotional_impact": 8
+    "writing_quality": "文笔流畅度（0-10）",
+    "plot_coherence": "剧情连贯性（0-10）",
+    "character_consistency": "人物一致性（0-10）",
+    "scene_description": "场景描写（0-10）",
+    "dialogue_quality": "对话质量（0-10）",
+    "outline_adherence": "大纲遵循度（0-10）",
+    "pacing": "节奏把控（0-10）",
+    "emotional_impact": "情感冲击力（0-10）"
   }},
   "word_count_check": {{
     "actual": {len(chapter_content)},
-    "target": 5000,
+    "target": {min_words},
     "status": "达标/偏短/偏长"
   }},
   "strengths": ["优点1", "优点2"],
@@ -191,13 +226,13 @@ def review_chapter(chapter_number: int) -> dict:
 }}
 
 要求：
-1. 评分要客观严格，不能普遍给高分
-2. 重点审查"书生气质"和"武道实力"的反差是否到位
-3. 扮猪吃虎的爽点是否足够
-4. 对话是否有书卷气
+1. 评分要客观公正，质量优秀的章节完全可以给出9分以上，不要人为压低分数
+2. 重点审查内容是否符合本书的世界观设定和角色性格
+3. 剧情推进是否自然，有无逻辑漏洞或突兀转折
+4. 对话是否符合角色身份和时代背景
 5. 必须给出具体的修改建议，不能泛泛而谈
 6. 如低于7分必须标记为"需重写"
-7. 字数不足4500或超过5500要标记字数问题
+7. 字数不足{warn_min}或超过{warn_max}要标记字数问题
 8. 必须输出合法JSON"""
 
     log(f"[Reviewer] 正在审查第{chapter_number}章...")
@@ -281,6 +316,7 @@ def main():
     parser.add_argument("--start", type=int, default=1, help="起始章节")
     parser.add_argument("--end", type=int, default=10, help="结束章节")
     parser.add_argument("--chapter", type=int, default=0, help="只审查某一章")
+    parser.add_argument("--final", action="store_true", help="审查终稿（final 目录）而非草稿")
     args = parser.parse_args()
 
     if not args.project:
@@ -289,9 +325,16 @@ def main():
 
     init_project(args.project)
 
+    global CHAPTERS_DIR, REVIEWS_DIR
+    if args.final:
+        CHAPTERS_DIR = NOVELS_DIR / "chapters" / "final"
+        REVIEWS_DIR = NOVELS_DIR / "chapters" / "review_final"
+
     print("=" * 60)
     print("Reviewer Agent 启动")
     print(f"项目: {NOVELS_DIR}")
+    if args.final:
+        print("模式: 审查终稿")
     print("=" * 60)
 
     CHAPTERS_DIR.mkdir(parents=True, exist_ok=True)
@@ -314,7 +357,7 @@ def main():
         _refresh_status(args.start, args.end)
 
     # 获取书名并发送推送
-    title = "书生武道通神"
+    title = "本小说"
     world_file = NOVELS_DIR / "world.json"
     if world_file.exists():
         try:
