@@ -1,5 +1,0 @@
-{
-  "chapter_number": 1328,
-  "status": "parse_error",
-  "raw_response": "{\n  \"chapter_number\": 1328,\n  \"overall_score\": 8.0,\n  \"verdict\": \"需修改\",\n  \"scores\": {\n    \"writing_quality\": 8,\n    \"plot_coherence\": 8.5,\n    \"character_consistency\": 8,\n    \"scene_description\": 7.5,\n    \"dialogue_quality\": 7,\n    \"outline_adherence\": 8,\n    \"pacing\": 8,\n    \"emotional_impact\": 8.5\n  },\n  \"word_count_check\": {\n    \"actual\": 3109,\n    \"target\": 5000,\n    \"status\": \"偏短\"\n  },\n  \"strengths\": [\n    \"扮猪吃虎的爽点节奏到位：挑衅→看笑话→秒杀→震惊，完整闭环\",\n    \"配角反应链完整：赵无极从嚣张→震惊→恐惧，层次分明\",\n    \"结尾钩子设置巧妙：血月将至、魔无天阴谋启动，为后续大战埋下伏笔\",\n    \"主角收尾台词有格局：\\\"书生执笔，可写锦绣文章；书生仗剑，可斩世间妖魔\\\"\",\n    \"细节处理得当：主角只用三成力、只封穴道"
-}
