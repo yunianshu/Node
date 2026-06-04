@@ -1,5 +1,0 @@
-{
-  "chapter_number": 922,
-  "status": "parse_error",
-  "raw_response": "{\n  \"chapter_number\": 922,\n  \"overall_score\": 7.5,\n  \"verdict\": \"需修改\",\n  \"scores\": {\n    \"writing_quality\": 7.5,\n    \"plot_coherence\": 7.5,\n    \"character_consistency\": 8,\n    \"scene_description\": 7.5,\n    \"dialogue_quality\": 7,\n    \"outline_adherence\": 8.5,\n    \"pacing\": 7,\n    \"emotional_impact\": 7.5\n  },\n  \"word_count_check\": {\n    \"actual\": 4909,\n    \"target\": 5000,\n    \"status\": \"偏短\"\n  },\n  \"strengths\": [\n    \"章节整体氛围营造到位，夜谈密谋的紧张感较好地传达出来\",\n    \"反派万魔教的阴谋设计完整，血魔丹、血祭阵法、血神丹的层次递进清晰\",\n    \"红拂女提供情报的流程完整（情报→证据→分析→困境→方案），逻辑自洽\",\n    \"结尾设置双线钩子：顾长安决定亲自前往祭天大典 + 万魔教下令杀无赦\",\n    \"引用《左传》'多行不义必自毙'体现主角书卷气，为计谋定调\",\n    \"结尾万魔教密室的场景转换自然，揭示敌方视角，增强戏剧张力\"\n  ],\n  \"weaknesses\": [\n    \"【严重】扮猪吃虎的爽点严重不足。开头刺客场景草草收场，'让刺客去报信'的动机过于直白，没有展现主角以文入武的真实实力，浩然正气对魔道刺客的压制效果没有描写\",\n    \"【严重】檄文场景是本章核心高潮，但只写了两三段，对檄文内容的具体呈现几乎为零，无法让读者感受到'以笔"
-}
