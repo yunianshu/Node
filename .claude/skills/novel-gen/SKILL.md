@@ -1,6 +1,6 @@
 ---
 name: novel-gen
-description: 使用 D:/AiProject/Node 当前 scripts 自动化框架生成和维护长篇中文网络小说项目。适用于创建小说项目、运行 Planner/Outliner/Writer/Reviewer/Rewrite/Coordinator、多 Agent 批量生成大纲、断点续传、企业微信进度推送、章节质量门、补齐缺失章节、多媒体生成和阅读器调试。当前标准为 Planner 只生成 world.json 与 characters.json，大纲由 Outliner 生成到 chapters/outline/chapter_XXXX.json，禁止生成或依赖根目录 outline.json。
+description: 使用 D:/AiProject/Node 当前 scripts 自动化框架生成和维护长篇中文网络小说项目。适用于创建小说项目、运行 Planner/Outliner/Outline Reviewer/Writer/Reviewer/Coordinator、断点续传、企业微信进度推送、章节质量门和补齐缺失章节。当前标准为 Planner 只生成 world.json 与 characters.json，大纲由 Outliner 生成到 chapters/outline/chapter_XXXX.json，禁止生成或依赖根目录 outline.json。
 ---
 
 # Novel Gen
@@ -20,6 +20,8 @@ projects/<book_id>/
 ├── chapters/
 │   ├── outline/
 │   │   └── chapter_0001.json
+│   ├── outline_review/
+│   │   └── chapter_0001_review.json
 │   ├── draft/
 │   │   └── chapter_0001.txt
 │   ├── review/
@@ -27,10 +29,6 @@ projects/<book_id>/
 │   └── final/
 │       └── chapter_0001.txt
 ├── logs/
-├── media/
-│   ├── audio/
-│   ├── images/
-│   └── music/
 ├── origin/
 └── reports/
 ```
@@ -47,11 +45,10 @@ projects/<book_id>/
 |---|---|---|---|
 | Planner | `scripts/pipeline/planner.py` | 只生成世界观和角色档案 | `world.json`, `characters.json` |
 | Outliner | `scripts/pipeline/outliner.py` | 按范围生成章节大纲 | `chapters/outline/chapter_XXXX.json` |
-| Planner Parallel | `scripts/pipeline/planner_parallel.py` | 先跑 Planner，再批量启动 Outliner | 单章大纲文件 |
+| Outline Reviewer | `scripts/pipeline/outline_reviewer.py` | 审查单章大纲质量（门槛 **8.5 分**） | `chapters/outline_review/chapter_XXXX_review.json` |
 | Writer | `scripts/pipeline/writer.py` | 根据单章大纲生成初稿 | `chapters/draft/chapter_XXXX.txt` |
 | Reviewer | `scripts/pipeline/reviewer.py` | 审查初稿并评分 | `chapters/review/chapter_XXXX_review.json` |
-| Rewrite | `scripts/pipeline/rewrite_agent.py` | 根据审查意见重写或复制终稿 | `chapters/final/chapter_XXXX.txt` |
-| Coordinator | `scripts/pipeline/coordinator.py` | 调度全流程、断点续传、配额、推送 | `reports/progress.json`, 日志 |
+| Coordinator | `scripts/pipeline/coordinator.py` | 调度全流程、断点续传、质量门、终稿晋级、配额、推送 | `chapters/final/chapter_XXXX.txt`, `reports/progress.json`, 日志 |
 
 核心状态工具在 `scripts/core/workflow_state.py`：
 - `load_outline_chapter()` 只从单章大纲文件读取。
@@ -66,27 +63,28 @@ config/premise
    ↓
 Planner
    ↓ world.json + characters.json
-Outliner / Planner Parallel
+Outliner
    ↓ chapters/outline/chapter_XXXX.json
+Outline Reviewer（大纲审查，门槛 8.5 分）
+   ↓ chapters/outline_review/chapter_XXXX_review.json
 Writer
    ↓ chapters/draft/chapter_XXXX.txt
 Reviewer
    ↓ chapters/review/chapter_XXXX_review.json
-Rewrite
+Coordinator promote
    ↓ chapters/final/chapter_XXXX.txt
-Push/Reports/Reader
+Push/Reports
 ```
 
 阶段门控：
 - Planner 只负责 `world.json` 与 `characters.json`。
-- 大纲未完成前，不运行 Writer/Reviewer/Rewrite。
-- Writer 必须通过 Coordinator 的多子进程/多 Agent 并发执行，按 `coordinator.num_workers` 和当前批次范围拆分启动；只允许在单章调试、故障定位或用户明确要求时直接串行运行 `writer.py`。
-- 继续生成长篇项目时，优先运行 `scripts/pipeline/coordinator.py` 断点续传，不手工逐章调用 Writer；若发现只剩少数卡点章节，可由 Coordinator 的补偿队列处理或明确记录为调试性单章重跑。
-- Writer 并发数必须来自项目 `config.json` 的 `coordinator.num_workers`，可按配额/失败率动态降低，但不得硬编码固定单进程。
-- 初稿未完成的批次，不运行该批 Reviewer。
-- 审查报告未全部 `status=completed` 前，不运行 Rewrite。
-- Rewrite 最多尝试 5 次；每次内容和评分写到 `chapters/rewrite/chapter_XXXX/attempt_XX.*`。
-- 5 次仍不合格时，选择最高分版本写入终稿，并在 `rewrite_meta.json` 记录选择原因。
+- 每章必须按 Outliner -> Outline Reviewer -> Writer -> Reviewer -> final 顺序处理。
+- **Outline Reviewer** 在 Writer 之前运行，审查每章大纲质量。评分维度：剧情吸引力、节奏把控、人物动机合理性、爽点设计、伏笔与呼应、场景多样性、力量体系一致性、整体可写性。门槛默认 **8.5 分**。
+- 大纲审查不通过时，Outliner 带审查意见重生成同一章；同一轮最多 3 次，失败原因分析最多 3 轮，仍不通过则退出并推送原因。
+- 初稿审查不通过时，Writer 带审查意见重生成同一章；同一轮最多 3 次，失败原因分析最多 3 轮，仍不通过则退出并推送原因。
+- 只有审查通过的初稿才由 Coordinator 写入 `chapters/final/chapter_XXXX.txt`。
+- 继续生成长篇项目时，优先运行 `scripts/pipeline/coordinator.py` 断点续传，不手工逐章调用 Writer。
+- 流程代码只能修改 `scripts/`，小说阅读器只能修改 `novels-dashboard/`。
 
 ## 常用命令
 
@@ -108,16 +106,10 @@ python "scripts/pipeline/planner.py" --project "D:/AiProject/Node/projects/<book
 python "scripts/pipeline/outliner.py" --project "D:/AiProject/Node/projects/<book_id>" --start 1 --end 100
 ```
 
-批量并行生成全书大纲：
-
-```powershell
-python "scripts/pipeline/planner_parallel.py" --project "D:/AiProject/Node/projects/<book_id>" --workers 20
-```
-
 运行完整协调器：
 
 ```powershell
-python "scripts/pipeline/coordinator.py" --project "D:/AiProject/Node/projects/<book_id>" --planner-parallel
+python "scripts/pipeline/coordinator.py" --project "D:/AiProject/Node/projects/<book_id>"
 ```
 
 指定章节范围：
@@ -126,16 +118,10 @@ python "scripts/pipeline/coordinator.py" --project "D:/AiProject/Node/projects/<
 python "scripts/pipeline/coordinator.py" --project "D:/AiProject/Node/projects/<book_id>" --start 1 --end 200 --batch-size 20
 ```
 
-只重写候选章节：
+审查单章大纲：
 
 ```powershell
-python "scripts/pipeline/rewrite_agent.py" --project "D:/AiProject/Node/projects/<book_id>"
-```
-
-查看需重写章节：
-
-```powershell
-python "scripts/pipeline/rewrite_agent.py" --project "D:/AiProject/Node/projects/<book_id>" --candidates
+python "scripts/pipeline/outline_reviewer.py" --project "D:/AiProject/Node/projects/<book_id>" --start 1 --end 100
 ```
 
 发送单项目企业微信进度：
@@ -144,11 +130,7 @@ python "scripts/pipeline/rewrite_agent.py" --project "D:/AiProject/Node/projects
 python "scripts/maintenance/wechat_notify.py" --project "D:/AiProject/Node/projects/<book_id>"
 ```
 
-启动阅读器：
-
-```powershell
-python "scripts/maintenance/reader_server.py" --novels-dir "D:/AiProject/Node/projects" --port 8889
-```
+阅读器代码位于 `novels-dashboard/`，不要在 `scripts/` 中新增阅读器入口。
 
 ## 配置要点
 
@@ -157,9 +139,9 @@ python "scripts/maintenance/reader_server.py" --novels-dir "D:/AiProject/Node/pr
 ```json
 {
   "total_chapters": 2000,
-  "model": "MiniMax-M2.7-highspeed",
+  "model": "MiniMax-M3",
   "mmx_path": "C:/Users/Administrator/AppData/Roaming/npm/node_modules/mmx-cli/dist/mmx.mjs",
-  "api_qps": 2.0,
+  "api_qps": 5.0,
   "writer": {
     "max_retries": 3,
     "retry_delay": 5.0
@@ -169,6 +151,11 @@ python "scripts/maintenance/reader_server.py" --novels-dir "D:/AiProject/Node/pr
     "num_workers": 5,
     "review_workers": 2,
     "pause_between_batches": 3.0
+  },
+  "outline_reviewer": {
+    "max_tokens": 4096,
+    "temperature": 0.3,
+    "min_score": 8.5
   },
   "quality": {
     "min_chapter_words": 5000,
@@ -189,6 +176,7 @@ python "scripts/maintenance/reader_server.py" --novels-dir "D:/AiProject/Node/pr
 📖 《书名》生成进度 (YYYY-MM-DD HH:MM:SS)
 ━━━━━━━━━━━━━━━━━━━━
 📋 大纲: 1450/2000 章
+📋 大纲审: 1450/2000 章
 ✍ 初稿: 415/2000 章
 📝 字数: 2,547,051
 🔍 审查: 0/2000 章
@@ -204,12 +192,7 @@ python "scripts/maintenance/reader_server.py" --novels-dir "D:/AiProject/Node/pr
 
 ## 补齐与维护
 
-常用补齐脚本已改为单章大纲模式：
-- `scripts/batch/fill_missing_outline.py`
-- `scripts/batch/fill_outline.py`
-- `scripts/batch/fill_outline_segments.py`
-- `scripts/batch/run_outlines_parallel.py`
-- `scripts/batch/run_planner_batches.py`
+补齐缺失章节时优先运行 Coordinator 的断点续传与质量门，不恢复旧 `scripts/batch/`、`scripts/cli/`、`scripts/one_off/` 入口。
 
 补齐大纲时只写：
 
@@ -229,8 +212,7 @@ chapters/outline/index.json
 修改小说自动化代码后至少运行：
 
 ```powershell
-python -m unittest discover -s "scripts/tests"
-python -m py_compile "scripts/pipeline/planner.py" "scripts/pipeline/outliner.py" "scripts/pipeline/planner_parallel.py" "scripts/pipeline/coordinator.py" "scripts/pipeline/rewrite_agent.py" "scripts/core/workflow_state.py"
+python -m py_compile "scripts/pipeline/planner.py" "scripts/pipeline/outliner.py" "scripts/pipeline/outline_reviewer.py" "scripts/pipeline/writer.py" "scripts/pipeline/reviewer.py" "scripts/pipeline/coordinator.py" "scripts/maintenance/coordinator_watchdog.py" "scripts/maintenance/wechat_notify.py" "scripts/core/workflow_state.py"
 ```
 
 涉及推送、阅读器或批处理脚本时，追加对应文件到 `py_compile`。
@@ -239,22 +221,4 @@ python -m py_compile "scripts/pipeline/planner.py" "scripts/pipeline/outliner.py
 - `rg "outline\.json" "scripts"` 只应出现“不生成 outline.json”的测试断言，不能出现业务读写。
 - Outliner 无 `--outline-file` 时不得生成 `outline.json` 或 `chapters/outline/index.json`。
 - Coordinator 大纲完成数必须来自单章大纲文件。
-- Rewrite 尝试记录必须保留每次内容和评分。
-
-## 多媒体
-
-多媒体入口：
-
-```powershell
-python "scripts/media/generate_cover_and_trailer.py" --project "D:/AiProject/Node/projects/<book_id>"
-```
-
-标准输出目录：
-
-```text
-media/images/
-media/audio/
-media/music/
-```
-
-视频、音乐配额通常较少，默认谨慎启用。生成前先确认 `config.json` 中对应开关和 MiniMax 配额。
+- Coordinator 必须按单章质量门处理，不允许大纲失败后继续生成下一章。
