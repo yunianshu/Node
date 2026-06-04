@@ -108,19 +108,53 @@ def call_mmx(
     log_dir: Path | None = None,
     raw_name: str = "mmx",
     timeout: int | None = None,
-    qps: float = 0.0,
+    qps: float = 15.0,
     rate_state_dir: Path | None = None,
 ) -> str:
-    cmd = [
-        "node", mmx_path, "text", "chat",
-        "--model", model,
-        "--system", system_prompt,
-        "--message", user_prompt,
-        "--max-tokens", str(max_tokens),
-        "--temperature", str(temperature),
-        "--stream=false",
-        "--quiet",
-    ]
+    # Windows 命令行长度限制约 32k，prompt 过长时改用 --messages-file
+    # 阈值保守一些，prompt 超过 16k 字符就改用文件
+    payload_size = len(system_prompt) + len(user_prompt)
+    use_file = payload_size > 16384
+
+    if use_file:
+        # 写到临时文件，用 messages-file 方式传入
+        import tempfile
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        tmp_dir = Path(log_dir) if log_dir else Path(tempfile.gettempdir())
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        import time as _t
+        tmp_path = tmp_dir / f"mmx_msgs_{_t.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}.json"
+        try:
+            tmp_path.write_text(json.dumps(messages, ensure_ascii=False), encoding="utf-8")
+            cmd = [
+                "node", mmx_path, "text", "chat",
+                "--model", model,
+                "--messages-file", str(tmp_path),
+                "--max-tokens", str(max_tokens),
+                "--temperature", str(temperature),
+                "--stream=false",
+                "--quiet",
+            ]
+        except Exception:
+            # 出错就回退到命令行方式
+            use_file = False
+            tmp_path = None
+    if not use_file:
+        tmp_path = None
+        cmd = [
+            "node", mmx_path, "text", "chat",
+            "--model", model,
+            "--system", system_prompt,
+            "--message", user_prompt,
+            "--max-tokens", str(max_tokens),
+            "--temperature", str(temperature),
+            "--stream=false",
+            "--quiet",
+        ]
 
     last_error = ""
     for attempt in range(retries + 1):
@@ -132,7 +166,7 @@ def call_mmx(
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
-                timeout=timeout,
+                timeout=timeout or 300,
             )
         except subprocess.TimeoutExpired as exc:
             last_error = f"调用超时: {exc}"
@@ -143,10 +177,20 @@ def call_mmx(
             if raw and log_dir:
                 write_raw_response(log_dir, raw_name, raw)
             if result.returncode == 0:
+                if tmp_path is not None:
+                    try:
+                        tmp_path.unlink()
+                    except Exception:
+                        pass
                 return extract_content(raw)
             last_error = result.stderr.strip() or raw or f"returncode={result.returncode}"
 
         if attempt < retries:
             time.sleep(retry_delay * (attempt + 1))
 
+    if tmp_path is not None:
+        try:
+            tmp_path.unlink()
+        except Exception:
+            pass
     raise MmxError(last_error or "MiniMax 调用失败")

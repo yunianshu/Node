@@ -45,6 +45,7 @@ def build_progress_message(
     *,
     title: str,
     outline: int = 0,
+    outline_reviewed: int | None = None,
     draft: int = 0,
     reviewed: int = 0,
     final: int = 0,
@@ -59,11 +60,15 @@ def build_progress_message(
         f"📖 《{title}》生成进度 ({ts})",
         _SEPARATOR,
         f"📋 大纲: {outline}/{total_chapters} 章",
+    ]
+    if outline_reviewed is not None:
+        lines.append(f"📋 大纲审: {outline_reviewed}/{total_chapters} 章")
+    lines.extend([
         f"✍ 初稿: {draft}/{total_chapters} 章",
         f"📝 字数: {total_words:,}",
         f"🔍 审查: {reviewed}/{total_chapters} 章",
         f"📤 终稿: {final}/{total_chapters} 章",
-    ]
+    ])
     if avg_score is not None:
         lines.append(f"⭐ 平均评分: {avg_score:.2f}")
     if active_writers > 0:
@@ -77,6 +82,7 @@ def push_progress(
     config: dict,
     title: str,
     outline: int = 0,
+    outline_reviewed: int | None = None,
     draft: int = 0,
     reviewed: int = 0,
     final: int = 0,
@@ -89,6 +95,7 @@ def push_progress(
     msg = build_progress_message(
         title=title,
         outline=outline,
+        outline_reviewed=outline_reviewed,
         draft=draft,
         reviewed=reviewed,
         final=final,
@@ -185,19 +192,26 @@ def push_task_complete(
     title: str,
     total_chapters: int,
     total_words: int,
+    draft: int | None = None,
+    review: int | None = None,
+    final: int | None = None,
     avg_score: float = 0.0,
     rewrite_count: int = 0,
 ) -> bool:
     """推送整个小说生成任务完成报告。"""
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    # 默认值：调用方没传则假设都完成（向后兼容）
+    d = total_chapters if draft is None else draft
+    r = total_chapters if review is None else review
+    f = total_chapters if final is None else final
     lines = [
         f"🎉 《{title}》生成任务全部完成! ({ts})",
         _SEPARATOR,
         f"📋 大纲: {total_chapters}/{total_chapters} 章",
-        f"✍ 初稿: {total_chapters}/{total_chapters} 章",
+        f"✍ 初稿: {d}/{total_chapters} 章",
         f"📝 字数: {total_words:,}",
-        f"🔍 审查: {total_chapters}/{total_chapters} 章",
-        f"📤 终稿: {total_chapters}/{total_chapters} 章",
+        f"🔍 审查: {r}/{total_chapters} 章",
+        f"📤 终稿: {f}/{total_chapters} 章",
         f"⭐ 平均评分: {avg_score:.2f}",
     ]
     if rewrite_count > 0:

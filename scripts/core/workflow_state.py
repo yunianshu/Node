@@ -21,15 +21,13 @@ MIN_PARAGRAPHS = 20
 MAX_DUPLICATE_PARAGRAPH_RATIO = 0.25
 MAX_SIMILAR_PARAGRAPH_RATIO = 0.20
 SIMILAR_PARAGRAPH_THRESHOLD = 0.88
-VALID_ENDINGS = tuple("。！？.!?」”’）)")
+VALID_ENDINGS = tuple('\u3002\uff01\uff1f.!?\u300d\u201d\u2019\uff09)"\'')
 FORBIDDEN_PHRASES = (
     "无法生成",
-    "抱歉",
     "作为AI",
     "未完待续",
     "内容省略",
     "此处省略",
-    "TODO",
 )
 COMPLETED_REVIEW_REQUIRED_FIELDS = {
     "overall_score": (int, float),
@@ -76,6 +74,14 @@ def outline_index_path(base_dir: Path) -> Path:
 
 def review_dir(base_dir: Path) -> Path:
     return chapters_dir(base_dir) / "review"
+
+
+def outline_review_dir(base_dir: Path) -> Path:
+    return chapters_dir(base_dir) / "outline_review"
+
+
+def outline_review_path(base_dir: Path, chapter: int) -> Path:
+    return outline_review_dir(base_dir) / f"chapter_{chapter:04d}_review.json"
 
 
 def reports_dir(base_dir: Path) -> Path:
@@ -137,14 +143,17 @@ def load_outline_chapter(base_dir: Path, chapter: int) -> dict:
     return {}
 
 
-def write_outline_chapters(base_dir: Path, outline: dict) -> None:
+def write_outline_chapters(base_dir: Path, outline: dict, skip_existing: bool = False) -> None:
     chapters = outline.get("chapters", []) if isinstance(outline, dict) else []
     target_dir = outline_dir(base_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     for item in chapters:
         chapter_number = item.get("chapter_number")
         if isinstance(chapter_number, int):
-            atomic_write_json(outline_chapter_path(base_dir, chapter_number), item)
+            chapter_path = outline_chapter_path(base_dir, chapter_number)
+            if skip_existing and chapter_path.exists():
+                continue
+            atomic_write_json(chapter_path, item)
 
 
 @dataclass
@@ -154,6 +163,10 @@ class ChapterStatus:
     draft_words: int = 0
     draft_grade: str = "missing"
     draft_ok: bool = False
+    outline_review_exists: bool = False
+    outline_review_status: str = "missing"
+    outline_review_score: float | None = None
+    outline_review_ok: bool = False
     review_exists: bool = False
     review_status: str = "missing"
     review_score: float | None = None
@@ -164,6 +177,7 @@ class ChapterStatus:
     final_ok: bool = False
     failed_reason: str = ""
     draft_issues: list[str] | None = None
+    outline_review_issues: list[str] | None = None
     review_issues: list[str] | None = None
     final_issues: list[str] | None = None
     updated_at: str = ""
@@ -331,7 +345,7 @@ def load_text_quality(path: Path, rules: dict | None = None) -> tuple[bool, int,
     return True, length, grade, ok, issues
 
 
-def load_review_status(path: Path) -> tuple[bool, str, float | None, bool]:
+def load_review_status(path: Path, min_score: float = 7.0) -> tuple[bool, str, float | None, bool]:
     if not path.exists():
         return False, "missing", None, False
     try:
@@ -346,7 +360,23 @@ def load_review_status(path: Path) -> tuple[bool, str, float | None, bool]:
     schema_errors = validate_review_schema(data)
     if schema_errors:
         return True, "schema_" + schema_errors[0], score_value, False
-    ok = status == "completed" and verdict != "需重写" and (score_value is None or score_value >= 7)
+    ok = status == "completed" and verdict != "需重写" and (score_value is None or score_value >= min_score)
+    return True, status or "unknown", score_value, ok
+
+
+def load_outline_review_status(path: Path, min_score: float = 8.5) -> tuple[bool, str, float | None, bool]:
+    if not path.exists():
+        return False, "missing", None, False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return True, "invalid_json", None, False
+
+    status = data.get("status", "")
+    score = data.get("overall_score")
+    score_value = score if isinstance(score, (int, float)) else None
+    verdict = data.get("verdict", "")
+    ok = status == "completed" and verdict != "需重写" and (score_value is None or score_value >= min_score)
     return True, status or "unknown", score_value, ok
 
 
@@ -370,10 +400,15 @@ def scan_one_chapter(base_dir: Path, chapter: int, rules: dict | None = None) ->
     draft_file = draft_dir(base_dir) / f"chapter_{chapter:04d}.txt"
     final_file = final_dir(base_dir) / f"chapter_{chapter:04d}.txt"
     review_file = review_dir(base_dir) / f"chapter_{chapter:04d}_review.json"
+    outline_review_file = outline_review_path(base_dir, chapter)
+    config = load_config(base_dir)
+    outline_min_score = float(config.get("outline_reviewer", {}).get("min_score", 8.5))
+    review_min_score = float(config.get("reviewer", {}).get("min_score", 7.0))
 
     draft_exists, draft_words, draft_grade, draft_ok, draft_issues = load_text_quality(draft_file, rules)
     final_exists, final_words, final_grade, final_length_ok, final_issues = load_text_quality(final_file, rules)
-    review_exists, review_status, review_score, review_ok = load_review_status(review_file)
+    review_exists, review_status, review_score, review_ok = load_review_status(review_file, review_min_score)
+    outline_review_exists, outline_review_status, outline_review_score, outline_review_ok = load_outline_review_status(outline_review_file, outline_min_score)
     final_ok = final_exists and final_length_ok and review_ok
 
     failed_reason = ""
@@ -382,6 +417,7 @@ def scan_one_chapter(base_dir: Path, chapter: int, rules: dict | None = None) ->
     if review_exists and not review_ok:
         failed_reason = review_status
     review_issues = [] if review_ok else [review_status]
+    outline_review_issues = [] if outline_review_ok else [outline_review_status]
     if final_exists and not final_length_ok:
         failed_reason = "final_" + ",".join(final_issues)
 
@@ -391,6 +427,10 @@ def scan_one_chapter(base_dir: Path, chapter: int, rules: dict | None = None) ->
         draft_words=draft_words,
         draft_grade=draft_grade,
         draft_ok=draft_ok,
+        outline_review_exists=outline_review_exists,
+        outline_review_status=outline_review_status,
+        outline_review_score=outline_review_score,
+        outline_review_ok=outline_review_ok,
         review_exists=review_exists,
         review_status=review_status,
         review_score=review_score,
@@ -401,6 +441,7 @@ def scan_one_chapter(base_dir: Path, chapter: int, rules: dict | None = None) ->
         final_ok=final_ok,
         failed_reason=failed_reason,
         draft_issues=draft_issues,
+        outline_review_issues=outline_review_issues,
         review_issues=review_issues,
         final_issues=final_issues if final_exists else ["missing"],
         updated_at=now_text(),

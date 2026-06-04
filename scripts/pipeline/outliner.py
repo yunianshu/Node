@@ -81,14 +81,119 @@ def _strip_json_markdown(content: str) -> str:
     return content.strip()
 
 
-def generate_outline_range(start: int, end: int, outline_file: Path = None):
+def _fix_inner_quotes(text: str) -> str:
+    """状态机：识别 JSON 字符串边界，将字符串内未转义的 " 替换为单引号。"""
+    out = []
+    i = 0
+    in_string = False
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if not in_string:
+            if ch == '"':
+                in_string = True
+                out.append(ch)
+            else:
+                out.append(ch)
+        else:
+            if ch == "\\":
+                out.append(ch)
+                if i + 1 < n:
+                    out.append(text[i + 1])
+                    i += 2
+                    continue
+            elif ch == '"':
+                j = i + 1
+                while j < n and text[j] in " \t\n\r":
+                    j += 1
+                next_ch = text[j] if j < n else ""
+                if next_ch in (":", ",", "}", "]", ""):
+                    in_string = False
+                    out.append(ch)
+                else:
+                    out.append("'")
+            else:
+                out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _safe_parse_outline(text: str) -> dict | None:
+    """尝试多种方式解析大纲 JSON。"""
+    # 1. 直接解析
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    # 2. 修复内部引号后再解析
+    try:
+        return json.loads(_fix_inner_quotes(text))
+    except Exception:
+        pass
+    # 3. 截断到最后一个完整的 }
+    for end_marker in ('"\n    }\n  ]\n}', '"\n    }\n  ]', '"\n    }', '"\n}'):
+        idx = text.rfind(end_marker)
+        if idx != -1:
+            # 找到包裹的右大括号
+            end = text.find("}", idx) + 1
+            candidate = text[:end]
+            try:
+                return json.loads(candidate)
+            except Exception:
+                pass
+            try:
+                return json.loads(_fix_inner_quotes(candidate))
+            except Exception:
+                pass
+    return None
+
+
+def generate_outline_range(start: int, end: int, outline_file: Path = None, fill_gaps: bool = False, chapter: int = None, review_feedback: Path = None):
     batch_size = 15
     output_file = outline_file
 
     world = _load_json(WORLD_FILE)
     characters = _load_json(CHARACTERS_FILE)
-    world_json = json.dumps(world, ensure_ascii=False, indent=2)
-    chars_json = json.dumps(characters, ensure_ascii=False, indent=2)
+    
+    # 精简世界观设定，避免请求过大导致 API 超时
+    world_summary = {
+        "title": world.get("title", ""),
+        "world_name": world.get("world_name", ""),
+        "world_description": world.get("world_description", "")[:800],
+        "power_system": {
+            "name": world.get("power_system", {}).get("name", ""),
+            "description": world.get("power_system", {}).get("description", "")[:500],
+        },
+    }
+    world_json = json.dumps(world_summary, ensure_ascii=False, indent=2)
+    
+    # 精简角色设定，只保留主角和关键角色
+    chars_summary = {"_meta": characters.get("_meta", {})}
+    protagonist = characters.get("protagonist", {})
+    chars_summary["protagonist"] = {
+        "name": protagonist.get("name", ""),
+        "identity": protagonist.get("identity", ""),
+        "growth_path": protagonist.get("growth_path", []),
+        "signature_ability": protagonist.get("signature_ability", ""),
+    }
+    chars_summary["companions"] = [
+        {"name": c.get("name"), "identity": c.get("identity"), "role": c.get("role")}
+        for c in characters.get("companions", [])[:3]
+    ]
+    chars_json = json.dumps(chars_summary, ensure_ascii=False, indent=2)
+
+    # 读取审查意见
+    review_feedback_data = {}
+    if review_feedback and review_feedback.exists():
+        try:
+            review_feedback_data = json.loads(review_feedback.read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"[Outliner] 审查意见文件读取失败: {e}")
+
+    # 单章模式：强制只生成指定章节
+    if chapter is not None:
+        start = chapter
+        end = chapter
 
     outline = {"chapters": []}
     last_chapter = 0
@@ -106,32 +211,66 @@ def generate_outline_range(start: int, end: int, outline_file: Path = None):
             for item in outline["chapters"]
             if start <= item.get("chapter_number", 0) <= end
         }
-        if len(covered) == end - start + 1:
+        if not fill_gaps and not chapter and len(covered) == end - start + 1:
             print(f"[Outliner] 单章大纲范围{start}-{end}已覆盖，跳过")
             return
 
-    if output_file and last_chapter >= end:
+    if output_file and last_chapter >= end and not fill_gaps and not chapter:
         print(f"[Outliner] 大纲已生成到第{last_chapter}章，范围{start}-{end}已覆盖，跳过")
         write_outline_chapters(NOVELS_DIR, outline)
         return
 
-    actual_start = max(start, last_chapter + 1) if output_file else start
+    # 计算实际需要生成的章节范围
+    if fill_gaps or chapter:
+        existing_chapters = {item.get("chapter_number") for item in outline.get("chapters", [])}
+        missing = [ch for ch in range(start, end + 1) if ch not in existing_chapters]
+        if not missing:
+            print(f"[Outliner] 范围内无缺失章节，跳过")
+            return
+        # 将缺失章节分组为连续的批次
+        batch_ranges = []
+        batch_s = missing[0]
+        batch_e = missing[0]
+        for ch in missing[1:]:
+            if ch == batch_e + 1:
+                batch_e = ch
+            else:
+                batch_ranges.append((batch_s, batch_e))
+                batch_s = ch
+                batch_e = ch
+        batch_ranges.append((batch_s, batch_e))
+    else:
+        actual_start = max(start, last_chapter + 1) if output_file else start
+        batch_ranges = [(s, min(s + batch_size - 1, end)) for s in range(actual_start, end + 1, batch_size)]
 
     system = """你是一位顶级东方玄幻/武侠/修仙小说大纲设计师。
 你需要设计详细的大纲，每章包含标题、核心事件、涉及角色、场景、情感基调。
 严格按照 premise 中描述的故事设定和主角设定来设计大纲。
 输出必须是合法的JSON格式。"""
 
-    for batch_start in range(actual_start, end + 1, batch_size):
-        batch_end = min(batch_start + batch_size - 1, end)
+    for batch_start, batch_end in batch_ranges:
         print(f"[Outliner] 正在生成第 {batch_start}-{batch_end} 章大纲...")
 
         prev_context = ""
         if outline.get("chapters"):
-            prev_chapters = outline["chapters"][-3:]
-            prev_context = "\n前一批最后几章摘要（用于衔接）：\n"
-            for ch in prev_chapters:
-                prev_context += f"第{ch.get('chapter_number')}章《{ch.get('title')}》：{ch.get('summary', '')[:100]}...\n"
+            # 找到 batch_start 之前最多3章作为上下文
+            prev_candidates = [ch for ch in outline["chapters"] if ch.get("chapter_number", 0) < batch_start]
+            prev_candidates.sort(key=lambda x: x.get("chapter_number", 0))
+            prev_chapters = prev_candidates[-3:]
+            if prev_chapters:
+                prev_context = "\n前一批最后几章摘要（用于衔接）：\n"
+                for ch in prev_chapters:
+                    prev_context += f"第{ch.get('chapter_number')}章《{ch.get('title')}》：{ch.get('summary', '')[:100]}...\n"
+
+        review_section = ""
+        if review_feedback_data:
+            # 只提取当前批次章节的审查意见，避免请求过大
+            batch_feedback = {
+                k: v for k, v in review_feedback_data.items()
+                if v.get("chapter") and batch_start <= v.get("chapter", 0) <= batch_end
+            }
+            if batch_feedback:
+                review_section = f"""\n上一轮大纲审查反馈（请特别注意并改进以下问题）：\n{json.dumps(batch_feedback, ensure_ascii=False, indent=2)}\n"""
 
         prompt = f"""请根据以下世界观和角色设定，生成第{batch_start}章到第{batch_end}章的详细大纲。
 
@@ -144,7 +283,7 @@ def generate_outline_range(start: int, end: int, outline_file: Path = None):
 故事前提：{NOVEL_PREMISE}
 
 {prev_context}
-
+{review_section}
 请输出以下JSON结构：
 {{
   "chapters": [
@@ -178,14 +317,30 @@ def generate_outline_range(start: int, end: int, outline_file: Path = None):
             continue
 
         try:
-            batch_outline = json.loads(_strip_json_markdown(content))
+            stripped = _strip_json_markdown(content)
+            # 先做 mojibake 修复
+            try:
+                from core.json_repair import repair_latin1_gbk_mojibake
+                stripped = repair_latin1_gbk_mojibake(stripped)
+            except Exception:
+                pass
+            # 修复被 max_tokens 截断的 JSON
+            try:
+                from core.json_repair import fix_truncated_json
+                stripped = fix_truncated_json(stripped)
+            except Exception:
+                pass
+            batch_outline = _safe_parse_outline(stripped)
+            if batch_outline is None:
+                raise ValueError("所有 JSON 解析策略均失败")
             new_chapters = batch_outline.get("chapters", [])
             outline["chapters"].extend(new_chapters)
             print(f"[Outliner] 第 {batch_start}-{batch_end} 章大纲已生成（{len(new_chapters)}章）")
             if output_file:
                 output_file.parent.mkdir(parents=True, exist_ok=True)
                 output_file.write_text(json.dumps(outline, ensure_ascii=False, indent=2), encoding="utf-8")
-            write_outline_chapters(NOVELS_DIR, {"chapters": new_chapters})
+            skip_existing = fill_gaps or (chapter is not None)
+            write_outline_chapters(NOVELS_DIR, {"chapters": new_chapters}, skip_existing=skip_existing)
         except Exception as e:
             print(f"[Outliner] 第 {batch_start}-{batch_end} 章解析失败: {e}")
             raw_file = NOVELS_DIR / "logs" / f"outline_batch_{batch_start:04d}.raw"
@@ -201,6 +356,9 @@ def main():
     parser.add_argument("--start", type=int, default=1, help="起始章节")
     parser.add_argument("--end", type=int, default=0, help="结束章节")
     parser.add_argument("--outline-file", type=str, default="", help="指定大纲索引输出文件路径（用于并行生成）")
+    parser.add_argument("--fill-gaps", action="store_true", help="只生成缺失的章节，跳过已存在的")
+    parser.add_argument("--chapter", type=int, default=0, help="只生成指定单章的大纲")
+    parser.add_argument("--review-feedback", type=str, default="", help="大纲审查意见JSON文件路径，用于指导改进")
     args = parser.parse_args()
 
     if not args.project:
@@ -211,13 +369,23 @@ def main():
     end = args.end or CONFIG["total_chapters"]
 
     print("=" * 60)
-    print(f"Outliner Agent 启动 - 范围: 第{args.start}章到第{end}章")
+    if args.chapter:
+        print(f"Outliner Agent 启动 - 单章: 第{args.chapter}章")
+    elif args.fill_gaps:
+        print(f"Outliner Agent 启动 - 填补空缺: 第{args.start}章到第{end}章")
+    else:
+        print(f"Outliner Agent 启动 - 范围: 第{args.start}章到第{end}章")
     print(f"项目: {NOVELS_DIR}")
     print("=" * 60)
 
     NOVELS_DIR.mkdir(parents=True, exist_ok=True)
     outline_file = Path(args.outline_file) if args.outline_file else None
-    generate_outline_range(args.start, end, outline_file)
+    generate_outline_range(
+        args.start, end, outline_file,
+        fill_gaps=args.fill_gaps,
+        chapter=args.chapter if args.chapter > 0 else None,
+        review_feedback=Path(args.review_feedback) if args.review_feedback else None,
+    )
 
     print("[Outliner] 全部完成")
 

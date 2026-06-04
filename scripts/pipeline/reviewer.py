@@ -168,6 +168,7 @@ def review_chapter(chapter_number: int) -> dict:
     genre_text = "\n".join(genre_hints) if genre_hints else "请根据世界观和角色设定判断题材类型。"
 
     quality = CONFIG.get("quality", {})
+    review_min_score = float(CONFIG.get("reviewer", {}).get("min_score", 7.0))
     min_words = int(quality.get("min_chapter_words", 5000))
     max_words = int(quality.get("max_chapter_words", 12000))
     warn_min = int(quality.get("warn_min_chapter_words", min_words - 200))
@@ -177,7 +178,7 @@ def review_chapter(chapter_number: int) -> dict:
 你需要从多个维度审查章节质量，并给出具体的修改建议。
 本书是《{book_title}》。
 {genre_text}
-评分标准：9-10分优秀，8-9分良好，7-8分及格，低于7分需修改，低于5分需重写。
+评分标准：9-10分优秀，8-9分良好，达到{review_min_score}分为通过，低于{review_min_score}分需重写。
 优秀章节完全可以给出9分以上，请根据实际质量客观评分，不要人为压低分数。
 输出必须是合法的JSON格式。"""
 
@@ -231,7 +232,7 @@ def review_chapter(chapter_number: int) -> dict:
 3. 剧情推进是否自然，有无逻辑漏洞或突兀转折
 4. 对话是否符合角色身份和时代背景
 5. 必须给出具体的修改建议，不能泛泛而谈
-6. 如低于7分必须标记为"需重写"
+6. 如低于{review_min_score}分必须标记为"需重写"
 7. 字数不足{warn_min}或超过{warn_max}要标记字数问题
 8. 必须输出合法JSON"""
 
@@ -258,6 +259,31 @@ def review_chapter(chapter_number: int) -> dict:
         review_data = json.loads(content)
         review_data["status"] = "completed"
         review_data["local_analysis"] = local_analysis
+        def _parse_score(val):
+            if isinstance(val, (int, float)):
+                return float(val)
+            if isinstance(val, str):
+                val = val.strip()
+                # 处理 "6/10"、"8.5/10" 等格式
+                if "/" in val:
+                    num = val.split("/")[0].strip()
+                    try:
+                        return float(num)
+                    except ValueError:
+                        pass
+                try:
+                    return float(val)
+                except ValueError:
+                    pass
+            return val
+
+        # 将 overall_score 统一转为 float，避免字符串类型导致 schema 校验失败
+        review_data["overall_score"] = _parse_score(review_data.get("overall_score"))
+        # 同时将 scores 子项也转为 float
+        scores = review_data.get("scores")
+        if isinstance(scores, dict):
+            for k, v in list(scores.items()):
+                scores[k] = _parse_score(v)
     except Exception as e:
         log(f"[Reviewer] JSON解析失败: {e}")
         review_data = {

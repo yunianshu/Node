@@ -33,6 +33,7 @@ def get_progress_data():
     outline_count = outline_completed_count(NOVELS_DIR, 1, CONFIG["total_chapters"])
 
     statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"])
+    outline_reviewed_count = sum(1 for s in statuses.values() if s.outline_review_ok)
     draft_count = sum(1 for s in statuses.values() if s.draft_exists)
     review_count = sum(1 for s in statuses.values() if s.review_ok)
     final_count = sum(1 for s in statuses.values() if s.final_ok)
@@ -42,6 +43,7 @@ def get_progress_data():
 
     return {
         "outline": outline_count,
+        "outline_reviewed": outline_reviewed_count,
         "draft": draft_count,
         "reviewed": review_count,
         "final": final_count,
@@ -83,6 +85,7 @@ def main():
         config=CONFIG,
         title=title,
         outline=p["outline"],
+        outline_reviewed=p["outline_reviewed"],
         draft=p["draft"],
         reviewed=p["reviewed"],
         final=p["final"],

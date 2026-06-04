@@ -136,11 +136,32 @@ def normalize_outline_text(value: Any) -> Any:
 def generate_chapter(chapter_number: int, retry: int = 0) -> str:
     chapter_file = CHAPTERS_DIR / f"chapter_{chapter_number:04d}.txt"
 
+    review_file = review_dir(NOVELS_DIR) / f"chapter_{chapter_number:04d}_review.json"
+    review_data = None
+    is_rewrite = False
+    if review_file.exists():
+        try:
+            review_data = load_json(review_file)
+            verdict = review_data.get("verdict", "")
+            score = review_data.get("overall_score", 10)
+            try:
+                score = float(score)
+            except (TypeError, ValueError):
+                score = 10.0
+            min_review_score = float(CONFIG.get("reviewer", {}).get("min_score", 7.0))
+            if verdict == "需重写" or score < min_review_score:
+                is_rewrite = True
+                log(f"[Writer] 第{chapter_number}章检测到低分审查报告（评分{score}，verdict:{verdict}），将基于建议重写")
+        except Exception:
+            pass
+
     exists, existing_words, existing_ok = read_text_length(chapter_file)
-    if exists and existing_ok:
+    if exists and existing_ok and not is_rewrite:
         log(f"[Writer] 第{chapter_number}章已存在且字数合格（{existing_words}字），跳过")
         return "exists"
-    if exists:
+    if exists and is_rewrite:
+        log(f"[Writer] 第{chapter_number}章已有初稿但审查未通过，基于审查意见重新生成")
+    elif exists:
         log(f"[Writer] 第{chapter_number}章已存在但字数不合格（{existing_words}字），重新生成")
 
     world = load_json(WORLD_FILE)
@@ -162,20 +183,6 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
             with open(prev_file, "r", encoding="utf-8") as f:
                 content = f.read()
             prev_ending = content[-500:] if len(content) > 500 else content
-
-    review_file = review_dir(NOVELS_DIR) / f"chapter_{chapter_number:04d}_review.json"
-    review_data = None
-    is_rewrite = False
-    if review_file.exists():
-        try:
-            review_data = load_json(review_file)
-            verdict = review_data.get("verdict", "")
-            score = review_data.get("overall_score", 10)
-            if verdict == "需重写" or score < 7:
-                is_rewrite = True
-                log(f"[Writer] 第{chapter_number}章检测到低分审查报告（评分{score}，verdict:{verdict}），将基于建议重写")
-        except Exception:
-            pass
 
     review_section = ""
     if is_rewrite and review_data:

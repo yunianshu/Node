@@ -11,10 +11,10 @@ from pathlib import Path
 
 DEFAULT_CONFIG = {
     "total_chapters": 2000,
-    "model": "MiniMax-M2.7-highspeed",
+    "model": "MiniMax-M3",
     "mmx_path": "C:/Users/59290/AppData/Roaming/npm/node_modules/mmx-cli/dist/mmx.mjs",
     "webhook_url": "",
-    "api_qps": 2.0,
+    "api_qps": 5.0,
     "writer": {
         "max_tokens": 8192,
         "temperature": 0.7,
@@ -25,6 +25,11 @@ DEFAULT_CONFIG = {
         "max_tokens": 4096,
         "temperature": 0.3,
         "min_score": 7.0,
+    },
+    "outline_reviewer": {
+        "max_tokens": 4096,
+        "temperature": 0.3,
+        "min_score": 8.5,
     },
     "planner": {
         "max_tokens": 8192,

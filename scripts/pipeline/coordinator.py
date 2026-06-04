@@ -32,17 +32,34 @@ from core.push_notifier import (
 )
 from core.workflow_state import (
     highest_contiguous,
+    load_outline_review_status,
+    load_review_status,
+    outline_chapter_path,
     outline_completed_count,
     outline_index_path,
+    outline_review_dir,
     outlines_complete,
     report_path,
     review_dir,
     scan_chapter_status,
     write_status_file,
 )
-from tool_paths import script_path as resolve_script_path
-
 configure_stdio()
+
+PIPELINE_SCRIPTS = {
+    "planner.py": TOOLS_ROOT / "pipeline" / "planner.py",
+    "outliner.py": TOOLS_ROOT / "pipeline" / "outliner.py",
+    "outline_reviewer.py": TOOLS_ROOT / "pipeline" / "outline_reviewer.py",
+    "writer.py": TOOLS_ROOT / "pipeline" / "writer.py",
+    "reviewer.py": TOOLS_ROOT / "pipeline" / "reviewer.py",
+}
+
+
+def resolve_script_path(script_name: str) -> Path:
+    try:
+        return PIPELINE_SCRIPTS[script_name]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported pipeline script: {script_name}") from exc
 
 NOVELS_DIR = None
 MMX_CLI_PATH = "C:/Users/Administrator/AppData/Roaming/npm/node_modules/mmx-cli/dist/mmx.mjs"
@@ -71,12 +88,13 @@ review_workers = None
 
 
 def init_project(project_dir: str | Path) -> None:
-    global NOVELS_DIR, CHAPTERS_DIR, REVIEWS_DIR, LOGS_DIR, WORLD_FILE, OUTLINE_FILE
+    global NOVELS_DIR, CHAPTERS_DIR, REVIEWS_DIR, OUTLINE_REVIEW_DIR, LOGS_DIR, WORLD_FILE, OUTLINE_FILE
     global CHARACTERS_FILE, PROGRESS_FILE, LOG_FILE, CONFIG, SCRIPTS_DIR, WECHAT_WEBHOOK
     global default_num_workers, num_workers, default_review_workers, review_workers
     NOVELS_DIR = Path(project_dir).resolve()
     CHAPTERS_DIR = NOVELS_DIR / "chapters" / "draft"
     REVIEWS_DIR = review_dir(NOVELS_DIR)
+    OUTLINE_REVIEW_DIR = outline_review_dir(NOVELS_DIR)
     LOGS_DIR = NOVELS_DIR / "logs"
     WORLD_FILE = NOVELS_DIR / "world.json"
     OUTLINE_FILE = outline_index_path(NOVELS_DIR)
@@ -120,11 +138,13 @@ def get_progress_summary():
     draft_count = sum(1 for s in statuses.values() if s.draft_exists)
     reviewed = sum(1 for s in statuses.values() if s.review_ok)
     final_count = sum(1 for s in statuses.values() if s.final_ok)
+    outline_reviewed = sum(1 for s in statuses.values() if s.outline_review_ok)
 
     outline_count = outline_completed_count(NOVELS_DIR, 1, CONFIG["total_chapters"])
 
     return {
         "outline": outline_count,
+        "outline_reviewed": outline_reviewed,
         "draft": draft_count,
         "reviewed": reviewed,
         "final": final_count,
@@ -133,14 +153,67 @@ def get_progress_summary():
 
 
 def progress_pusher_thread(interval_seconds: int = 120):
+    """跨进程单例的进度推送线程：使用文件锁确保只有第一个 Coordinator 进程推送。"""
     global _last_push_time, _active_writers
+    import os as _os
+
+    def _process_exists(pid_text: str) -> bool:
+        try:
+            pid = int(str(pid_text).strip())
+        except (TypeError, ValueError):
+            return False
+        if pid <= 0:
+            return False
+        if os.name == "nt":
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+            return result.returncode == 0 and str(pid) in result.stdout
+        try:
+            _os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    # 文件锁：跨进程单例
+    lock_dir = NOVELS_DIR / "logs"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_file = lock_dir / "wechat_pusher.lock"
+    try:
+        fd = _os.open(str(lock_file), _os.O_CREAT | _os.O_EXCL | _os.O_WRONLY)
+        _os.write(fd, str(_os.getpid()).encode("utf-8"))
+    except FileExistsError:
+        lock_pid = lock_file.read_text().strip() if lock_file.exists() else "?"
+        if lock_file.exists() and not _process_exists(lock_pid):
+            try:
+                lock_file.unlink()
+                log(f"[WeChat] 清理过期推送锁（PID {lock_pid}）")
+                fd = _os.open(str(lock_file), _os.O_CREAT | _os.O_EXCL | _os.O_WRONLY)
+                _os.write(fd, str(_os.getpid()).encode("utf-8"))
+            except Exception as exc:
+                log(f"[WeChat] 清理过期推送锁失败: {exc}")
+                return
+        else:
+            # 已有别的进程在推
+            log(f"[WeChat] 已有其他 Coordinator 进程在推送（PID {lock_pid}），本进程跳过")
+            return
+    try:
+        _os.close(fd)
+    except Exception:
+        pass
+    try:
+        lock_file.write_text(str(_os.getpid()), encoding="utf-8")
+    except Exception:
+        pass
+    log(f"[WeChat] 本进程获得推送锁 (PID {_os.getpid()})，开始每{interval_seconds}秒推送")
+
     while True:
         time.sleep(interval_seconds)
-        with _progress_lock:
-            now = time.time()
-            if now - _last_push_time < interval_seconds:
-                continue
-            _last_push_time = now
 
         p = get_progress_summary()
         title = get_book_title()
@@ -148,6 +221,7 @@ def progress_pusher_thread(interval_seconds: int = 120):
             config=CONFIG,
             title=title,
             outline=p["outline"],
+            outline_reviewed=p["outline_reviewed"],
             draft=p["draft"],
             reviewed=p["reviewed"],
             final=p["final"],
@@ -156,7 +230,7 @@ def progress_pusher_thread(interval_seconds: int = 120):
             active_writers=_active_writers,
         )
         status = "已推送" if ok else "跳过(无webhook)"
-        log(f"[WeChat] 进度{status}: 初稿{p['draft']}/{CONFIG['total_chapters']}, 审查{p['reviewed']}/{CONFIG['total_chapters']}")
+        log(f"[WeChat] 进度{status}: 大纲审{p["outline_reviewed"]}/{CONFIG["total_chapters"]}, 初稿{p["draft"]}/{CONFIG["total_chapters"]}, 审查{p["reviewed"]}/{CONFIG["total_chapters"]}")
 
 
 def notify_stage(stage: str, status: str, start: int | None = None, end: int | None = None,
@@ -268,8 +342,10 @@ def load_progress():
         "planner_done": False,
         "last_generated_chapter": 0,
         "last_reviewed_chapter": 0,
+        "last_outline_reviewed_chapter": 0,
         "failed_chapters": [],
-        "rewrite_queue": []
+        "rewrite_queue": [],
+        "outline_rewrite_queue": []
     }
 
 
@@ -292,10 +368,11 @@ def get_completed_chapters():
     return sorted(completed)
 
 
-def check_outline_complete():
-    count = outline_completed_count(NOVELS_DIR, 1, CONFIG["total_chapters"])
-    log(f"[Coordinator] 当前单章大纲: {count}/{CONFIG['total_chapters']} 章")
-    return outlines_complete(NOVELS_DIR, 1, CONFIG["total_chapters"])
+def check_outline_complete(start: int = 1, end: int | None = None):
+    end = end if end is not None else CONFIG["total_chapters"]
+    count = outline_completed_count(NOVELS_DIR, start, end)
+    log(f"[Coordinator] 当前单章大纲: {count}/{end - start + 1} 章 (请求范围 {start}-{end})")
+    return outlines_complete(NOVELS_DIR, start, end)
 
 
 def check_base_files_exist():
@@ -317,7 +394,7 @@ def run_outliner():
     log("[Coordinator] 启动 Outliner Agent")
     log("=" * 60)
     notify_stage("大纲", "开始")
-    rc = run_script("outliner.py")
+    rc = run_script("outliner.py", "--fill-gaps")
     notify_stage("大纲", "完成" if rc == 0 else "异常", error="" if rc == 0 else f"退出码 {rc}")
     return rc
 
@@ -547,6 +624,19 @@ def run_parallel_agents(agent_name: str, start: int, end: int, agent_workers: in
     return results
 
 
+def summarize_agent_results(results: list[tuple[int, int, int]]) -> tuple[int, int]:
+    """兼容旧测试与旧调用方：按章节范围汇总处理量与失败量。"""
+    processed = 0
+    failed = 0
+    for start, end, rc in results:
+        span = max(0, end - start + 1)
+        if rc != 0:
+            failed += span
+        else:
+            processed += span
+    return processed, failed
+
+
 def check_rewrites(start: int, end: int) -> list:
     rewrite_list = []
     for ch in range(start, end + 1):
@@ -554,12 +644,105 @@ def check_rewrites(start: int, end: int) -> list:
         if review_file.exists():
             with open(review_file, "r", encoding="utf-8") as f:
                 review = json.load(f)
-            verdict = review.get("verdict", "")
-            score = review.get("overall_score", 10)
-            if verdict == "需重写" or score < 7:
+            verdict = str(review.get("verdict", ""))
+            score_raw = review.get("overall_score", 10)
+            try:
+                score = float(score_raw)
+            except (TypeError, ValueError):
+                score = 10.0
+            threshold = float(CONFIG.get("reviewer", {}).get("min_score", 7.0))
+            if verdict == "需重写" or score < threshold:
                 rewrite_list.append(ch)
                 log(f"[Coordinator] 第{ch}章评分{score}， verdict: {verdict}，标记为需重写")
     return rewrite_list
+
+
+def run_outline_reviewer_batch(start: int, end: int) -> list:
+    log("=" * 60)
+    log(f"[Coordinator] 启动 Outline Reviewer Agent: 第{start}-{end}章")
+    log("=" * 60)
+    return run_parallel_agents("outline_reviewer.py", start, end)
+
+
+def check_outline_rewrites(start: int, end: int) -> list:
+    rewrite_list = []
+    min_score = float(CONFIG.get("outline_reviewer", {}).get("min_score", 8.5))
+    for ch in range(start, end + 1):
+        review_file = OUTLINE_REVIEW_DIR / f"chapter_{ch:04d}_review.json"
+        exists, status, score, ok = load_outline_review_status(review_file, min_score)
+        if exists and not ok:
+            rewrite_list.append(ch)
+            log(f"[Coordinator] 第{ch}章大纲评分{score}（门槛{min_score}），状态{status}，标记为需重生成")
+    return rewrite_list
+
+
+def run_outline_repair_queue(chapters: list[int], max_passes: int = 2) -> list[int]:
+    remaining = sorted(set(chapters))
+    if not remaining:
+        return []
+
+    for attempt in range(1, max_passes + 1):
+        log(f"[Coordinator] Outline补偿第{attempt}/{max_passes}轮，待补齐 {len(remaining)} 章")
+
+        # 收集旧审查意见作为反馈，然后删除旧报告，确保新大纲会被重新审查。
+        review_feedback_data = {}
+        for ch in remaining:
+            outline_file = outline_chapter_path(NOVELS_DIR, ch)
+            review_file = OUTLINE_REVIEW_DIR / f"chapter_{ch:04d}_review.json"
+            if outline_file.exists():
+                outline_file.unlink()
+                log(f"[Coordinator] 删除第{ch}章不合格大纲")
+            if review_file.exists():
+                try:
+                    review_data = json.loads(review_file.read_text(encoding="utf-8"))
+                    feedback = {
+                        "chapter": ch,
+                        "overall_score": review_data.get("overall_score"),
+                        "verdict": review_data.get("verdict"),
+                        "weaknesses": review_data.get("weaknesses", []),
+                        "suggestions": review_data.get("suggestions", []),
+                        "continuity_issues": review_data.get("continuity_issues", []),
+                        "summary": review_data.get("summary", ""),
+                    }
+                    review_feedback_data[str(ch)] = feedback
+                except Exception:
+                    pass
+                try:
+                    review_file.unlink()
+                    log(f"[Coordinator] 删除第{ch}章旧大纲审查报告，等待重审")
+                except Exception as exc:
+                    log(f"[WARNING] 删除第{ch}章旧大纲审查报告失败: {exc}")
+
+        # 将审查意见写入临时文件
+        review_feedback_file = NOVELS_DIR / "logs" / "outline_review_feedback.json"
+        review_feedback_file.parent.mkdir(parents=True, exist_ok=True)
+        review_feedback_file.write_text(json.dumps(review_feedback_data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        # 使用 fill-gaps 模式重新生成缺失大纲，并传入审查意见
+        rc = run_script(
+            "outliner.py",
+            "--start", str(min(remaining)),
+            "--end", str(max(remaining)),
+            "--fill-gaps",
+            "--review-feedback", str(review_feedback_file),
+        )
+        if rc != 0:
+            log(f"[WARNING] Outliner 填补失败 (rc={rc})")
+
+        # 重新审查
+        run_outline_reviewer_batch(min(remaining), max(remaining))
+
+        # 检查还有多少不通过
+        remaining = check_outline_rewrites(min(remaining), max(remaining))
+        remaining = [ch for ch in remaining if ch in chapters]
+        if not remaining:
+            log("[Coordinator] 大纲补偿完成，所有章节已通过审查")
+            return []
+
+        time.sleep(CONFIG["coordinator"]["pause_between_batches"])
+
+    log(f"[WARNING] 大纲补偿后仍有 {len(remaining)} 章未通过: {remaining}")
+    return remaining
 
 
 def all_reviews_finished(statuses: dict, start: int, end: int) -> bool:
@@ -567,6 +750,239 @@ def all_reviews_finished(statuses: dict, start: int, end: int) -> bool:
         status = statuses.get(ch)
         if not status or not status.review_exists or status.review_status != "completed":
             return False
+    return True
+
+
+def _load_json_file(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _safe_unlink(path: Path) -> None:
+    try:
+        if path.exists():
+            path.unlink()
+    except Exception as exc:
+        log(f"[WARNING] 删除文件失败 {path}: {exc}")
+
+
+def _outline_review_file(chapter: int) -> Path:
+    return OUTLINE_REVIEW_DIR / f"chapter_{chapter:04d}_review.json"
+
+
+def _draft_file(chapter: int) -> Path:
+    return CHAPTERS_DIR / f"chapter_{chapter:04d}.txt"
+
+
+def _review_file(chapter: int) -> Path:
+    return REVIEWS_DIR / f"chapter_{chapter:04d}_review.json"
+
+
+def _final_file(chapter: int) -> Path:
+    return NOVELS_DIR / "chapters" / "final" / f"chapter_{chapter:04d}.txt"
+
+
+def _review_feedback(review_data: dict, chapter: int, gate: str, round_no: int, attempt: int) -> dict:
+    return {
+        "chapter": chapter,
+        "gate": gate,
+        "round": round_no,
+        "attempt": attempt,
+        "overall_score": review_data.get("overall_score"),
+        "verdict": review_data.get("verdict"),
+        "weaknesses": review_data.get("weaknesses", []),
+        "suggestions": review_data.get("suggestions", []),
+        "continuity_issues": review_data.get("continuity_issues", []),
+        "summary": review_data.get("summary", ""),
+    }
+
+
+def _failure_analysis(chapter: int, gate: str, reviews: list[dict]) -> dict:
+    scores = []
+    weaknesses = []
+    suggestions = []
+    statuses = []
+    for item in reviews:
+        try:
+            if item.get("overall_score") is not None:
+                scores.append(float(item.get("overall_score")))
+        except (TypeError, ValueError):
+            pass
+        statuses.append(str(item.get("status", "")))
+        weaknesses.extend([str(v) for v in item.get("weaknesses", []) if v])
+        suggestions.extend([str(v) for v in item.get("suggestions", []) if v])
+    top_weaknesses = list(dict.fromkeys(weaknesses))[:8]
+    top_suggestions = list(dict.fromkeys(suggestions))[:8]
+    return {
+        "chapter": chapter,
+        "gate": gate,
+        "attempts": len(reviews),
+        "scores": scores,
+        "best_score": max(scores) if scores else None,
+        "statuses": statuses,
+        "likely_reasons": top_weaknesses or statuses or ["no_valid_review"],
+        "adjustments": top_suggestions or top_weaknesses or ["提高剧情完整度、人物动机、节奏和可写性"],
+    }
+
+
+def _write_gate_feedback(chapter: int, gate: str, reviews: list[dict], round_no: int) -> Path:
+    analysis = _failure_analysis(chapter, gate, reviews)
+    payload = {
+        f"{chapter}": {
+            "chapter": chapter,
+            "gate": gate,
+            "analysis_round": round_no,
+            "failure_analysis": analysis,
+            "reviews": reviews[-3:],
+        }
+    }
+    feedback_file = LOGS_DIR / f"{gate}_feedback_ch{chapter:04d}_round{round_no}.json"
+    feedback_file.parent.mkdir(parents=True, exist_ok=True)
+    feedback_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return feedback_file
+
+
+def _write_failure_report(chapter: int, gate: str, reviews: list[dict]) -> dict:
+    report = _failure_analysis(chapter, gate, reviews)
+    report["failed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    report_file = report_path(NOVELS_DIR, f"{gate}_failure_chapter_{chapter:04d}.json")
+    report_file.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return report
+
+
+def _push_gate_failure(chapter: int, gate: str, report: dict) -> None:
+    reason = "; ".join(str(item) for item in report.get("likely_reasons", [])[:5])
+    message = (
+        f"第{chapter}章{gate}三轮修正仍未通过。"
+        f"最佳分数: {report.get('best_score')}; 原因: {reason}"
+    )
+    log(f"[ERROR] {message}")
+    _push_error(config=CONFIG, title=get_book_title(), error=message)
+
+
+def _outline_gate_passed(chapter: int) -> bool:
+    min_score = float(CONFIG.get("outline_reviewer", {}).get("min_score", 8.5))
+    _, _, _, ok = load_outline_review_status(_outline_review_file(chapter), min_score)
+    return ok
+
+
+def _draft_gate_passed(chapter: int) -> bool:
+    min_score = float(CONFIG.get("reviewer", {}).get("min_score", 7.0))
+    _, _, _, ok = load_review_status(_review_file(chapter), min_score)
+    return ok
+
+
+def _promote_draft_to_final(chapter: int) -> bool:
+    source = _draft_file(chapter)
+    target = _final_file(chapter)
+    if not source.exists():
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(source.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8")
+    log(f"[Coordinator] 第{chapter}章初稿审查通过，已写入终稿 -> {target}")
+    return True
+
+
+def process_outline_gate(chapter: int) -> bool:
+    if outline_chapter_path(NOVELS_DIR, chapter).exists() and _outline_gate_passed(chapter):
+        log(f"[Coordinator] 第{chapter}章大纲和大纲审已通过，跳过")
+        return True
+
+    max_rounds = int(CONFIG.get("coordinator", {}).get("outline_analysis_rounds", 3) or 3)
+    attempts_per_round = int(CONFIG.get("coordinator", {}).get("outline_attempts_per_round", 3) or 3)
+    reviews: list[dict] = []
+    feedback_file: Path | None = None
+
+    for round_no in range(1, max_rounds + 1):
+        if reviews:
+            feedback_file = _write_gate_feedback(chapter, "outline", reviews, round_no)
+            log(f"[Coordinator] 第{chapter}章大纲进入第{round_no}轮原因调整: {feedback_file}")
+
+        for attempt in range(1, attempts_per_round + 1):
+            log(f"[Coordinator] 第{chapter}章大纲生成/初审 {round_no}.{attempt}")
+            existing_review = _load_json_file(_outline_review_file(chapter))
+            if existing_review:
+                reviews.append(_review_feedback(existing_review, chapter, "outline", round_no, attempt))
+            _safe_unlink(outline_chapter_path(NOVELS_DIR, chapter))
+            _safe_unlink(_outline_review_file(chapter))
+
+            args = ["--chapter", str(chapter)]
+            if feedback_file:
+                args += ["--review-feedback", str(feedback_file)]
+            if run_script("outliner.py", *args) != 0:
+                reviews.append({"chapter": chapter, "status": "outliner_failed"})
+                continue
+            if run_script("outline_reviewer.py", "--chapter", str(chapter)) != 0:
+                reviews.append({"chapter": chapter, "status": "outline_reviewer_failed"})
+                continue
+
+            review_data = _load_json_file(_outline_review_file(chapter))
+            reviews.append(_review_feedback(review_data, chapter, "outline", round_no, attempt))
+            if _outline_gate_passed(chapter):
+                log(f"[Coordinator] 第{chapter}章大纲初审通过")
+                return True
+
+    report = _write_failure_report(chapter, "outline", reviews)
+    _push_gate_failure(chapter, "大纲初审", report)
+    return False
+
+
+def process_draft_gate(chapter: int) -> bool:
+    if _draft_file(chapter).exists() and _draft_gate_passed(chapter):
+        return _promote_draft_to_final(chapter)
+
+    max_rounds = int(CONFIG.get("coordinator", {}).get("draft_analysis_rounds", 3) or 3)
+    attempts_per_round = int(CONFIG.get("coordinator", {}).get("draft_attempts_per_round", 3) or 3)
+    reviews: list[dict] = []
+
+    for round_no in range(1, max_rounds + 1):
+        if reviews:
+            feedback_file = _write_gate_feedback(chapter, "draft", reviews, round_no)
+            log(f"[Coordinator] 第{chapter}章初稿进入第{round_no}轮原因调整: {feedback_file}")
+
+        for attempt in range(1, attempts_per_round + 1):
+            log(f"[Coordinator] 第{chapter}章初稿生成/审查 {round_no}.{attempt}")
+            if run_script("writer.py", "--chapter", str(chapter)) != 0:
+                reviews.append({"chapter": chapter, "status": "writer_failed"})
+                continue
+            _safe_unlink(_review_file(chapter))
+            if run_script("reviewer.py", "--chapter", str(chapter)) != 0:
+                reviews.append({"chapter": chapter, "status": "reviewer_failed"})
+                continue
+            review_data = _load_json_file(_review_file(chapter))
+            reviews.append(_review_feedback(review_data, chapter, "draft", round_no, attempt))
+            if _draft_gate_passed(chapter):
+                return _promote_draft_to_final(chapter)
+
+    report = _write_failure_report(chapter, "draft", reviews)
+    _push_gate_failure(chapter, "初稿审查", report)
+    return False
+
+
+def run_serial_quality_workflow(start: int, end: int) -> bool:
+    for chapter in range(start, end + 1):
+        log("=" * 60)
+        log(f"[Coordinator] 单章质量门开始: 第{chapter}章")
+        log("=" * 60)
+        if not process_outline_gate(chapter):
+            return False
+        if not process_draft_gate(chapter):
+            return False
+
+        statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"])
+        write_status_file(NOVELS_DIR, statuses.values())
+        progress = load_progress()
+        progress["last_outline_reviewed_chapter"] = highest_contiguous(statuses, 1, "outline_review_ok")
+        progress["last_generated_chapter"] = highest_contiguous(statuses, 1, "draft_ok")
+        progress["last_reviewed_chapter"] = highest_contiguous(statuses, 1, "review_ok")
+        progress["failed_chapters"] = []
+        progress["rewrite_queue"] = []
+        progress["outline_rewrite_queue"] = []
+        save_progress(progress)
     return True
 
 
@@ -611,9 +1027,6 @@ def main():
     parser.add_argument("--start", type=int, default=1, help="起始章节")
     parser.add_argument("--end", type=int, default=0, help="结束章节")
     parser.add_argument("--skip-planner", action="store_true", help="跳过Planner阶段")
-    parser.add_argument("--skip-review", action="store_true", help="跳过Review阶段")
-    parser.add_argument("--rewrite-only", action="store_true", help="只运行重写")
-    parser.add_argument("--planner-parallel", action="store_true", help="使用60 Agent并行生成大纲")
     args = parser.parse_args()
 
     if not args.project:
@@ -643,7 +1056,7 @@ def main():
         log("[Coordinator] 企业微信进度推送线程已存在，跳过")
 
     progress = load_progress()
-    log(f"[Coordinator] 当前进度: 已生成 {progress['last_generated_chapter']} 章，已审查 {progress['last_reviewed_chapter']} 章")
+    log(f"[Coordinator] 当前进度: 大纲审 {progress.get('last_outline_reviewed_chapter', 0)} 章，已生成 {progress['last_generated_chapter']} 章，已审查 {progress['last_reviewed_chapter']} 章")
 
     batch_size = args.batch_size or CONFIG["coordinator"]["batch_size"]
     end_chapter = args.end or CONFIG["total_chapters"]
@@ -665,152 +1078,11 @@ def main():
         log("[ERROR] Planner未完成且跳过标志未设置")
         return
 
-    if not check_outline_complete():
-        if args.skip_planner:
-            log("[ERROR] 大纲未完成且设置了 --skip-planner，停止后续 Writer/Reviewer/Rewrite")
-            return
-        if args.planner_parallel:
-            log("[Coordinator] 使用批量Outliner并行生成大纲...")
-            notify_stage("大纲", "开始", 1, CONFIG["total_chapters"])
-            rc = run_script("planner_parallel.py")
-            outline_count = outline_completed_count(NOVELS_DIR, 1, CONFIG["total_chapters"])
-            notify_stage(
-                "大纲",
-                "完成" if rc == 0 else "异常",
-                1,
-                CONFIG["total_chapters"],
-                processed=outline_count,
-                failed=max(0, CONFIG["total_chapters"] - outline_count),
-                error="" if rc == 0 else f"退出码 {rc}",
-            )
-        else:
-            rc = run_outliner()
-        if rc != 0:
-            log("[ERROR] Outliner执行失败，请检查日志")
-            return
-        if not check_outline_complete():
-            log("[ERROR] 大纲仍未完成，停止后续 Writer/Reviewer/Rewrite")
-            return
-
-    actual_outline_count = outline_completed_count(NOVELS_DIR, 1, CONFIG["total_chapters"])
-    existing_statuses = scan_chapter_status(NOVELS_DIR, args.start, end_chapter)
-    write_status_file(NOVELS_DIR, existing_statuses.values())
-    first_invalid = next(
-        (ch for ch in range(args.start, end_chapter + 1) if not existing_statuses[ch].draft_ok),
-        end_chapter + 1,
-    )
-    start_chapter = max(args.start, first_invalid)
-
-    log(f"[Coordinator] 生成范围: 第{start_chapter}-{end_chapter}章（单章大纲共{actual_outline_count}章），批次大小: {batch_size}")
-
-    for batch_start in range(start_chapter, end_chapter + 1, batch_size):
-        batch_end = min(batch_start + batch_size - 1, end_chapter)
-
-        all_quotas = check_all_quotas()
-        text_remaining = check_quota()
-
-        current_batch_size = batch_end - batch_start + 1
-        calls_needed = current_batch_size * (1 if args.skip_review else 2)
-
-        if text_remaining < calls_needed:
-            log(f"[Coordinator] 文本配额不足（剩余{text_remaining}，需要{calls_needed}）")
-            other_quotas = []
-            for name, info in all_quotas.items():
-                if name != "MiniMax-M*" and info["remaining"] > 0:
-                    other_quotas.append(f"{name}: {info['remaining']}/{info['limit']}")
-            if other_quotas:
-                log(f"[Coordinator] 其他可用配额: {', '.join(other_quotas)}")
-                log(f"[Coordinator] 注意：其他API（语音/视频/音乐等）无法生成文本内容，需等待文本配额重置")
-            log(f"[Coordinator] 等待配额重置...")
-            wait_minutes = 12
-            log(f"[Coordinator] 等待 {wait_minutes} 分钟...")
-            time.sleep(wait_minutes * 60)
-            all_quotas = check_all_quotas()
-            text_remaining = check_quota()
-            if text_remaining < calls_needed:
-                log(f"[Coordinator] 配额仍然不足，本次批次暂停，下次启动将从第{batch_start}章继续")
-                break
-            remaining_quota = check_quota()
-            if remaining_quota < batch_size * 3:
-                log("[Coordinator] 配额仍然不足，生成暂停")
-                break
-
-        # 根据配额动态调整并发数
-        writer_workers, reviewer_workers = adjust_workers_by_quota(
-            batch_end - batch_start + 1, text_remaining, args.skip_review
-        )
-
-        log(f"[Coordinator] ===== 开始第 {batch_start}-{batch_end} 章 =====")
-
-        writer_results = run_parallel_agents("writer.py", batch_start, batch_end, agent_workers=writer_workers, notify=False)
-        failed_writers = [r for r in writer_results if r[2] != 0]
-        if failed_writers:
-            for s, e, rc in failed_writers:
-                log(f"[WARNING] Writer Agent {s}-{e} 返回非零退出码: {rc}")
-
-        batch_statuses = scan_chapter_status(NOVELS_DIR, args.start, end_chapter)
-        write_status_file(NOVELS_DIR, batch_statuses.values())
-        failed_writer_chapters = collect_failed_writer_chapters(writer_results, batch_statuses, batch_start, batch_end)
-        if failed_writer_chapters:
-            failed_writer_chapters = run_writer_repair_queue(failed_writer_chapters)
-            batch_statuses = scan_chapter_status(NOVELS_DIR, args.start, end_chapter)
-            write_status_file(NOVELS_DIR, batch_statuses.values())
-        progress["failed_chapters"] = failed_writer_chapters
-        progress["last_generated_chapter"] = highest_contiguous(batch_statuses, args.start, "draft_ok")
-        save_progress(progress)
-
-        if failed_writer_chapters:
-            log(f"[WARNING] 第 {batch_start}-{batch_end} 章存在未完成初稿，跳过本批 reviewer: {failed_writer_chapters}")
-
-        if not args.skip_review and not failed_writer_chapters:
-            reviewer_results = run_parallel_agents("reviewer.py", batch_start, batch_end, agent_workers=reviewer_workers)
-            failed_reviewers = [r for r in reviewer_results if r[2] != 0]
-            if failed_reviewers:
-                for s, e, rc in failed_reviewers:
-                    log(f"[WARNING] Reviewer Agent {s}-{e} 返回非零退出码: {rc}")
-
-            rewrites = check_rewrites(batch_start, batch_end)
-            queue = set(progress.get("rewrite_queue", []))
-            queue.update(rewrites)
-            progress["rewrite_queue"] = sorted(queue)
-
-            reviewed_statuses = scan_chapter_status(NOVELS_DIR, args.start, end_chapter)
-            write_status_file(NOVELS_DIR, reviewed_statuses.values())
-            progress["last_reviewed_chapter"] = highest_contiguous(reviewed_statuses, args.start, "review_ok")
-            save_progress(progress)
-
-        if batch_start % (batch_size * 10) == 1 or batch_end == end_chapter:
-            generate_summary_report()
-
-        pause_seconds = CONFIG["coordinator"]["pause_between_batches"]
-        log(f"[Coordinator] 第 {batch_start}-{batch_end} 章完成，暂停{pause_seconds}秒...")
-        time.sleep(pause_seconds)
-
-    final_review_statuses = scan_chapter_status(NOVELS_DIR, args.start, end_chapter)
-    if progress["rewrite_queue"] and not all_reviews_finished(final_review_statuses, args.start, end_chapter):
-        log("[Coordinator] 审查未全部完成，暂不执行 Rewrite")
-
-    if progress["rewrite_queue"] and not args.rewrite_only and all_reviews_finished(final_review_statuses, args.start, end_chapter):
-        log("=" * 60)
-        log(f"[Coordinator] 处理重写队列: {len(progress['rewrite_queue'])} 章")
-        log("=" * 60)
-        notify_stage("终稿重写", "开始", min(progress["rewrite_queue"]), max(progress["rewrite_queue"]))
-        rc = run_script("rewrite_agent.py")
-        log(f"[Coordinator] Rewrite Agent 完成 (rc={rc})")
-        notify_stage(
-            "终稿重写",
-            "完成" if rc == 0 else "异常",
-            args.start,
-            end_chapter,
-            processed=len(progress["rewrite_queue"]) if rc == 0 else 0,
-            failed=0 if rc == 0 else len(progress["rewrite_queue"]),
-            error="" if rc == 0 else f"退出码 {rc}",
-        )
-
-        progress["rewrite_queue"] = []
-        final_statuses = scan_chapter_status(NOVELS_DIR, args.start, end_chapter)
-        write_status_file(NOVELS_DIR, final_statuses.values())
-        save_progress(progress)
+    log(f"[Coordinator] 单章质量门范围: 第{args.start}-{end_chapter}章")
+    ok = run_serial_quality_workflow(args.start, end_chapter)
+    if not ok:
+        log("[Coordinator] 单章质量门失败，流程已停止")
+        return
 
     report = generate_summary_report()
     log("=" * 60)
@@ -820,10 +1092,18 @@ def main():
     log("=" * 60)
 
     title = get_book_title()
+    # 用实际扫描的 draft/review/final 数（不能都用 total_chapters）
+    statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"])
+    actual_draft = sum(1 for s in statuses.values() if s.draft_exists)
+    actual_review = sum(1 for s in statuses.values() if s.review_exists)
+    actual_final = sum(1 for s in statuses.values() if s.final_ok)
     _push_task_complete(
         config=CONFIG,
         title=title,
         total_chapters=CONFIG["total_chapters"],
+        draft=actual_draft,
+        review=actual_review,
+        final=actual_final,
         total_words=report["total_words"],
         avg_score=report["average_score"],
         rewrite_count=report["rewrite_count"],

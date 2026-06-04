@@ -139,10 +139,13 @@ def generate_world():
         print(f"[Planner] 世界观已保存到 {WORLD_FILE}")
     except json.JSONDecodeError as e:
         print(f"[Planner] JSON解析失败: {e}")
+        # 状态机式引号修复
+        from core.json_repair import fix_inner_quotes
+        fixed = fix_inner_quotes(content)
         try:
-            start = content.index("{")
-            end = content.rindex("}") + 1
-            world_data = json.loads(content[start:end])
+            start = fixed.index("{")
+            end = fixed.rindex("}") + 1
+            world_data = json.loads(fixed[start:end])
             with open(WORLD_FILE, "w", encoding="utf-8") as f:
                 json.dump(world_data, f, ensure_ascii=False, indent=2)
             print(f"[Planner] 世界观已保存（经过修复）")
@@ -188,10 +191,12 @@ def generate_characters():
         print(f"[Planner] 角色档案已保存到 {CHARACTERS_FILE}")
     except json.JSONDecodeError as e:
         print(f"[Planner] JSON解析失败: {e}")
+        from core.json_repair import fix_inner_quotes
+        fixed = fix_inner_quotes(content)
         try:
-            start = content.index("{")
-            end = content.rindex("}") + 1
-            chars_data = json.loads(content[start:end])
+            start = fixed.index("{")
+            end = fixed.rindex("}") + 1
+            chars_data = json.loads(fixed[start:end])
             with open(CHARACTERS_FILE, "w", encoding="utf-8") as f:
                 json.dump(chars_data, f, ensure_ascii=False, indent=2)
             print(f"[Planner] 角色档案已保存（经过修复）")
