@@ -21,7 +21,7 @@ MIN_PARAGRAPHS = 20
 MAX_DUPLICATE_PARAGRAPH_RATIO = 0.25
 MAX_SIMILAR_PARAGRAPH_RATIO = 0.20
 SIMILAR_PARAGRAPH_THRESHOLD = 0.88
-VALID_ENDINGS = tuple('\u3002\uff01\uff1f.!?\u300d\u201d\u2019\uff09)"\'')
+VALID_ENDINGS = tuple('\u3002\uff01\uff1f.!?\u300d\u201d\u2019\uff09)"\'`*')
 FORBIDDEN_PHRASES = (
     "无法生成",
     "作为AI",
@@ -360,7 +360,7 @@ def load_review_status(path: Path, min_score: float = 7.0) -> tuple[bool, str, f
     schema_errors = validate_review_schema(data)
     if schema_errors:
         return True, "schema_" + schema_errors[0], score_value, False
-    ok = status == "completed" and verdict != "需重写" and (score_value is None or score_value >= min_score)
+    ok = status == "completed" and verdict not in {"需重写", "需修改"} and (score_value is None or score_value >= min_score)
     return True, status or "unknown", score_value, ok
 
 
@@ -376,7 +376,7 @@ def load_outline_review_status(path: Path, min_score: float = 8.5) -> tuple[bool
     score = data.get("overall_score")
     score_value = score if isinstance(score, (int, float)) else None
     verdict = data.get("verdict", "")
-    ok = status == "completed" and verdict != "需重写" and (score_value is None or score_value >= min_score)
+    ok = status == "completed" and verdict not in {"需重写", "需修改"} and (score_value is None or score_value >= min_score)
     return True, status or "unknown", score_value, ok
 
 

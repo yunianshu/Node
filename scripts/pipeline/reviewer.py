@@ -15,12 +15,13 @@ if str(TOOLS_ROOT) not in sys.path:
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
-from core.novel_config import configure_stdio, load_config
+from core.novel_config import configure_stdio, load_config, load_origin_materials
 # 微信推送已禁用，改由 coordinator 统一推送进度
 # from core.push_notifier import push_stage_complete
 from core.workflow_state import (
@@ -38,10 +39,11 @@ WORLD_FILE = None
 REVIEWS_DIR = None
 LOG_FILE = None
 CONFIG = None
+ORIGIN_MATERIALS = ""
 
 
 def init_project(project_dir: str | Path) -> None:
-    global NOVELS_DIR, CHAPTERS_DIR, OUTLINE_FILE, CHARACTERS_FILE, WORLD_FILE, REVIEWS_DIR, LOG_FILE, CONFIG
+    global NOVELS_DIR, CHAPTERS_DIR, OUTLINE_FILE, CHARACTERS_FILE, WORLD_FILE, REVIEWS_DIR, LOG_FILE, CONFIG, ORIGIN_MATERIALS
     NOVELS_DIR = Path(project_dir).resolve()
     CHAPTERS_DIR = NOVELS_DIR / "chapters" / "draft"
     CHARACTERS_FILE = NOVELS_DIR / "characters.json"
@@ -50,6 +52,11 @@ def init_project(project_dir: str | Path) -> None:
     REVIEWS_DIR = review_dir(NOVELS_DIR)
     LOG_FILE = NOVELS_DIR / "logs" / "reviewer.log"
     CONFIG = load_config(NOVELS_DIR)
+    review_cfg = CONFIG.get("reviewer", {})
+    ORIGIN_MATERIALS = load_origin_materials(
+        NOVELS_DIR,
+        max_chars=int(review_cfg.get("origin_max_chars", 4000) or 4000),
+    )
 
 
 def analyze_chapter_text(chapter_content: str) -> dict:
@@ -95,13 +102,14 @@ def log(msg: str):
 
 def call_mmx(system_prompt: str, user_prompt: str, max_tokens: int = 4096, temperature: float = 0.3) -> str:
     try:
+        cfg = CONFIG.get("reviewer", {})
         return call_mmx_client(
             system_prompt,
             user_prompt,
             model=CONFIG["model"],
             mmx_path=CONFIG["mmx_path"],
-            max_tokens=max_tokens,
-            temperature=temperature,
+            max_tokens=cfg.get("max_tokens", max_tokens),
+            temperature=cfg.get("temperature", temperature),
             retries=CONFIG["writer"]["max_retries"],
             retry_delay=CONFIG["writer"]["retry_delay"],
             log_dir=NOVELS_DIR / "logs" / "raw_responses",
@@ -119,6 +127,76 @@ def load_json(filepath: Path) -> dict:
         return {}
     with open(filepath, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def _parse_score(val):
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, str):
+        val = val.strip()
+        if "/" in val:
+            num = val.split("/")[0].strip()
+            try:
+                return float(num)
+            except ValueError:
+                pass
+        try:
+            return float(val)
+        except ValueError:
+            pass
+    return val
+
+
+def _extract_json_text(content: str) -> str:
+    if "```json" in content:
+        return content.split("```json", 1)[1].split("```", 1)[0].strip()
+    if "```" in content:
+        return content.split("```", 1)[1].split("```", 1)[0].strip()
+    return content.strip()
+
+
+def _extract_string_field(content: str, field: str) -> str:
+    match = re.search(rf'"{re.escape(field)}"\s*:\s*"([^"]*)"', content)
+    return match.group(1).strip() if match else ""
+
+
+def _extract_score_field(content: str, field: str):
+    match = re.search(rf'"{re.escape(field)}"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)"?', content)
+    return _parse_score(match.group(1)) if match else None
+
+
+def _extract_array_items(content: str, field: str, limit: int = 3) -> list[str]:
+    match = re.search(rf'"{re.escape(field)}"\s*:\s*\[(.*?)\]', content, re.S)
+    if not match:
+        return []
+    items = re.findall(r'"([^"]+)"', match.group(1))
+    return [item[:120] for item in items[:limit]]
+
+
+def _partial_review_from_raw(chapter_number: int, content: str, local_analysis: dict) -> dict:
+    score = _extract_score_field(content, "overall_score")
+    verdict = _extract_string_field(content, "verdict") or "需修改"
+    if score is None:
+        return {
+            "chapter_number": chapter_number,
+            "status": "parse_error",
+            "raw_response": content,
+            "local_analysis": local_analysis,
+        }
+    return {
+        "chapter_number": chapter_number,
+        "status": "completed",
+        "overall_score": score,
+        "verdict": verdict,
+        "scores": {},
+        "strengths": _extract_array_items(content, "strengths"),
+        "weaknesses": _extract_array_items(content, "weaknesses"),
+        "suggestions": _extract_array_items(content, "suggestions"),
+        "continuity_issues": _extract_array_items(content, "continuity_issues"),
+        "summary": _extract_string_field(content, "summary") or "审查JSON被截断，已提取核心评分与意见。",
+        "raw_response": content[:3000],
+        "local_analysis": local_analysis,
+    }
 
 
 def review_chapter(chapter_number: int) -> dict:
@@ -145,10 +223,10 @@ def review_chapter(chapter_number: int) -> dict:
 
     characters = load_json(CHARACTERS_FILE)
 
-    content_sample = chapter_content[:2000]
+    content_sample = chapter_content[:1500]
     mid_start = max(0, len(chapter_content) // 2 - 500)
-    content_sample += "\n\n[中间部分...]\n\n" + chapter_content[mid_start:mid_start + 1000]
-    content_sample += "\n\n[结尾部分...]\n\n" + chapter_content[-1000:]
+    content_sample += "\n\n[中间部分...]\n\n" + chapter_content[mid_start:mid_start + 800]
+    content_sample += "\n\n[结尾部分...]\n\n" + chapter_content[-800:]
 
     world = load_json(WORLD_FILE)
     book_title = world.get("title", "本小说")
@@ -180,7 +258,8 @@ def review_chapter(chapter_number: int) -> dict:
 {genre_text}
 评分标准：9-10分优秀，8-9分良好，达到{review_min_score}分为通过，低于{review_min_score}分需重写。
 优秀章节完全可以给出9分以上，请根据实际质量客观评分，不要人为压低分数。
-输出必须是合法的JSON格式。"""
+输出必须是合法的紧凑JSON，不要使用Markdown代码块，不要输出JSON之外的任何文字。
+审查意见要短而具体，整份JSON尽量控制在1200个中文字符以内。"""
 
     prompt = f"""请审查以下第{chapter_number}章的内容。
 
@@ -189,6 +268,9 @@ def review_chapter(chapter_number: int) -> dict:
 
 ## 角色设定
 {json.dumps(characters, ensure_ascii=False, indent=2)[:1000]}
+
+## origin/ 原始参考素材
+{ORIGIN_MATERIALS or "（无）"}
 
 ## 章节内容（节选）
 {content_sample}
@@ -199,7 +281,7 @@ def review_chapter(chapter_number: int) -> dict:
 ## 本地全文检查
 {json.dumps(local_analysis, ensure_ascii=False, indent=2)}
 
-请输出以下JSON格式的审查报告：
+请只输出以下JSON格式的审查报告，数组最多3条，每条不超过80字：
 {{
   "chapter_number": {chapter_number},
   "overall_score": "请给出0-10的客观评分，质量优秀的章节可给9分以上",
@@ -219,11 +301,11 @@ def review_chapter(chapter_number: int) -> dict:
     "target": {min_words},
     "status": "达标/偏短/偏长"
   }},
-  "strengths": ["优点1", "优点2"],
-  "weaknesses": ["不足1", "不足2"],
-  "suggestions": ["具体修改建议1", "具体修改建议2"],
-  "continuity_issues": ["与前文不一致之处（如有）"],
-  "summary": "总体评价（100字以内）"
+  "strengths": ["优点1，80字以内"],
+  "weaknesses": ["不足1，80字以内"],
+  "suggestions": ["具体修改建议1，80字以内"],
+  "continuity_issues": ["与前文不一致之处，80字以内"],
+  "summary": "总体评价，80字以内"
 }}
 
 要求：
@@ -231,10 +313,11 @@ def review_chapter(chapter_number: int) -> dict:
 2. 重点审查内容是否符合本书的世界观设定和角色性格
 3. 剧情推进是否自然，有无逻辑漏洞或突兀转折
 4. 对话是否符合角色身份和时代背景
-5. 必须给出具体的修改建议，不能泛泛而谈
-6. 如低于{review_min_score}分必须标记为"需重写"
-7. 字数不足{warn_min}或超过{warn_max}要标记字数问题
-8. 必须输出合法JSON"""
+5. 必须给出具体的修改建议，不能泛泛而谈，但每类最多3条
+6. 如果 origin/ 中存在素材，必须检查正文是否参考并遵守原始素材；与素材冲突需列入 weaknesses 或 continuity_issues
+7. 如低于{review_min_score}分必须标记为"需重写"
+8. 字数不足{warn_min}或超过{warn_max}要标记字数问题
+9. 必须输出合法JSON，不要Markdown，不要长篇解释"""
 
     log(f"[Reviewer] 正在审查第{chapter_number}章...")
     content = call_mmx(system, prompt, max_tokens=4096, temperature=0.3)
@@ -252,30 +335,10 @@ def review_chapter(chapter_number: int) -> dict:
         return review_data
 
     try:
-        if "```json" in content:
-            content = content.split("```json")[1].split("```")[0].strip()
-        elif "```" in content:
-            content = content.split("```")[1].split("```")[0].strip()
+        content = _extract_json_text(content)
         review_data = json.loads(content)
         review_data["status"] = "completed"
         review_data["local_analysis"] = local_analysis
-        def _parse_score(val):
-            if isinstance(val, (int, float)):
-                return float(val)
-            if isinstance(val, str):
-                val = val.strip()
-                # 处理 "6/10"、"8.5/10" 等格式
-                if "/" in val:
-                    num = val.split("/")[0].strip()
-                    try:
-                        return float(num)
-                    except ValueError:
-                        pass
-                try:
-                    return float(val)
-                except ValueError:
-                    pass
-            return val
 
         # 将 overall_score 统一转为 float，避免字符串类型导致 schema 校验失败
         review_data["overall_score"] = _parse_score(review_data.get("overall_score"))
@@ -286,12 +349,9 @@ def review_chapter(chapter_number: int) -> dict:
                 scores[k] = _parse_score(v)
     except Exception as e:
         log(f"[Reviewer] JSON解析失败: {e}")
-        review_data = {
-            "chapter_number": chapter_number,
-            "status": "parse_error",
-            "raw_response": content,
-            "local_analysis": local_analysis,
-        }
+        review_data = _partial_review_from_raw(chapter_number, content, local_analysis)
+        if review_data.get("status") == "completed":
+            log(f"[Reviewer] 已从截断JSON中提取评分: {review_data.get('overall_score')}，verdict: {review_data.get('verdict')}")
 
     REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
     with open(review_file, "w", encoding="utf-8") as f:

@@ -5,9 +5,11 @@
 This repository contains a streamlined novel-generation automation stack.
 
 - `scripts/core/`: shared utilities for config loading, MiniMax calls, push notifications, JSON repair, and workflow state.
-- `scripts/pipeline/`: main generation agents: `planner.py`, `outliner.py`, `outline_reviewer.py`, `writer.py`, `reviewer.py`, and `coordinator.py`.
+- `scripts/pipeline/`: main generation agents: `planner.py`, `media_generator.py`, `outliner.py`, `outline_reviewer.py`, `writer.py`, `reviewer.py`, and `coordinator.py`.
 - `scripts/maintenance/`: operational helpers, including `coordinator_watchdog.py` and `wechat_notify.py`.
-- `projects/`: generated novel projects and content. Treat chapter files, outlines, reviews, finals, and project configs as user data.
+- `projects/`: generated novel projects and content. Treat chapter files, outlines, reviews, finals, media assets, and project configs as user data.
+- Novel media belongs under `projects/<book_id>/media/`: covers and visual assets in `images/`, worldbuilding-based videos in `videos/`, audio in `audio/`, and music in `music/`. Planner must write media prompts to `world.json.media_prompts`; `media_generator.py` turns them into cover, video, and theme song assets.
+- `projects/<book_id>/origin/`: source/reference material. When files exist, generation and review code must treat them as high-priority inputs.
 - `doc/`: documentation and workflow notes.
 - `novels-dashboard/`: dashboard/frontend assets, if used separately.
 
@@ -16,7 +18,7 @@ This repository contains a streamlined novel-generation automation stack.
 Run commands from the repository root:
 
 ```powershell
-python -m py_compile "scripts/pipeline/planner.py" "scripts/pipeline/outliner.py" "scripts/pipeline/outline_reviewer.py" "scripts/pipeline/coordinator.py" "scripts/pipeline/writer.py" "scripts/pipeline/reviewer.py" "scripts/core/json_repair.py" "scripts/core/mmx_client.py" "scripts/core/novel_config.py" "scripts/core/push_notifier.py" "scripts/core/workflow_state.py" "scripts/maintenance/coordinator_watchdog.py" "scripts/maintenance/wechat_notify.py"
+python -m py_compile "scripts/pipeline/planner.py" "scripts/pipeline/media_generator.py" "scripts/pipeline/outliner.py" "scripts/pipeline/outline_reviewer.py" "scripts/pipeline/coordinator.py" "scripts/pipeline/writer.py" "scripts/pipeline/reviewer.py" "scripts/core/json_repair.py" "scripts/core/mmx_client.py" "scripts/core/novel_config.py" "scripts/core/push_notifier.py" "scripts/core/workflow_state.py" "scripts/maintenance/coordinator_watchdog.py" "scripts/maintenance/wechat_notify.py"
 ```
 
 Validate syntax for the active Python workflow.

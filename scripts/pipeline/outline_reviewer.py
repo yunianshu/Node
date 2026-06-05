@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
-from core.novel_config import configure_stdio, load_config
+from core.novel_config import configure_stdio, load_config, load_origin_materials
 from core.workflow_state import (
     load_outline_chapter,
     outline_dir,
@@ -31,14 +31,20 @@ NOVELS_DIR = None
 OUTLINE_REVIEW_DIR = None
 LOG_FILE = None
 CONFIG = None
+ORIGIN_MATERIALS = ""
 
 
 def init_project(project_dir: str | Path) -> None:
-    global NOVELS_DIR, OUTLINE_REVIEW_DIR, LOG_FILE, CONFIG
+    global NOVELS_DIR, OUTLINE_REVIEW_DIR, LOG_FILE, CONFIG, ORIGIN_MATERIALS
     NOVELS_DIR = Path(project_dir).resolve()
     OUTLINE_REVIEW_DIR = outline_review_dir(NOVELS_DIR)
     LOG_FILE = NOVELS_DIR / "logs" / "outline_reviewer.log"
     CONFIG = load_config(NOVELS_DIR)
+    review_cfg = CONFIG.get("outline_reviewer", {})
+    ORIGIN_MATERIALS = load_origin_materials(
+        NOVELS_DIR,
+        max_chars=int(review_cfg.get("origin_max_chars", 4000) or 4000),
+    )
 
 
 def log(msg: str):
@@ -132,7 +138,8 @@ def review_outline(chapter_number: int) -> dict:
 {genre_text}
 评分标准：9-10分优秀，达到{min_score}分为良好可写，低于{min_score}分需修改或重生成。
 优秀大纲完全可以给出9分以上，请根据实际质量客观评分，不要人为压低分数。
-输出必须是合法的JSON格式。"""
+输出必须是合法的紧凑JSON，不要使用Markdown代码块，不要输出JSON之外的任何文字。
+审查意见要短而具体，整份JSON尽量控制在1200个中文字符以内。"""
 
     context_parts = []
     if prev_outline:
@@ -152,12 +159,15 @@ def review_outline(chapter_number: int) -> dict:
 ## 世界观与角色设定
 {json.dumps(characters, ensure_ascii=False, indent=2)[:800]}
 
+## origin/ 原始参考素材
+{ORIGIN_MATERIALS or "（无）"}
+
 {context_text}
 
 ## 待审查大纲（第{chapter_number}章）
 {json.dumps(outline, ensure_ascii=False, indent=2)}
 
-请输出以下JSON格式的审查报告：
+请只输出以下JSON格式的审查报告，数组最多3条，每条不超过80字：
 {{
   "chapter_number": {chapter_number},
   "overall_score": "请给出0-10的客观评分，质量优秀的大纲可给9分以上",
@@ -172,11 +182,11 @@ def review_outline(chapter_number: int) -> dict:
     "power_consistency": "力量体系一致性（0-10）",
     "writeability": "整体可写性（0-10）"
   }},
-  "strengths": ["优点1", "优点2"],
-  "weaknesses": ["不足1", "不足2"],
-  "suggestions": ["具体修改建议1", "具体修改建议2"],
-  "continuity_issues": ["与前后章衔接问题（如有）"],
-  "summary": "总体评价（100字以内）"
+  "strengths": ["优点1，80字以内"],
+  "weaknesses": ["不足1，80字以内"],
+  "suggestions": ["具体修改建议1，80字以内"],
+  "continuity_issues": ["与前后章衔接问题，80字以内"],
+  "summary": "总体评价，80字以内"
 }}
 
 要求：
@@ -188,8 +198,9 @@ def review_outline(chapter_number: int) -> dict:
 6. 场景是否多样，避免反复在同一地点做同样的事
 7. 力量体系是否自洽，实力成长是否有合理铺垫
 8. 信息是否足够详细，Writer 能否据此写出{outline.get('word_count_target', 5000)}字高质量正文
-9. 如低于{min_score}分必须标记为\"需重写\"
-10. 必须输出合法JSON"""
+9. 如果 origin/ 中存在素材，必须检查大纲是否参考并遵守原始素材；与素材冲突需列入 weaknesses 或 continuity_issues
+10. 如低于{min_score}分必须标记为\"需重写\"
+11. 必须输出合法JSON，不要Markdown，不要长篇解释"""
 
     log(f"[OutlineReviewer] 正在审查第{chapter_number}章大纲...")
     content = call_mmx(system, prompt, max_tokens=4096, temperature=0.3)
@@ -293,6 +304,8 @@ def main():
 
     log(f"[OutlineReviewer] 完成 {total - failed} 章，失败 {failed} 章")
     log("[OutlineReviewer] 全部完成")
+    if failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

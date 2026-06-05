@@ -25,11 +25,13 @@ DEFAULT_CONFIG = {
         "max_tokens": 4096,
         "temperature": 0.3,
         "min_score": 7.0,
+        "origin_max_chars": 4000,
     },
     "outline_reviewer": {
         "max_tokens": 4096,
         "temperature": 0.3,
         "min_score": 8.5,
+        "origin_max_chars": 4000,
     },
     "planner": {
         "max_tokens": 8192,
@@ -40,11 +42,20 @@ DEFAULT_CONFIG = {
         "batch_size": 40,
         "num_workers": 2,
         "review_workers": 2,
+        "draft_workers": 2,
         "pause_between_batches": 3.0,
         "push_interval_seconds": 120,
+        "outline_lookahead_chapters": 10,
     },
     "repair": {
         "max_consecutive_failures": 5,
+    },
+    "media": {
+        "enabled": True,
+        "generate_after_planner": True,
+        "cover_aspect_ratio": "3:4",
+        "video_model": "MiniMax-Hailuo-2.3",
+        "song_format": "mp3",
     },
     "quality": {
         "min_chapter_words": 5000,
@@ -71,9 +82,22 @@ STANDARD_PROJECT_DIRS = (
     "media/audio",
     "media/images",
     "media/music",
+    "media/videos",
     "origin",
     "reports",
 )
+
+ORIGIN_TEXT_EXTENSIONS = {
+    ".txt",
+    ".md",
+    ".markdown",
+    ".json",
+    ".jsonl",
+    ".csv",
+    ".tsv",
+    ".yaml",
+    ".yml",
+}
 
 
 def ensure_project_structure(project_dir: Path) -> None:
@@ -81,6 +105,44 @@ def ensure_project_structure(project_dir: Path) -> None:
     project_dir.mkdir(parents=True, exist_ok=True)
     for rel in STANDARD_PROJECT_DIRS:
         (project_dir / rel).mkdir(parents=True, exist_ok=True)
+
+
+def load_origin_materials(project_dir: Path, *, max_files: int = 20, max_chars: int = 12000) -> str:
+    """读取 origin/ 中的文本素材，作为生成参考资料。"""
+    origin_dir = project_dir / "origin"
+    if not origin_dir.exists():
+        return ""
+
+    files = [
+        path
+        for path in sorted(origin_dir.rglob("*"))
+        if path.is_file() and path.suffix.lower() in ORIGIN_TEXT_EXTENSIONS
+    ][:max_files]
+    if not files:
+        return ""
+
+    remaining = max_chars
+    sections = []
+    for path in files:
+        if remaining <= 0:
+            break
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore").strip()
+        except Exception:
+            continue
+        if not text:
+            continue
+        rel = path.relative_to(origin_dir).as_posix()
+        budget = max(0, remaining - len(rel) - 32)
+        if budget <= 0:
+            break
+        excerpt = text[:budget]
+        sections.append(f"### origin/{rel}\n{excerpt}")
+        remaining -= len(excerpt) + len(rel) + 32
+
+    if not sections:
+        return ""
+    return "\n\n".join(sections)
 
 
 def get_webhook_url(config: dict) -> str:

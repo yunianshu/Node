@@ -30,6 +30,7 @@ configure_stdio()
 COORDINATOR_MARKER = "scripts/pipeline/coordinator.py"
 AGENT_MARKERS = (
     "scripts/pipeline/planner.py",
+    "scripts/pipeline/media_generator.py",
     "scripts/pipeline/outliner.py",
     "scripts/pipeline/outline_reviewer.py",
     "scripts/pipeline/writer.py",

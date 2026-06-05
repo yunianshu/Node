@@ -1,6 +1,6 @@
 ---
 name: novel-gen
-description: 使用 D:/AiProject/Node 当前 scripts 自动化框架生成和维护长篇中文网络小说项目。适用于创建小说项目、运行 Planner/Outliner/Outline Reviewer/Writer/Reviewer/Coordinator、断点续传、企业微信进度推送、章节质量门和补齐缺失章节。当前标准为 Planner 只生成 world.json 与 characters.json，大纲由 Outliner 生成到 chapters/outline/chapter_XXXX.json，禁止生成或依赖根目录 outline.json。
+description: 使用 D:/AiProject/Node 当前 scripts 自动化框架生成和维护长篇中文网络小说项目。适用于创建小说项目、运行 Planner/Outliner/Writer/Reviewer/Rewrite/Coordinator、多 Agent 批量生成大纲、断点续传、企业微信进度推送、章节质量门、补齐缺失章节、多媒体生成和阅读器调试。当前标准为 Planner 只生成 world.json 与 characters.json，大纲由 Outliner 生成到 chapters/outline/chapter_XXXX.json，禁止生成或依赖根目录 outline.json。
 ---
 
 # Novel Gen
@@ -29,6 +29,10 @@ projects/<book_id>/
 │   └── final/
 │       └── chapter_0001.txt
 ├── logs/
+├── media/
+│   ├── audio/
+│   ├── images/
+│   └── music/
 ├── origin/
 └── reports/
 ```
@@ -48,7 +52,7 @@ projects/<book_id>/
 | Outline Reviewer | `scripts/pipeline/outline_reviewer.py` | 审查单章大纲质量（门槛 **8.5 分**） | `chapters/outline_review/chapter_XXXX_review.json` |
 | Writer | `scripts/pipeline/writer.py` | 根据单章大纲生成初稿 | `chapters/draft/chapter_XXXX.txt` |
 | Reviewer | `scripts/pipeline/reviewer.py` | 审查初稿并评分 | `chapters/review/chapter_XXXX_review.json` |
-| Coordinator | `scripts/pipeline/coordinator.py` | 调度全流程、断点续传、质量门、终稿晋级、配额、推送 | `chapters/final/chapter_XXXX.txt`, `reports/progress.json`, 日志 |
+| Coordinator | `scripts/pipeline/coordinator.py` | 调度全流程、断点续传、配额、推送 | `reports/progress.json`, 日志 |
 
 核心状态工具在 `scripts/core/workflow_state.py`：
 - `load_outline_chapter()` 只从单章大纲文件读取。
@@ -63,28 +67,37 @@ config/premise
    ↓
 Planner
    ↓ world.json + characters.json
-Outliner
-   ↓ chapters/outline/chapter_XXXX.json
-Outline Reviewer（大纲审查，门槛 8.5 分）
-   ↓ chapters/outline_review/chapter_XXXX_review.json
-Writer
-   ↓ chapters/draft/chapter_XXXX.txt
-Reviewer
-   ↓ chapters/review/chapter_XXXX_review.json
-Coordinator promote
-   ↓ chapters/final/chapter_XXXX.txt
+Chapter N loop:
+  Outline lookahead（默认10章）
+     ↓ 先确保第 N 到 N+9 章大纲均已生成并通过审查
+  Outliner
+     ↓ chapters/outline/chapter_XXXX.json
+  Outline Reviewer（大纲审查）
+     ↓ 不通过：下一次 Outliner 必须立即带审查意见重生成同一章大纲；通过：进入 Writer
+  Writer
+     ↓ chapters/draft/chapter_XXXX.txt
+  Reviewer
+     ↓ 不通过：带审查意见重新生成同一章初稿；通过：写入 final
+  Final
+     ↓ chapters/final/chapter_XXXX.txt
 Push/Reports
 ```
 
 阶段门控：
 - Planner 只负责 `world.json` 与 `characters.json`。
-- 每章必须按 Outliner -> Outline Reviewer -> Writer -> Reviewer -> final 顺序处理。
-- **Outline Reviewer** 在 Writer 之前运行，审查每章大纲质量。评分维度：剧情吸引力、节奏把控、人物动机合理性、爽点设计、伏笔与呼应、场景多样性、力量体系一致性、整体可写性。门槛默认 **8.5 分**。
-- 大纲审查不通过时，Outliner 带审查意见重生成同一章；同一轮最多 3 次，失败原因分析最多 3 轮，仍不通过则退出并推送原因。
-- 初稿审查不通过时，Writer 带审查意见重生成同一章；同一轮最多 3 次，失败原因分析最多 3 轮，仍不通过则退出并推送原因。
-- 只有审查通过的初稿才由 Coordinator 写入 `chapters/final/chapter_XXXX.txt`。
-- 继续生成长篇项目时，优先运行 `scripts/pipeline/coordinator.py` 断点续传，不手工逐章调用 Writer。
-- 流程代码只能修改 `scripts/`，小说阅读器只能修改 `novels-dashboard/`。
+- 长篇续跑时允许三个 lane 同时运行：大纲 lane 负责 Outliner/Outline Reviewer，初稿 lane 负责 Writer/Reviewer，推送 lane 负责企业微信进度。大纲或正文 lane 启动时必须先确保独立企业微信推送进程 `scripts/maintenance/wechat_pusher_lane.py` 已运行。推送进程是旁路 subagent，只读取 `reports/progress.json`、章节产物与审查产物统计进度，不调用模型、不参与大纲/正文质量门、不持有生成链路锁；`logs/wechat_pusher.lock` 用于跨进程单例，避免重复推送。
+- 需要监控卡章时，可启动两个只读监控 subagent：`scripts/maintenance/gate_watchdog.py --mode outline --interval 300` 检查大纲审查卡章，`scripts/maintenance/gate_watchdog.py --mode draft --interval 300` 检查初稿审查卡章。它们只读取进程、日志和章节状态，写入 `logs/outline_gate_watchdog.log` / `logs/draft_gate_watchdog.log`，发现 lane 停止或同一章节连续无推进时推送企业微信告警。
+- Coordinator 按正文单章推进，但写第 N 章正文前，必须先维护大纲提前窗口：默认确保第 N 到第 N+9 章大纲都已生成并通过大纲审查；窗口大小由 `coordinator.outline_lookahead_chapters` 或 CLI `--outline-lookahead` 控制。
+- **Outliner 单章模式必须生成完整大纲**。单章大纲必须包含 `chapter_number/title/summary/characters_involved/location/mood/key_events/foreshadowing/power_progression/word_count_target`。其中 `summary` 必须是具体剧情摘要，`key_events` 至少 3 条，`foreshadowing` 与 `power_progression` 不得缺失或为空；不能把“200字详细摘要”“章节标题”“事件1”等模板占位词写入文件。结构不完整时 Outliner 应非零退出且不得落盘。
+- **生成端必须携带压缩质量标准**。Outliner/Writer 每次生成或重生成都应携带一段短质量契约，而不是完整审查 Prompt：Outliner 需包含大纲门槛分、前后章衔接、独立冲突、summary/key_events/foreshadowing/power_progression 硬要求；Writer 需包含正文门槛分、字数、承接、节奏推进、角色动机、章末钩子和禁止水文等硬要求。审查意见仍是重生成时的最高优先级输入，完整评分细则主要保留给 Reviewer。
+- **审查反馈必须压缩后再传给生成端**。多轮失败时只保留最高分、最近一轮 verdict/score、前 6 条核心失败原因、前 6 条必要修正和少量最新建议；不要把完整历史 reviews、长 failure_analysis 或大段 origin 全量塞入 Outliner/Writer。单章大纲输出也要控制长度：`key_events` 建议 5-7 条、每条不超过 90 字，优先保证 JSON 闭合和必填字段完整。
+- **Outline Reviewer** 紧跟 Outliner。大纲每轮最多生成/审查 3 次；每一次大纲审查未通过、Outliner 生成失败、JSON 解析失败或结构字段不完整后，Coordinator 都必须立即写入 `logs/outline_feedback_chXXXX_roundN.json` 并在下一次 Outliner 调用中传入 `--review-feedback`，不能等到下一轮才带反馈。3 次仍不通过时进入下一轮原因调整；最多 3 轮；仍不通过则停止全流程并推送企业微信错误。
+- 如果大纲审查意见明确指出“与后章重叠/重复/冲突”，默认按“后章有问题”处理：Coordinator 先删除并重写后章大纲，再回头重审当前章，避免把边界错算到前章。
+- **Writer/Reviewer** 紧跟已过审大纲执行。`scripts/maintenance/draft_lane.py` 可用 `--workers` 并发生成初稿，但每章启动前必须确认本章大纲已通过；并发必须受 `--continuity-window` 约束，避免后文无限越过前文。Writer 必须读取前后章节大纲、前一章结尾和审查反馈来处理章节承接；Reviewer 写共享进度文件时应避免并发写冲突。初稿重写次数按 `coordinator.draft_attempts_per_round × coordinator.draft_analysis_rounds` 执行；不通过时 Writer 必须带着上一轮 Reviewer 审查意见重写同一章。耗尽配置次数仍不通过时，Coordinator/draft lane 汇总原因并停止全流程或当前 lane，推送企业微信错误。
+- 初稿审查通过后，Coordinator 将合格初稿写入 `chapters/final/chapter_XXXX.txt`。普通流程不再依赖全局 rewrite 队列作为主路径。
+- `outline_reviewer.min_score` 控制大纲审查门槛，`reviewer.min_score` 控制初稿审查门槛。不要在代码或手工命令中硬编码分数。
+- 当用户要求“最终 8.5 评分”或同等质量优先目标时，项目配置应将 `outline_reviewer.min_score` 与 `reviewer.min_score` 都设为 8.5；大纲/正文重生成次数可提高到 5 轮×5 次。正文 lane 遇到 `需修改`、`需重写` 或低于门槛时必须继续带审查意见重写，不能第一次失败就停止。
+- 继续生成长篇项目时，优先运行 `scripts/pipeline/coordinator.py` 断点续传，不手工逐章调用 Writer/Reviewer，除非是在定位单章故障。
 
 ## 常用命令
 
@@ -130,8 +143,6 @@ python "scripts/pipeline/outline_reviewer.py" --project "D:/AiProject/Node/proje
 python "scripts/maintenance/wechat_notify.py" --project "D:/AiProject/Node/projects/<book_id>"
 ```
 
-阅读器代码位于 `novels-dashboard/`，不要在 `scripts/` 中新增阅读器入口。
-
 ## 配置要点
 
 项目配置文件为 `projects/<book_id>/config.json`。常用字段：
@@ -139,7 +150,7 @@ python "scripts/maintenance/wechat_notify.py" --project "D:/AiProject/Node/proje
 ```json
 {
   "total_chapters": 2000,
-  "model": "MiniMax-M3",
+  "model": "MiniMax-M3-highspeed",
   "mmx_path": "C:/Users/Administrator/AppData/Roaming/npm/node_modules/mmx-cli/dist/mmx.mjs",
   "api_qps": 5.0,
   "writer": {
@@ -148,9 +159,15 @@ python "scripts/maintenance/wechat_notify.py" --project "D:/AiProject/Node/proje
   },
   "coordinator": {
     "batch_size": 20,
-    "num_workers": 5,
+    "num_workers": 4,
     "review_workers": 2,
-    "pause_between_batches": 3.0
+    "pause_between_batches": 3.0,
+    "push_interval_seconds": 120,
+    "outline_lookahead_chapters": 10,
+    "outline_attempts_per_round": 3,
+    "outline_analysis_rounds": 3,
+    "draft_attempts_per_round": 3,
+    "draft_analysis_rounds": 3
   },
   "outline_reviewer": {
     "max_tokens": 4096,
@@ -162,11 +179,18 @@ python "scripts/maintenance/wechat_notify.py" --project "D:/AiProject/Node/proje
     "max_chapter_words": 12000,
     "hard_fail_min_chapter_words": 3000,
     "title_required": false
-  }
+  },
+  "webhook_url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=<key>"
 }
 ```
 
 不要硬编码项目根路径。脚本应通过 `--project` 或 `NOVEL_PROJECT_DIR` 读取项目目录。
+
+新建或接手项目时，必须先确认企业微信推送地址：
+- 优先写入项目 `config.json` 的 `webhook_url`。
+- 也可用环境变量 `NOVEL_WEBHOOK_URL` 临时覆盖。
+- 不要把 webhook 写死到通用脚本中。
+- 配置后可用 `python "scripts/maintenance/wechat_notify.py" --project "D:/AiProject/Node/projects/<book_id>"` 验证推送。
 
 ## 进度与推送
 
@@ -190,35 +214,22 @@ python "scripts/maintenance/wechat_notify.py" --project "D:/AiProject/Node/proje
 - `Coordinator已启动，正在生成中..`
 - 只显示四行进度且无字数/活跃进程的格式
 
-## 补齐与维护
-
-补齐缺失章节时优先运行 Coordinator 的断点续传与质量门，不恢复旧 `scripts/batch/`、`scripts/cli/`、`scripts/one_off/` 入口。
-
-补齐大纲时只写：
-
-```text
-chapters/outline/chapter_XXXX.json
-```
-
-不要写：
-
-```text
-outline.json
-chapters/outline/index.json
-```
-
 ## 验证
 
 修改小说自动化代码后至少运行：
 
 ```powershell
-python -m py_compile "scripts/pipeline/planner.py" "scripts/pipeline/outliner.py" "scripts/pipeline/outline_reviewer.py" "scripts/pipeline/writer.py" "scripts/pipeline/reviewer.py" "scripts/pipeline/coordinator.py" "scripts/maintenance/coordinator_watchdog.py" "scripts/maintenance/wechat_notify.py" "scripts/core/workflow_state.py"
+python -m py_compile "scripts/pipeline/planner.py" "scripts/pipeline/outliner.py" "scripts/pipeline/outline_reviewer.py" "scripts/pipeline/coordinator.py" "scripts/pipeline/writer.py" "scripts/pipeline/reviewer.py" "scripts/core/json_repair.py" "scripts/core/mmx_client.py" "scripts/core/novel_config.py" "scripts/core/push_notifier.py" "scripts/core/workflow_state.py" "scripts/maintenance/coordinator_watchdog.py" "scripts/maintenance/wechat_notify.py"
 ```
 
-涉及推送、阅读器或批处理脚本时，追加对应文件到 `py_compile`。
+涉及推送或守护脚本时，追加对应文件到 `py_compile`。
 
 关键回归点：
-- `rg "outline\.json" "scripts"` 只应出现“不生成 outline.json”的测试断言，不能出现业务读写。
+- `rg "outline\.json" "scripts"` 不能出现业务读写。
 - Outliner 无 `--outline-file` 时不得生成 `outline.json` 或 `chapters/outline/index.json`。
 - Coordinator 大纲完成数必须来自单章大纲文件。
-- Coordinator 必须按单章质量门处理，不允许大纲失败后继续生成下一章。
+- Coordinator 写正文前必须维护默认 10 章大纲提前窗口，可用 `--outline-lookahead` 临时覆盖。
+- 大纲重生成必须从第一次失败后的下一次 attempt 起立即带 `--review-feedback`，不能前三次裸跑。
+- 单章 Outliner 输出必须通过结构校验：`key_events` 不得为空，`foreshadowing`/`power_progression` 不得缺失，模板占位文本不得落盘。
+- 若审查反馈明确指向后章内容重叠，优先修复后章，再重审当前章，不要把该类边界问题误判成当前章的硬失败。
+- 初稿通过 Reviewer 后由 Coordinator 直接写入 final，不再依赖全局 Rewrite 队列。

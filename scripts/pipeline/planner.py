@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
-from core.novel_config import load_config
+from core.novel_config import load_config, load_origin_materials
 from core.workflow_state import list_outline_chapters, write_outline_chapters
 
 NOVELS_DIR = None
@@ -28,15 +28,17 @@ OUTLINE_FILE = None
 CHARACTERS_FILE = None
 CONFIG = None
 NOVEL_PREMISE = ""
+ORIGIN_MATERIALS = ""
 
 
 def init_project(project_dir: str | Path) -> None:
-    global NOVELS_DIR, WORLD_FILE, OUTLINE_FILE, CHARACTERS_FILE, CONFIG, NOVEL_PREMISE
+    global NOVELS_DIR, WORLD_FILE, OUTLINE_FILE, CHARACTERS_FILE, CONFIG, NOVEL_PREMISE, ORIGIN_MATERIALS
     NOVELS_DIR = Path(project_dir).resolve()
     WORLD_FILE = NOVELS_DIR / "world.json"
     OUTLINE_FILE = None
     CHARACTERS_FILE = NOVELS_DIR / "characters.json"
     CONFIG = load_config(NOVELS_DIR)
+    ORIGIN_MATERIALS = load_origin_materials(NOVELS_DIR)
     total = CONFIG["total_chapters"]
 
     premise_file = NOVELS_DIR / "premise.txt"
@@ -89,6 +91,9 @@ def generate_world():
 
 {NOVEL_PREMISE}
 
+## origin/ 原始参考素材
+{ORIGIN_MATERIALS or "（无）"}
+
 请输出以下JSON结构：
 {{
   "title": "小说标题",
@@ -124,7 +129,8 @@ def generate_world():
 2. 地点要有层次感和探索价值，从底层到高层逐步展开
 3. 势力设计要符合主角的底层起步设定
 4. 整体架构要支撑{CONFIG['total_chapters']}章的篇幅
-5. 必须输出合法的JSON，不要任何注释或额外文本"""
+5. 如果 origin/ 中存在素材，必须优先吸收其中的设定、人物、风格和限制，不能与其冲突
+6. 必须输出合法的JSON，不要任何注释或额外文本"""
 
     print("[Planner] 正在生成世界观...")
     content = call_mmx(system, prompt, max_tokens=8192, temperature=0.4)
@@ -168,6 +174,9 @@ def generate_characters():
 
 {NOVEL_PREMISE}
 
+## origin/ 原始参考素材
+{ORIGIN_MATERIALS or "（无）"}
+
 请输出包含 protagonist、companions、new_characters、antagonists 的JSON结构。
 
 要求：
@@ -176,7 +185,8 @@ def generate_characters():
 3. 新角色至少设计8个重要角色，涵盖同伴、导师、对手等类型
 4. 可以有红颜知己或暧昧角色，但不要太滥
 5. 反派要有层次，设计至少3个层级的反派（小反派、中BOSS、最终BOSS）
-6. 必须输出合法JSON"""
+6. 如果 origin/ 中存在角色、前作、背景或风格素材，必须优先参考并保持一致
+7. 必须输出合法JSON"""
 
     print("[Planner] 正在生成角色档案...")
     content = call_mmx(system, prompt, max_tokens=8192, temperature=0.4)
@@ -202,6 +212,124 @@ def generate_characters():
             print(f"[Planner] 角色档案已保存（经过修复）")
         except Exception as e2:
             print(f"[Planner] 修复失败: {e2}")
+
+
+def _strip_json_markdown(content: str) -> str:
+    if "```json" in content:
+        return content.split("```json", 1)[1].split("```", 1)[0].strip()
+    if "```" in content:
+        return content.split("```", 1)[1].split("```", 1)[0].strip()
+    return content.strip()
+
+
+def _default_media_prompts(world: dict, characters: dict) -> dict:
+    title = world.get("title", NOVELS_DIR.name)
+    world_desc = world.get("world_description", "")
+    protagonist = characters.get("protagonist", {})
+    protagonist_name = protagonist.get("name", "主角") if isinstance(protagonist, dict) else "主角"
+    visual_core = f"《{title}》，{world_desc[:300]}，主角{protagonist_name}"
+    return {
+        "cover_prompt": (
+            f"中文网络小说封面，书名《{title}》，{visual_core}。"
+            "电影级构图，强烈故事感，东方幻想/武侠质感，主角居中，背景展现核心世界观，"
+            "高细节，商业出版封面，避免现代广告字样和水印。"
+        ),
+        "video_prompt": (
+            f"根据小说《{title}》世界观制作15秒电影感概念预告片：{visual_core}。"
+            "镜头从世界核心地貌推进到主角背影，再展现力量体系与主要冲突，史诗感，"
+            "动态光影，东方幻想氛围，无字幕，无水印。"
+        ),
+        "song_prompt": (
+            f"为中文网络小说《{title}》创作主题曲，贴合世界观：{world_desc[:300]}。"
+            "情绪从孤独起步到热血崛起，适合小说宣传视频和阅读氛围。"
+        ),
+        "song_lyrics": (
+            f"[Verse]\n长夜里踏过风霜，{protagonist_name}回望旧山河\n"
+            "一念未熄燃成火，照见万界的辽阔\n\n"
+            "[Chorus]\n向天穹，向长风，向命数之外再相逢\n"
+            "以此身破云海，写下一卷不朽的梦\n"
+        ),
+    }
+
+
+def _write_media_prompt_files(media_prompts: dict) -> None:
+    files = {
+        NOVELS_DIR / "media" / "images" / "cover_prompt.md": media_prompts.get("cover_prompt", ""),
+        NOVELS_DIR / "media" / "videos" / "world_video_prompt.md": media_prompts.get("video_prompt", ""),
+        NOVELS_DIR / "media" / "music" / "theme_song_prompt.md": media_prompts.get("song_prompt", ""),
+        NOVELS_DIR / "media" / "music" / "theme_song_lyrics.md": media_prompts.get("song_lyrics", ""),
+    }
+    for path, text in files.items():
+        if not text:
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(text).strip() + "\n", encoding="utf-8")
+
+
+def generate_media_prompts():
+    if not WORLD_FILE.exists() or not CHARACTERS_FILE.exists():
+        print("[Planner] world.json 或 characters.json 不存在，跳过媒体提示词生成")
+        return
+
+    world = json.loads(WORLD_FILE.read_text(encoding="utf-8"))
+    characters = json.loads(CHARACTERS_FILE.read_text(encoding="utf-8"))
+    existing = world.get("media_prompts")
+    if isinstance(existing, dict) and all(existing.get(key) for key in ("cover_prompt", "video_prompt", "song_prompt", "song_lyrics")):
+        _write_media_prompt_files(existing)
+        print("[Planner] 媒体提示词已存在，已同步提示词文件")
+        return
+
+    system = """你是一位小说视觉与音乐宣发总监。
+你需要根据 world.json 和 characters.json，为本书生成封面图、世界观视频、主题曲的高质量生成提示词。
+输出必须是合法JSON，不要包含markdown代码块。"""
+
+    prompt = f"""请根据以下小说设定生成媒体提示词，必须符合本书世界观、主角气质和商业网络小说宣发风格。
+
+## world.json
+{json.dumps(world, ensure_ascii=False, indent=2)[:4000]}
+
+## characters.json
+{json.dumps(characters, ensure_ascii=False, indent=2)[:3000]}
+
+## origin/ 原始参考素材
+{ORIGIN_MATERIALS or "（无）"}
+
+请输出以下JSON结构：
+{{
+  "cover_prompt": "用于生成一张小说封面图片的详细中文提示词，必须包含画面主体、构图、氛围、色彩、核心世界观元素、禁用水印和现代广告字样",
+  "video_prompt": "用于生成一个15秒左右世界观概念视频的详细中文提示词，必须包含镜头运动、场景变化、主角意象、核心冲突、视觉风格、禁用字幕和水印",
+  "song_prompt": "用于生成一首本书主题歌的风格提示词，必须包含曲风、情绪、乐器、节奏、用途和世界观氛围",
+  "song_lyrics": "中文歌词，带 [Verse] [Chorus] 等结构标签，避免直接照搬已有歌词"
+}}
+
+要求：
+1. 三类提示词都必须服务于同一本书，不能泛泛而谈
+2. cover 必须适合放入 media/images/ 作为小说封面
+3. video 必须根据 world.json 的世界观生成，适合放入 media/videos/
+4. song 必须是本书主题歌，适合放入 media/music/
+5. 如果 origin/ 有素材，必须参考其风格和设定
+6. 必须输出合法JSON"""
+
+    print("[Planner] 正在生成媒体提示词...")
+    content = call_mmx(system, prompt, max_tokens=4096, temperature=0.5)
+    media_prompts = None
+    if content:
+        try:
+            media_prompts = json.loads(_strip_json_markdown(content))
+        except Exception as exc:
+            print(f"[Planner] 媒体提示词JSON解析失败: {exc}")
+    if not isinstance(media_prompts, dict):
+        media_prompts = _default_media_prompts(world, characters)
+
+    world["media_prompts"] = {
+        "cover_prompt": str(media_prompts.get("cover_prompt", "")).strip(),
+        "video_prompt": str(media_prompts.get("video_prompt", "")).strip(),
+        "song_prompt": str(media_prompts.get("song_prompt", "")).strip(),
+        "song_lyrics": str(media_prompts.get("song_lyrics", "")).strip(),
+    }
+    WORLD_FILE.write_text(json.dumps(world, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_media_prompt_files(world["media_prompts"])
+    print("[Planner] 媒体提示词已写入 world.json 和 media/ 提示词文件")
 
 
 def generate_outline_range(start: int, end: int, outline_file: Path = None):
@@ -262,6 +390,9 @@ def generate_outline_range(start: int, end: int, outline_file: Path = None):
 
 故事前提：{NOVEL_PREMISE}
 
+origin/ 原始参考素材：
+{ORIGIN_MATERIALS or "（无）"}
+
 {prev_context}
 
 请输出以下JSON结构：
@@ -288,9 +419,10 @@ def generate_outline_range(start: int, end: int, outline_file: Path = None):
 2. 情节要有起伏，有高潮有低谷，有扮猪吃虎的爽点
 3. 主角的实力和技能要逐步成长，保持升级爽感
 4. 伏笔要前后呼应，与前一批大纲自然衔接
-5. 要有"强敌轻视主角，结果被主角以积累的实力碾压"的爽文桥段
-6. 探索不同场景时要展现环境差异和世界多样性
-7. 必须输出合法JSON，总共{batch_end - batch_start + 1}个章节对象"""
+5. 如果 origin/ 中存在素材，必须参考其中的设定、人物关系、历史事件和风格约束
+6. 要有"强敌轻视主角，结果被主角以积累的实力碾压"的爽文桥段
+7. 探索不同场景时要展现环境差异和世界多样性
+8. 必须输出合法JSON，总共{batch_end - batch_start + 1}个章节对象"""
 
         content = call_mmx(system, prompt, max_tokens=8192, temperature=0.5)
         if not content:
@@ -344,6 +476,7 @@ def main():
 
     generate_world()
     generate_characters()
+    generate_media_prompts()
 
     print("[Planner] 全部完成")
 

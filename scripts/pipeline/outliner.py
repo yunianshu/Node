@@ -16,7 +16,7 @@ import json
 import os
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
-from core.novel_config import load_config
+from core.novel_config import load_config, load_origin_materials
 from core.workflow_state import list_outline_chapters, write_outline_chapters
 
 NOVELS_DIR = None
@@ -25,15 +25,17 @@ OUTLINE_FILE = None
 CHARACTERS_FILE = None
 CONFIG = None
 NOVEL_PREMISE = ""
+ORIGIN_MATERIALS = ""
 
 
 def init_project(project_dir: str | Path) -> None:
-    global NOVELS_DIR, WORLD_FILE, OUTLINE_FILE, CHARACTERS_FILE, CONFIG, NOVEL_PREMISE
+    global NOVELS_DIR, WORLD_FILE, OUTLINE_FILE, CHARACTERS_FILE, CONFIG, NOVEL_PREMISE, ORIGIN_MATERIALS
     NOVELS_DIR = Path(project_dir).resolve()
     WORLD_FILE = NOVELS_DIR / "world.json"
     OUTLINE_FILE = None
     CHARACTERS_FILE = NOVELS_DIR / "characters.json"
     CONFIG = load_config(NOVELS_DIR)
+    ORIGIN_MATERIALS = load_origin_materials(NOVELS_DIR, max_chars=3000)
     total = CONFIG["total_chapters"]
 
     premise_file = NOVELS_DIR / "premise.txt"
@@ -148,9 +150,270 @@ def _safe_parse_outline(text: str) -> dict | None:
     return None
 
 
-def generate_outline_range(start: int, end: int, outline_file: Path = None, fill_gaps: bool = False, chapter: int = None, review_feedback: Path = None):
+REQUIRED_CHAPTER_FIELDS = (
+    "chapter_number",
+    "title",
+    "summary",
+    "characters_involved",
+    "location",
+    "mood",
+    "key_events",
+    "foreshadowing",
+    "power_progression",
+    "word_count_target",
+)
+
+PLACEHOLDER_TEXTS = {
+    "章节标题",
+    "核心事件摘要",
+    "核心事件摘要（150-250字）",
+    "200字详细摘要",
+    "角色名1",
+    "角色名2",
+    "场景地点",
+    "情感基调",
+    "事件1",
+    "事件2",
+    "埋下的伏笔",
+    "实力变化说明",
+}
+
+
+def _has_placeholder(value) -> bool:
+    if isinstance(value, str):
+        text = value.strip()
+        return not text or text in PLACEHOLDER_TEXTS or "示例" in text or "占位" in text
+    if isinstance(value, list):
+        return any(_has_placeholder(item) for item in value)
+    return False
+
+
+def _validate_chapter_outline(chapter: dict, expected_number: int | None = None) -> list[str]:
+    issues = []
+    if not isinstance(chapter, dict):
+        return ["章节对象不是JSON object"]
+
+    for field in REQUIRED_CHAPTER_FIELDS:
+        if field not in chapter:
+            issues.append(f"缺少字段 {field}")
+
+    chapter_number = chapter.get("chapter_number")
+    if expected_number is not None and chapter_number != expected_number:
+        issues.append(f"chapter_number应为{expected_number}，实际为{chapter_number}")
+
+    summary = str(chapter.get("summary", "")).strip()
+    if len(summary) < 120:
+        issues.append("summary少于120字")
+    if _has_placeholder(summary):
+        issues.append("summary仍是占位文本")
+
+    characters = chapter.get("characters_involved")
+    if not isinstance(characters, list) or len([item for item in characters if str(item).strip()]) < 1:
+        issues.append("characters_involved必须至少包含1个角色")
+    elif _has_placeholder(characters):
+        issues.append("characters_involved包含占位文本")
+
+    key_events = chapter.get("key_events")
+    if not isinstance(key_events, list) or len([item for item in key_events if str(item).strip()]) < 3:
+        issues.append("key_events必须至少包含3个具体事件")
+    elif _has_placeholder(key_events):
+        issues.append("key_events包含占位文本")
+
+    for field in ("title", "location", "mood", "foreshadowing", "power_progression"):
+        value = str(chapter.get(field, "")).strip()
+        if len(value) < 2:
+            issues.append(f"{field}不能为空")
+        if _has_placeholder(value):
+            issues.append(f"{field}仍是占位文本")
+
+    try:
+        target = int(chapter.get("word_count_target", 0))
+        if target < 3000:
+            issues.append("word_count_target低于3000")
+    except (TypeError, ValueError):
+        issues.append("word_count_target必须是数字")
+
+    return issues
+
+
+def _validate_outline_batch(chapters: list, batch_start: int, batch_end: int) -> None:
+    if not isinstance(chapters, list):
+        raise ValueError("chapters不是数组")
+    expected_count = batch_end - batch_start + 1
+    if len(chapters) != expected_count:
+        raise ValueError(f"章节数量不匹配，期望{expected_count}章，实际{len(chapters)}章")
+
+    issues = []
+    for offset, chapter in enumerate(chapters):
+        expected_number = batch_start + offset
+        chapter_issues = _validate_chapter_outline(chapter, expected_number)
+        if chapter_issues:
+            issues.append(f"第{expected_number}章: {'; '.join(chapter_issues)}")
+    if issues:
+        raise ValueError("大纲结构不完整: " + " | ".join(issues[:5]))
+
+
+def _outline_quality_contract() -> str:
+    min_score = float(CONFIG.get("outline_reviewer", {}).get("min_score", 8.5))
+    return f"""## 大纲质量契约（必须满足）
+- 大纲审查目标分必须达到 {min_score:g} 分及以上；低于该分数视为不合格，需要重写。
+- 必须顺接前章结尾的人物状态、地点、时间和危机，不能跳场景、跳时间、跳动机。
+- 必须为下一章留下清晰接口：章末钩子、未解决危机、情报增量或行动目标至少具备一项。
+- 不得与前后章节核心事件重复；若发现重复，必须重新设计本章独有冲突和爽点。
+- summary 必须写具体剧情链路：起因、冲突、转折、结果、章末钩子，不得写模板话。
+- key_events 至少 5 条，按发生顺序列出，每条必须包含行动、阻碍和结果。
+- foreshadowing 必须包含本章埋下或回收的具体伏笔，不能只写抽象评价。
+- power_progression 必须说明主角能力、资源、关系、情报或目标的具体变化。
+- 人物动机必须可执行、可理解，不能为了剧情强行行动。
+- 每章必须有危机升级和读者爽点，且爽点来自主角判断、能力、资源或协作的实际发挥。"""
+
+
+def _feedback_attempt_count(review_feedback_data: dict, chapter_no: int) -> int:
+    item = review_feedback_data.get(str(chapter_no))
+    if not isinstance(item, dict):
+        return 0
+    analysis = item.get("failure_analysis")
+    if isinstance(analysis, dict):
+        try:
+            return int(analysis.get("attempts") or 0)
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def _feedback_hard_constraints(review_feedback_data: dict, batch_start: int, batch_end: int) -> list[str]:
+    constraints: list[str] = []
+    for key, value in review_feedback_data.items():
+        if not isinstance(value, dict):
+            continue
+        chapter_no = value.get("chapter")
+        if not chapter_no or not (batch_start <= int(chapter_no) <= batch_end):
+            continue
+        analysis = value.get("failure_analysis") if isinstance(value.get("failure_analysis"), dict) else {}
+        for field in ("adjustments", "likely_reasons"):
+            values = analysis.get(field, [])
+            if isinstance(values, list):
+                constraints.extend(str(item).strip() for item in values if str(item).strip())
+        reviews = value.get("reviews") if isinstance(value.get("reviews"), list) else []
+        for review in reviews[-2:]:
+            if not isinstance(review, dict):
+                continue
+            for field in ("suggestions", "weaknesses", "continuity_issues"):
+                values = review.get(field, [])
+                if isinstance(values, list):
+                    constraints.extend(str(item).strip() for item in values if str(item).strip())
+    return list(dict.fromkeys(constraints))[:12]
+
+
+def _compact_review_feedback(review_feedback_data: dict, batch_start: int, batch_end: int) -> dict:
+    compact: dict[str, dict] = {}
+    for key, value in review_feedback_data.items():
+        if not isinstance(value, dict):
+            continue
+        chapter_no = value.get("chapter")
+        if not chapter_no or not (batch_start <= int(chapter_no) <= batch_end):
+            continue
+
+        analysis = value.get("failure_analysis") if isinstance(value.get("failure_analysis"), dict) else {}
+        latest_reviews = value.get("reviews") if isinstance(value.get("reviews"), list) else []
+        latest = latest_reviews[-1] if latest_reviews and isinstance(latest_reviews[-1], dict) else {}
+        compact[key] = {
+            "chapter": chapter_no,
+            "best_score": analysis.get("best_score"),
+            "must_fix": list(analysis.get("likely_reasons", []))[:8],
+            "required_adjustments": list(analysis.get("adjustments", []))[:8],
+            "latest_verdict": latest.get("verdict"),
+            "latest_score": latest.get("overall_score"),
+            "latest_weaknesses": list(latest.get("weaknesses", []))[:3],
+            "latest_suggestions": list(latest.get("suggestions", []))[:3],
+        }
+    return compact
+
+
+def _context_lines(outline: dict, batch_start: int, batch_end: int, rescue: bool = False) -> str:
+    if not outline.get("chapters"):
+        return ""
+    before = [
+        ch for ch in outline["chapters"]
+        if isinstance(ch.get("chapter_number"), int) and ch.get("chapter_number", 0) < batch_start
+    ]
+    after = [
+        ch for ch in outline["chapters"]
+        if isinstance(ch.get("chapter_number"), int) and ch.get("chapter_number", 0) > batch_end
+    ]
+    before.sort(key=lambda x: x.get("chapter_number", 0))
+    after.sort(key=lambda x: x.get("chapter_number", 0))
+    limit = 2 if rescue else 3
+    items = before[-limit:] + after[:limit]
+    if not items:
+        return ""
+
+    title = "前后章摘要（用于衔接，不得照抄或冲突）" if rescue else "前一批最后几章摘要（用于衔接）"
+    lines = [f"\n{title}："]
+    summary_limit = 240 if rescue else 100
+    for ch in items:
+        lines.append(f"第{ch.get('chapter_number')}章《{ch.get('title')}》：{str(ch.get('summary', ''))[:summary_limit]}...")
+    return "\n".join(lines) + "\n"
+
+
+def _build_rescue_prompt(
+    batch_start: int,
+    batch_end: int,
+    world_json: str,
+    chars_json: str,
+    prev_context: str,
+    review_feedback_data: dict,
+) -> str:
+    constraints = _feedback_hard_constraints(review_feedback_data, batch_start, batch_end)
+    constraints_text = "\n".join(f"- {item}" for item in constraints) or "- 修复上一轮所有审查问题，保持前后章连续。"
+    premise = NOVEL_PREMISE[:1000]
+    return f"""你正在修复第{batch_start}章到第{batch_end}章的大纲卡点。目标不是扩写，而是输出短小、闭合、可审查通过的JSON。
+
+世界观摘要：
+{world_json}
+
+角色摘要：
+{chars_json}
+
+故事前提摘要：
+{premise}
+
+{prev_context}
+必须修复的硬约束：
+{constraints_text}
+
+{_outline_quality_contract()}
+
+输出要求：
+- 只输出合法JSON，不要Markdown代码块，不要解释文字。
+- 只生成第{batch_start}章到第{batch_end}章，共{batch_end - batch_start + 1}个章节对象。
+- 字段必须完整：chapter_number/title/summary/characters_involved/location/mood/key_events/foreshadowing/power_progression/word_count_target。
+- summary 控制在150-220字，key_events 只写5-6条，每条不超过70字。
+- 不允许尾随逗号，不允许注释，不允许省略号，不允许占位文本。
+
+JSON结构：
+{{
+  "chapters": [
+    {{
+      "chapter_number": {batch_start},
+      "title": "具体章节名",
+      "summary": "150-220字具体剧情摘要，必须顺接前章并给下一章留下接口",
+      "characters_involved": ["沈越"],
+      "location": "具体地点",
+      "mood": "具体情绪基调",
+      "key_events": ["事件1", "事件2", "事件3", "事件4", "事件5"],
+      "foreshadowing": "具体伏笔",
+      "power_progression": "具体能力、资源、关系或情报进展",
+      "word_count_target": 5000
+    }}
+  ]
+}}"""
+
+
+def generate_outline_range(start: int, end: int, outline_file: Path = None, fill_gaps: bool = False, chapter: int = None, review_feedback: Path = None, rescue: bool = False):
     batch_size = 15
     output_file = outline_file
+    failures = []
 
     world = _load_json(WORLD_FILE)
     characters = _load_json(CHARACTERS_FILE)
@@ -243,36 +506,40 @@ def generate_outline_range(start: int, end: int, outline_file: Path = None, fill
         actual_start = max(start, last_chapter + 1) if output_file else start
         batch_ranges = [(s, min(s + batch_size - 1, end)) for s in range(actual_start, end + 1, batch_size)]
 
-    system = """你是一位顶级东方玄幻/武侠/修仙小说大纲设计师。
-你需要设计详细的大纲，每章包含标题、核心事件、涉及角色、场景、情感基调。
+    system = """你是一位顶级中文网络小说大纲设计师。
+你需要设计详细的大纲，每章包含标题、核心事件、涉及角色、场景、情感基调、伏笔、能力/事业进展。
 严格按照 premise 中描述的故事设定和主角设定来设计大纲。
+即使只生成单章，也必须输出可供正文写作的完整章节设计，不能输出模板占位词。
 输出必须是合法的JSON格式。"""
 
     for batch_start, batch_end in batch_ranges:
         print(f"[Outliner] 正在生成第 {batch_start}-{batch_end} 章大纲...")
 
-        prev_context = ""
-        if outline.get("chapters"):
-            # 找到 batch_start 之前最多3章作为上下文
-            prev_candidates = [ch for ch in outline["chapters"] if ch.get("chapter_number", 0) < batch_start]
-            prev_candidates.sort(key=lambda x: x.get("chapter_number", 0))
-            prev_chapters = prev_candidates[-3:]
-            if prev_chapters:
-                prev_context = "\n前一批最后几章摘要（用于衔接）：\n"
-                for ch in prev_chapters:
-                    prev_context += f"第{ch.get('chapter_number')}章《{ch.get('title')}》：{ch.get('summary', '')[:100]}...\n"
+        rescue_mode = rescue or (
+            chapter is not None
+            and batch_start == batch_end
+            and _feedback_attempt_count(review_feedback_data, batch_start) >= 8
+        )
+
+        prev_context = _context_lines(outline, batch_start, batch_end, rescue=rescue_mode)
 
         review_section = ""
         if review_feedback_data:
-            # 只提取当前批次章节的审查意见，避免请求过大
-            batch_feedback = {
-                k: v for k, v in review_feedback_data.items()
-                if v.get("chapter") and batch_start <= v.get("chapter", 0) <= batch_end
-            }
+            batch_feedback = _compact_review_feedback(review_feedback_data, batch_start, batch_end)
             if batch_feedback:
                 review_section = f"""\n上一轮大纲审查反馈（请特别注意并改进以下问题）：\n{json.dumps(batch_feedback, ensure_ascii=False, indent=2)}\n"""
 
-        prompt = f"""请根据以下世界观和角色设定，生成第{batch_start}章到第{batch_end}章的详细大纲。
+        prompt_premise = NOVEL_PREMISE
+        prompt_origin = ORIGIN_MATERIALS or "（无）"
+        if chapter is not None:
+            prompt_premise = NOVEL_PREMISE[:1800]
+            prompt_origin = ORIGIN_MATERIALS[:800] if ORIGIN_MATERIALS else "（无）"
+
+        if rescue_mode:
+            print(f"[Outliner] 第 {batch_start}-{batch_end} 章启用卡章救援模式")
+            prompt = _build_rescue_prompt(batch_start, batch_end, world_json, chars_json, prev_context, review_feedback_data)
+        else:
+            prompt = f"""请根据以下世界观和角色设定，生成第{batch_start}章到第{batch_end}章的详细大纲。
 
 世界观设定：
 {world_json}
@@ -280,40 +547,55 @@ def generate_outline_range(start: int, end: int, outline_file: Path = None, fill
 角色设定：
 {chars_json}
 
-故事前提：{NOVEL_PREMISE}
+故事前提：{prompt_premise}
+
+origin/ 原始参考素材：
+{prompt_origin}
 
 {prev_context}
 {review_section}
-请输出以下JSON结构：
+{_outline_quality_contract()}
+
+请输出以下JSON结构。所有字段都是必填；不得输出“章节标题”“200字详细摘要”“事件1”等占位文本：
 {{
   "chapters": [
     {{
       "chapter_number": {batch_start},
       "title": "章节标题",
-      "summary": "核心事件摘要（150-250字）",
+      "summary": "150-220字具体摘要：写清起因、冲突、转折、结果和本章结尾钩子",
       "characters_involved": ["角色名1", "角色名2"],
       "location": "场景地点",
       "mood": "情感基调",
-      "key_events": ["事件1", "事件2"],
-      "foreshadowing": "埋下的伏笔",
-      "power_progression": "实力变化说明",
+      "key_events": ["5-7个具体事件，按发生顺序列出，每条不超过90字"],
+      "foreshadowing": "本章埋下或回收的具体伏笔",
+      "power_progression": "本章主角能力、资源、关系或事业进展",
       "word_count_target": 5000
     }}
   ]
 }}
 
 要求：
-1. 每章必须有独特的核心事件，不能流水账
+1. 每章必须有独特的核心事件，不能流水账；key_events 必须5-7条，不能为空，单条不超过90字
 2. 情节要有起伏，有高潮有低谷，有扮猪吃虎的爽点
 3. 主角的实力和技能要逐步成长，保持升级爽感
 4. 伏笔要前后呼应，与前一批大纲自然衔接
 5. 要有强敌轻视主角，结果被主角以积累的实力碾压的爽文桥段
 6. 探索不同场景时要展现环境差异和世界多样性
-7. 必须输出合法JSON，总共{batch_end - batch_start + 1}个章节对象"""
+7. 如果 origin/ 中存在素材，必须参考其中的设定、人物关系、历史事件和风格约束，不能与其冲突
+8. summary 必须是具体剧情摘要，不能写“200字详细摘要”等占位内容
+9. foreshadowing 和 power_progression 必须有具体内容，不能缺失或留空
+10. 必须输出合法JSON，总共{batch_end - batch_start + 1}个章节对象
+11. 单章大纲整体保持紧凑，避免长段解释；必须优先保证JSON闭合和所有必填字段完整"""
 
-        content = call_mmx(system, prompt, max_tokens=8192, temperature=0.5)
+        content = call_mmx(
+            system,
+            prompt,
+            max_tokens=4096 if rescue_mode else 8192,
+            temperature=0.25 if rescue_mode else 0.5,
+        )
         if not content:
             print(f"[Outliner] 第 {batch_start}-{batch_end} 章大纲生成失败")
+            failures.append((batch_start, batch_end, "empty_response"))
             continue
 
         try:
@@ -334,6 +616,7 @@ def generate_outline_range(start: int, end: int, outline_file: Path = None, fill
             if batch_outline is None:
                 raise ValueError("所有 JSON 解析策略均失败")
             new_chapters = batch_outline.get("chapters", [])
+            _validate_outline_batch(new_chapters, batch_start, batch_end)
             outline["chapters"].extend(new_chapters)
             print(f"[Outliner] 第 {batch_start}-{batch_end} 章大纲已生成（{len(new_chapters)}章）")
             if output_file:
@@ -343,11 +626,20 @@ def generate_outline_range(start: int, end: int, outline_file: Path = None, fill
             write_outline_chapters(NOVELS_DIR, {"chapters": new_chapters}, skip_existing=skip_existing)
         except Exception as e:
             print(f"[Outliner] 第 {batch_start}-{batch_end} 章解析失败: {e}")
+            failures.append((batch_start, batch_end, str(e)))
             raw_file = NOVELS_DIR / "logs" / f"outline_batch_{batch_start:04d}.raw"
             raw_file.parent.mkdir(parents=True, exist_ok=True)
             raw_file.write_text(content, encoding="utf-8")
 
-    print(f"[Outliner] 大纲范围 {start}-{end} 已完成，共 {len(outline['chapters'])} 章")
+    generated_count = end - start + 1 - len(failures)
+    print(
+        f"[Outliner] 本次请求范围 {start}-{end} 已处理，"
+        f"本次成功 {max(0, generated_count)} 章，当前项目累计大纲 {len(outline['chapters'])} 章"
+    )
+    if failures:
+        print(f"[Outliner] 失败批次: {failures}")
+        return False
+    return True
 
 
 def main():
@@ -359,6 +651,7 @@ def main():
     parser.add_argument("--fill-gaps", action="store_true", help="只生成缺失的章节，跳过已存在的")
     parser.add_argument("--chapter", type=int, default=0, help="只生成指定单章的大纲")
     parser.add_argument("--review-feedback", type=str, default="", help="大纲审查意见JSON文件路径，用于指导改进")
+    parser.add_argument("--rescue", action="store_true", help="启用单章卡点救援提示，压缩上下文并强制短JSON输出")
     args = parser.parse_args()
 
     if not args.project:
@@ -380,13 +673,17 @@ def main():
 
     NOVELS_DIR.mkdir(parents=True, exist_ok=True)
     outline_file = Path(args.outline_file) if args.outline_file else None
-    generate_outline_range(
+    ok = generate_outline_range(
         args.start, end, outline_file,
         fill_gaps=args.fill_gaps,
         chapter=args.chapter if args.chapter > 0 else None,
         review_feedback=Path(args.review_feedback) if args.review_feedback else None,
+        rescue=args.rescue,
     )
 
+    if not ok:
+        print("[Outliner] 存在失败批次")
+        sys.exit(1)
     print("[Outliner] 全部完成")
 
 

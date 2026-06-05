@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+import re
 from pathlib import Path
 
 from core.novel_config import configure_stdio, get_webhook_url, load_config
@@ -52,6 +53,11 @@ PIPELINE_SCRIPTS = {
     "outline_reviewer.py": TOOLS_ROOT / "pipeline" / "outline_reviewer.py",
     "writer.py": TOOLS_ROOT / "pipeline" / "writer.py",
     "reviewer.py": TOOLS_ROOT / "pipeline" / "reviewer.py",
+    "media_generator.py": TOOLS_ROOT / "pipeline" / "media_generator.py",
+}
+
+MAINTENANCE_SCRIPTS = {
+    "wechat_pusher_lane.py": TOOLS_ROOT / "maintenance" / "wechat_pusher_lane.py",
 }
 
 
@@ -233,6 +239,38 @@ def progress_pusher_thread(interval_seconds: int = 120):
         log(f"[WeChat] 进度{status}: 大纲审{p["outline_reviewed"]}/{CONFIG["total_chapters"]}, 初稿{p["draft"]}/{CONFIG["total_chapters"]}, 审查{p["reviewed"]}/{CONFIG["total_chapters"]}")
 
 
+def ensure_wechat_pusher_process(interval_seconds: int | None = None) -> None:
+    """启动独立企业微信推送进程；实际单例由推送进程自己的 lock 文件保证。"""
+    if NOVELS_DIR is None or CONFIG is None:
+        return
+    script = MAINTENANCE_SCRIPTS["wechat_pusher_lane.py"]
+    if not script.exists():
+        log(f"[WeChat] 推送脚本不存在，跳过: {script}")
+        return
+    interval = interval_seconds or int(CONFIG["coordinator"].get("push_interval_seconds", 120))
+    cmd = [
+        sys.executable,
+        str(script),
+        "--project",
+        str(NOVELS_DIR),
+        "--interval",
+        str(interval),
+    ]
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    try:
+        subprocess.Popen(
+            cmd,
+            cwd=str(TOOLS_ROOT.parent),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+        log(f"[WeChat] 已确保独立进度推送进程运行（每{interval}秒）")
+    except Exception as exc:
+        log(f"[WeChat] 启动独立进度推送进程失败: {exc}")
+
+
 def notify_stage(stage: str, status: str, start: int | None = None, end: int | None = None,
                  processed: int = 0, failed: int = 0, error: str = "") -> None:
     """记录阶段事件（不再推送微信，由 progress_pusher_thread 定时推送）。"""
@@ -386,6 +424,47 @@ def run_planner():
     notify_stage("世界观/角色", "开始")
     rc = run_script("planner.py")
     notify_stage("世界观/角色", "完成" if rc == 0 else "异常", error="" if rc == 0 else f"退出码 {rc}")
+    return rc
+
+
+def media_prompts_ready() -> bool:
+    if not WORLD_FILE.exists():
+        return False
+    try:
+        world = json.loads(WORLD_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    prompts = world.get("media_prompts", {})
+    if not isinstance(prompts, dict):
+        return False
+    return all(prompts.get(key) for key in ("cover_prompt", "video_prompt", "song_prompt", "song_lyrics"))
+
+
+def media_assets_ready() -> bool:
+    image_exts = {".png", ".jpg", ".jpeg", ".webp"}
+    cover = any(
+        path.is_file() and path.suffix.lower() in image_exts
+        for path in (NOVELS_DIR / "media" / "images").glob("cover*")
+    )
+    video = (NOVELS_DIR / "media" / "videos" / "world_video.mp4").exists()
+    song = any((NOVELS_DIR / "media" / "music").glob("theme_song.*"))
+    return cover and video and song
+
+
+def run_media_generator():
+    if not CONFIG.get("media", {}).get("enabled", True):
+        log("[Coordinator] media.enabled=false，跳过媒体生成")
+        return 0
+    if media_assets_ready():
+        log("[Coordinator] 封面、世界观视频、主题歌已存在，跳过媒体生成")
+        return 0
+
+    log("=" * 60)
+    log("[Coordinator] 启动 Media Generator: 封面/世界观视频/主题歌")
+    log("=" * 60)
+    notify_stage("媒体资产", "开始")
+    rc = run_script("media_generator.py")
+    notify_stage("媒体资产", "完成" if rc == 0 else "异常", error="" if rc == 0 else f"退出码 {rc}")
     return rc
 
 
@@ -887,7 +966,7 @@ def _promote_draft_to_final(chapter: int) -> bool:
     return True
 
 
-def process_outline_gate(chapter: int) -> bool:
+def process_outline_gate(chapter: int, *, push_on_failure: bool = True) -> bool:
     if outline_chapter_path(NOVELS_DIR, chapter).exists() and _outline_gate_passed(chapter):
         log(f"[Coordinator] 第{chapter}章大纲和大纲审已通过，跳过")
         return True
@@ -907,17 +986,37 @@ def process_outline_gate(chapter: int) -> bool:
             existing_review = _load_json_file(_outline_review_file(chapter))
             if existing_review:
                 reviews.append(_review_feedback(existing_review, chapter, "outline", round_no, attempt))
+                feedback_file = _write_gate_feedback(chapter, "outline", reviews, round_no)
+                log(f"[Coordinator] 第{chapter}章读取现有大纲审查意见，反馈给本次重生成: {feedback_file}")
+            _drop_text_artifacts(chapter, reason="大纲正在重生成")
             _safe_unlink(outline_chapter_path(NOVELS_DIR, chapter))
             _safe_unlink(_outline_review_file(chapter))
 
             args = ["--chapter", str(chapter)]
             if feedback_file:
                 args += ["--review-feedback", str(feedback_file)]
+            if len(reviews) >= 8:
+                args.append("--rescue")
+                log(f"[Coordinator] 第{chapter}章大纲累计失败{len(reviews)}次，启用卡章救援模式")
             if run_script("outliner.py", *args) != 0:
-                reviews.append({"chapter": chapter, "status": "outliner_failed"})
+                reviews.append({
+                    "chapter": chapter,
+                    "status": "outliner_failed",
+                    "weaknesses": ["大纲生成失败、JSON解析失败或结构字段不完整"],
+                    "suggestions": ["重新生成时必须补齐summary、key_events、foreshadowing、power_progression等必填字段"],
+                })
+                feedback_file = _write_gate_feedback(chapter, "outline", reviews, round_no)
+                log(f"[Coordinator] 第{chapter}章大纲生成失败，下一次重生成将使用反馈: {feedback_file}")
                 continue
             if run_script("outline_reviewer.py", "--chapter", str(chapter)) != 0:
-                reviews.append({"chapter": chapter, "status": "outline_reviewer_failed"})
+                reviews.append({
+                    "chapter": chapter,
+                    "status": "outline_reviewer_failed",
+                    "weaknesses": ["大纲审查器执行失败"],
+                    "suggestions": ["重新生成大纲并确保结构完整、剧情冲突明确、伏笔和能力进展具体"],
+                })
+                feedback_file = _write_gate_feedback(chapter, "outline", reviews, round_no)
+                log(f"[Coordinator] 第{chapter}章大纲审查失败，下一次重生成将使用反馈: {feedback_file}")
                 continue
 
             review_data = _load_json_file(_outline_review_file(chapter))
@@ -925,9 +1024,12 @@ def process_outline_gate(chapter: int) -> bool:
             if _outline_gate_passed(chapter):
                 log(f"[Coordinator] 第{chapter}章大纲初审通过")
                 return True
+            feedback_file = _write_gate_feedback(chapter, "outline", reviews, round_no)
+            log(f"[Coordinator] 第{chapter}章大纲未通过，下一次重生成将使用反馈: {feedback_file}")
 
     report = _write_failure_report(chapter, "outline", reviews)
-    _push_gate_failure(chapter, "大纲初审", report)
+    if push_on_failure:
+        _push_gate_failure(chapter, "大纲初审", report)
     return False
 
 
@@ -963,13 +1065,114 @@ def process_draft_gate(chapter: int) -> bool:
     return False
 
 
-def run_serial_quality_workflow(start: int, end: int) -> bool:
+def _outline_lookahead_window(chapter: int, end: int, lookahead: int) -> tuple[int, int]:
+    window = max(1, lookahead)
+    return chapter, min(end, chapter + window - 1)
+
+
+def _load_outline_failure_report(chapter: int) -> dict:
+    return _load_json_file(report_path(NOVELS_DIR, f"outline_failure_chapter_{chapter:04d}.json"))
+
+
+def _extract_later_overlap_chapter(chapter: int, report: dict) -> int | None:
+    texts: list[str] = []
+    for key in ("likely_reasons", "adjustments", "statuses"):
+        values = report.get(key, [])
+        if isinstance(values, list):
+            texts.extend(str(item) for item in values if item)
+        elif values:
+            texts.append(str(values))
+
+    candidate_chapters: list[int] = []
+    overlap_markers = ("重叠", "重复", "冲突", "断裂", "冲突", "不自洽", "bug")
+    for text in texts:
+        if not any(marker in text for marker in overlap_markers):
+            continue
+        for match in re.finditer(r"第\s*(\d+)\s*章", text):
+            try:
+                target = int(match.group(1))
+            except (TypeError, ValueError):
+                continue
+            if target > chapter:
+                candidate_chapters.append(target)
+        for match in re.finditer(r"chapter[_\s-]?(\d+)", text, re.IGNORECASE):
+            try:
+                target = int(match.group(1))
+            except (TypeError, ValueError):
+                continue
+            if target > chapter:
+                candidate_chapters.append(target)
+
+    if candidate_chapters:
+        return min(candidate_chapters)
+    return None
+
+
+def _drop_outline_artifacts(chapter: int) -> None:
+    outline_file = outline_chapter_path(NOVELS_DIR, chapter)
+    review_file = _outline_review_file(chapter)
+    if outline_file.exists():
+        outline_file.unlink()
+        log(f"[Coordinator] 删除第{chapter}章大纲，准备按后章重叠规则重写")
+    if review_file.exists():
+        review_file.unlink()
+        log(f"[Coordinator] 删除第{chapter}章大纲审查报告，准备按后章重叠规则重写")
+    _drop_text_artifacts(chapter, reason="大纲已排除/重写")
+
+
+def _drop_text_artifacts(chapter: int, *, reason: str) -> None:
+    for path, label in (
+        (_draft_file(chapter), "初稿"),
+        (_review_file(chapter), "正文审查报告"),
+        (_final_file(chapter), "终稿"),
+    ):
+        if path.exists():
+            path.unlink()
+            log(f"[Coordinator] 删除第{chapter}章{label}，原因: {reason}")
+
+
+def _repair_later_overlap(chapter: int, report: dict) -> int | None:
+    overlap_chapter = _extract_later_overlap_chapter(chapter, report)
+    if overlap_chapter is None:
+        return None
+    _drop_outline_artifacts(overlap_chapter)
+    log(f"[Coordinator] 第{chapter}章审查指向第{overlap_chapter}章存在重叠，已先排除后章，后续将重生成第{overlap_chapter}章大纲")
+    return overlap_chapter
+
+
+def ensure_outline_lookahead(chapter: int, end: int, lookahead: int) -> tuple[bool, int | None]:
+    start_chapter, end_chapter = _outline_lookahead_window(chapter, end, lookahead)
+    log(f"[Coordinator] 写第{chapter}章前，确保第{start_chapter}-{end_chapter}章大纲已通过")
+    for outline_chapter in range(start_chapter, end_chapter + 1):
+        if not process_outline_gate(outline_chapter, push_on_failure=False):
+            return False, outline_chapter
+    return True, None
+
+
+def run_serial_quality_workflow(start: int, end: int, outline_lookahead: int | None = None) -> bool:
+    if outline_lookahead is None:
+        outline_lookahead = int(CONFIG.get("coordinator", {}).get("outline_lookahead_chapters", 10) or 10)
+
     for chapter in range(start, end + 1):
         log("=" * 60)
         log(f"[Coordinator] 单章质量门开始: 第{chapter}章")
         log("=" * 60)
-        if not process_outline_gate(chapter):
-            return False
+        ok, failed_chapter = ensure_outline_lookahead(chapter, end, outline_lookahead)
+        if not ok:
+            failed_report_chapter = failed_chapter or chapter
+            report = _load_outline_failure_report(failed_report_chapter)
+            overlap_chapter = _repair_later_overlap(failed_report_chapter, report)
+            if overlap_chapter is not None:
+                log(f"[Coordinator] 重新校验第{chapter}章前，先让后章第{overlap_chapter}章让位")
+                ok, failed_chapter = ensure_outline_lookahead(chapter, end, outline_lookahead)
+                if not ok:
+                    failed_report_chapter = failed_chapter or chapter
+                    report = _load_outline_failure_report(failed_report_chapter)
+                    _push_gate_failure(chapter, "大纲初审", report)
+                    return False
+            else:
+                _push_gate_failure(failed_report_chapter, "大纲初审", report)
+                return False
         if not process_draft_gate(chapter):
             return False
 
@@ -994,7 +1197,7 @@ def generate_summary_report():
     statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"])
     completed = [ch for ch, status in statuses.items() if status.final_ok]
     total_words = sum(status.draft_words for status in statuses.values() if status.draft_exists)
-    review_scores = [status.review_score for status in statuses.values() if status.review_score is not None]
+    review_scores = [status.review_score for status in statuses.values() if status.final_ok and status.review_score is not None]
     rewrite_count = sum(1 for status in statuses.values() if status.review_exists and not status.review_ok)
 
     report = {
@@ -1026,6 +1229,8 @@ def main():
     parser.add_argument("--batch-size", type=int, default=0, help="每批生成的章节数")
     parser.add_argument("--start", type=int, default=1, help="起始章节")
     parser.add_argument("--end", type=int, default=0, help="结束章节")
+    parser.add_argument("--outline-lookahead", type=int, default=0,
+                        help="写正文前预先通过审查的大纲章数，默认读取 coordinator.outline_lookahead_chapters")
     parser.add_argument("--skip-planner", action="store_true", help="跳过Planner阶段")
     args = parser.parse_args()
 
@@ -1045,15 +1250,8 @@ def main():
     REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
-    global _pusher_started
-    if not _pusher_started:
-        _pusher_started = True
-        push_interval = int(CONFIG["coordinator"].get("push_interval_seconds", 120))
-        pusher = threading.Thread(target=progress_pusher_thread, args=(push_interval,), daemon=True)
-        pusher.start()
-        log(f"[Coordinator] 企业微信进度推送已启动（每{push_interval}秒）")
-    else:
-        log("[Coordinator] 企业微信进度推送线程已存在，跳过")
+    push_interval = int(CONFIG["coordinator"].get("push_interval_seconds", 120))
+    ensure_wechat_pusher_process(push_interval)
 
     progress = load_progress()
     log(f"[Coordinator] 当前进度: 大纲审 {progress.get('last_outline_reviewed_chapter', 0)} 章，已生成 {progress['last_generated_chapter']} 章，已审查 {progress['last_reviewed_chapter']} 章")
@@ -1078,8 +1276,24 @@ def main():
         log("[ERROR] Planner未完成且跳过标志未设置")
         return
 
-    log(f"[Coordinator] 单章质量门范围: 第{args.start}-{end_chapter}章")
-    ok = run_serial_quality_workflow(args.start, end_chapter)
+    media_cfg = CONFIG.get("media", {})
+    if media_cfg.get("enabled", True) and media_cfg.get("generate_after_planner", True):
+        if not media_prompts_ready() and not args.skip_planner:
+            log("[Coordinator] 检测到媒体提示词缺失，重新运行Planner补齐 media_prompts...")
+            if run_planner() != 0:
+                log("[ERROR] Planner补齐媒体提示词失败，请检查日志")
+                return
+        if not media_prompts_ready():
+            log("[ERROR] world.json 缺少 media_prompts，无法生成封面/视频/主题歌")
+            return
+        if run_media_generator() != 0:
+            log("[ERROR] 媒体资产生成失败，请检查 media_generator.log")
+            return
+
+    outline_lookahead = args.outline_lookahead or int(CONFIG["coordinator"].get("outline_lookahead_chapters", 10) or 10)
+    outline_lookahead = max(1, outline_lookahead)
+    log(f"[Coordinator] 单章质量门范围: 第{args.start}-{end_chapter}章；大纲提前窗口: {outline_lookahead}章")
+    ok = run_serial_quality_workflow(args.start, end_chapter, outline_lookahead)
     if not ok:
         log("[Coordinator] 单章质量门失败，流程已停止")
         return

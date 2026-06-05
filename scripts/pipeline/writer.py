@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
-from core.novel_config import configure_stdio, load_config
+from core.novel_config import configure_stdio, load_config, load_origin_materials
 from core.workflow_state import load_outline_chapter, outline_index_path, review_dir
 from core.workflow_state import is_valid_chapter_text, read_text_length
 
@@ -34,10 +34,11 @@ OUTLINE_FILE = None
 CHARACTERS_FILE = None
 LOG_FILE = None
 CONFIG = None
+ORIGIN_MATERIALS = ""
 
 
 def init_project(project_dir: str | Path) -> None:
-    global NOVELS_DIR, CHAPTERS_DIR, WORLD_FILE, OUTLINE_FILE, CHARACTERS_FILE, LOG_FILE, CONFIG
+    global NOVELS_DIR, CHAPTERS_DIR, WORLD_FILE, OUTLINE_FILE, CHARACTERS_FILE, LOG_FILE, CONFIG, ORIGIN_MATERIALS
     NOVELS_DIR = Path(project_dir).resolve()
     CHAPTERS_DIR = NOVELS_DIR / "chapters" / "draft"
     WORLD_FILE = NOVELS_DIR / "world.json"
@@ -45,6 +46,7 @@ def init_project(project_dir: str | Path) -> None:
     CHARACTERS_FILE = NOVELS_DIR / "characters.json"
     LOG_FILE = NOVELS_DIR / "logs" / "writer.log"
     CONFIG = load_config(NOVELS_DIR)
+    ORIGIN_MATERIALS = load_origin_materials(NOVELS_DIR)
 
 
 def log(msg: str):
@@ -133,6 +135,24 @@ def normalize_outline_text(value: Any) -> Any:
     return value
 
 
+def _writer_quality_contract() -> str:
+    min_score = float(CONFIG.get("reviewer", {}).get("min_score", 7.0))
+    quality = CONFIG.get("quality", {})
+    min_words = int(quality.get("min_chapter_words", 5000))
+    max_words = int(quality.get("max_chapter_words", 12000))
+    return f"""## 正文质量契约（必须满足）
+- 正文审查目标分必须达到 {min_score:g} 分及以上；低于该分数视为不合格，需要重写。
+- 字数必须达到配置要求，建议不少于 {min_words} 字，避免超过 {max_words} 字。
+- 必须严格执行本章大纲的核心事件、人物、地点、危机和章末钩子，不得擅自改主线。
+- 开头必须自然承接上一章结尾的人物状态、地点、时间和未解决危机。
+- 结尾必须为下一章留下行动目标、危机升级、信息反转或悬念钩子。
+- 每 800-1200 字必须有有效推进：新信息、冲突升级、行动结果、人物关系变化至少一项。
+- 不得用设定解释替代剧情现场；世界观信息必须通过行动、对话、发现或冲突呈现。
+- 人物动机和说话方式必须符合既有设定，不能OOC，配角不能只当背景板。
+- 爽点必须来自主角判断、能力、资源或协作的实际发挥，不能靠巧合硬赢。
+- 不得水文、重复段落、空泛心理独白、元叙述或输出“本章完”等非正文信息。"""
+
+
 def generate_chapter(chapter_number: int, retry: int = 0) -> str:
     chapter_file = CHAPTERS_DIR / f"chapter_{chapter_number:04d}.txt"
 
@@ -142,16 +162,17 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
     if review_file.exists():
         try:
             review_data = load_json(review_file)
+            status = review_data.get("status", "")
             verdict = review_data.get("verdict", "")
             score = review_data.get("overall_score", 10)
             try:
                 score = float(score)
             except (TypeError, ValueError):
-                score = 10.0
+                score = 0.0
             min_review_score = float(CONFIG.get("reviewer", {}).get("min_score", 7.0))
-            if verdict == "需重写" or score < min_review_score:
+            if status != "completed" or verdict in {"需重写", "需修改"} or score < min_review_score:
                 is_rewrite = True
-                log(f"[Writer] 第{chapter_number}章检测到低分审查报告（评分{score}，verdict:{verdict}），将基于建议重写")
+                log(f"[Writer] 第{chapter_number}章检测到未通过审查报告（status:{status}，评分{score}，verdict:{verdict}），将基于建议重写")
         except Exception:
             pass
 
@@ -190,6 +211,7 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
         continuity_issues = review_data.get("continuity_issues", [])
         strengths = review_data.get("strengths", [])
         weaknesses = review_data.get("weaknesses", [])
+        raw_response = str(review_data.get("raw_response", "") or "").strip()
 
         review_section = "\n\n## 编辑审查反馈（请严格参考以下建议重写）\n"
 
@@ -213,6 +235,10 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
             for c in continuity_issues:
                 if c and c != "与前文不一致之处（如有）":
                     review_section += f"- {c}\n"
+
+        if raw_response and not (suggestions or continuity_issues or weaknesses):
+            review_section += "\n### 原始审查反馈（解析失败时也必须参考）\n"
+            review_section += raw_response[:3000] + "\n"
 
         old_file = CHAPTERS_DIR / f"chapter_{chapter_number:04d}.txt"
         if old_file.exists():
@@ -294,6 +320,9 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
 ## 角色信息
 {json.dumps(characters, ensure_ascii=False, indent=2)[:1500]}
 
+## origin/ 原始参考素材
+{ORIGIN_MATERIALS or "（无）"}
+
 ## 本章大纲
 {json.dumps(chapter_outline, ensure_ascii=False, indent=2)}
 
@@ -309,6 +338,8 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
 ## 故事设定
 {story_context}
 
+{_writer_quality_contract()}
+
 ## 写作要求
 1. 本章约5000字，严格按照大纲核心事件展开
 2. 开头要自然衔接前一章，结尾要留悬念或引出下一章
@@ -320,9 +351,10 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
 8. 主角言行要符合其身份性格和故事背景，不能OOC
 9. 配角要有各自的剧情线和存在感，不是纯背景板
 10. 探索不同场景时要展现环境差异，增加趣味性
-11. 不要流水账，要有起伏和转折
-12. 不要输出章节标题，直接从正文开始
-13. 不要输出任何元信息（如"字数：""本章完"等），只输出正文
+11. 如果 origin/ 中存在素材，必须参考其中的原始设定、人物关系、历史事件、语气风格和限制，不能与其冲突
+12. 不要流水账，要有起伏和转折
+13. 不要输出章节标题，直接从正文开始
+14. 不要输出任何元信息（如"字数：""本章完"等），只输出正文
 
 请开始写作："""
 

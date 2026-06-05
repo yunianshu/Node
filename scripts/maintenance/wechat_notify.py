@@ -33,23 +33,43 @@ def get_progress_data():
     outline_count = outline_completed_count(NOVELS_DIR, 1, CONFIG["total_chapters"])
 
     statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"])
-    outline_reviewed_count = sum(1 for s in statuses.values() if s.outline_review_ok)
+    outline_reviewed_count = sum(1 for s in statuses.values() if s.outline_review_status == "completed")
+    outline_approved_count = sum(1 for s in statuses.values() if s.outline_review_ok)
     draft_count = sum(1 for s in statuses.values() if s.draft_exists)
     review_count = sum(1 for s in statuses.values() if s.review_ok)
     final_count = sum(1 for s in statuses.values() if s.final_ok)
     total_words = sum(s.draft_words for s in statuses.values() if s.draft_exists)
-    scores = [s.review_score for s in statuses.values() if s.review_score is not None]
+    scores = [s.review_score for s in statuses.values() if s.final_ok and s.review_score is not None]
     avg_score = sum(scores) / len(scores) if scores else None
+    status_note = current_status_note(statuses)
 
     return {
         "outline": outline_count,
         "outline_reviewed": outline_reviewed_count,
+        "outline_approved": outline_approved_count,
         "draft": draft_count,
         "reviewed": review_count,
         "final": final_count,
         "total_words": total_words,
         "avg_score": avg_score,
+        "status_note": status_note,
     }
+
+
+def current_status_note(statuses: dict) -> str:
+    for chapter, status in statuses.items():
+        if not status.outline_review_ok:
+            if status.outline_review_exists:
+                return f"第{chapter}章大纲未过审 status={status.outline_review_status} score={status.outline_review_score}"
+            return f"第{chapter}章大纲审缺失，等待大纲生成/审查"
+    for chapter, status in statuses.items():
+        if not status.final_ok:
+            if not status.review_ok and status.review_exists:
+                return f"第{chapter}章初稿未过审 status={status.review_status} score={status.review_score}"
+            if status.draft_exists:
+                return f"第{chapter}章初稿已生成，等待审查/终稿质量门"
+            return f"第{chapter}章等待初稿生成"
+    return "全部章节已通过当前质量门"
 
 
 def _get_book_title():
@@ -86,6 +106,7 @@ def main():
         title=title,
         outline=p["outline"],
         outline_reviewed=p["outline_reviewed"],
+        outline_approved=p["outline_approved"],
         draft=p["draft"],
         reviewed=p["reviewed"],
         final=p["final"],
@@ -93,6 +114,7 @@ def main():
         total_chapters=CONFIG["total_chapters"],
         active_writers=0,
         avg_score=p["avg_score"],
+        status_note=p["status_note"],
     )
     print("推送成功" if ok else "推送失败")
 
