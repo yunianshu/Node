@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -95,6 +96,19 @@ def wait_for_rate_limit(state_dir: Path, qps: float) -> None:
         release_file_lock(lock_file, fd)
 
 
+def _mmx_base_cmd(mmx_path: str) -> list[str]:
+    text = str(mmx_path or "").strip()
+    if not text:
+        raise MmxError("mmx_path 为空，请设置 config.json 的 mmx_path 或 NOVEL_MMX_PATH")
+    suffix = Path(text).suffix.lower()
+    if suffix in {".mjs", ".js", ".cjs"} or Path(text).exists():
+        return ["node", text]
+    found = shutil.which(text)
+    if found:
+        return [found]
+    return [text]
+
+
 def call_mmx(
     system_prompt: str,
     user_prompt: str,
@@ -131,7 +145,7 @@ def call_mmx(
         try:
             tmp_path.write_text(json.dumps(messages, ensure_ascii=False), encoding="utf-8")
             cmd = [
-                "node", mmx_path, "text", "chat",
+                *_mmx_base_cmd(mmx_path), "text", "chat",
                 "--model", model,
                 "--messages-file", str(tmp_path),
                 "--max-tokens", str(max_tokens),
@@ -146,7 +160,7 @@ def call_mmx(
     if not use_file:
         tmp_path = None
         cmd = [
-            "node", mmx_path, "text", "chat",
+            *_mmx_base_cmd(mmx_path), "text", "chat",
             "--model", model,
             "--system", system_prompt,
             "--message", user_prompt,

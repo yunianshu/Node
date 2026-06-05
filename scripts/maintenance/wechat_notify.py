@@ -14,7 +14,7 @@ import os
 import time
 from pathlib import Path
 
-from core.novel_config import load_config
+from core.novel_config import load_config, resolve_project_dir
 from core.push_notifier import push_progress
 from core.workflow_state import outline_completed_count, scan_chapter_status
 
@@ -92,11 +92,13 @@ def main():
                         help="小说项目目录")
     args = parser.parse_args()
 
-    if not args.project:
-        print("错误: 必须指定 --project 或设置 NOVEL_PROJECT_DIR 环境变量")
+    try:
+        project = resolve_project_dir(args.project)
+    except ValueError as exc:
+        print(f"错误: {exc}")
         sys.exit(1)
 
-    init_project(args.project)
+    init_project(project)
 
     p = get_progress_data()
     title = _get_book_title()

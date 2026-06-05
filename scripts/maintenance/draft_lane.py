@@ -16,7 +16,7 @@ TOOLS_ROOT = Path(__file__).resolve().parents[1]
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
-from core.novel_config import load_config
+from core.novel_config import load_config, resolve_project_dir
 from core.workflow_state import (
     load_outline_review_status,
     load_review_status,
@@ -174,11 +174,12 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if not args.project:
-        print("错误: 必须指定 --project 或设置 NOVEL_PROJECT_DIR")
+    try:
+        project = resolve_project_dir(args.project)
+    except ValueError as exc:
+        print(f"错误: {exc}")
         return 1
 
-    project = Path(args.project).resolve()
     config = load_config(project)
     end = args.end or int(config["total_chapters"])
     outline_min_score = float(config.get("outline_reviewer", {}).get("min_score", 8.5))
@@ -193,6 +194,7 @@ def main() -> int:
     coordinator.init_project(project)
     push_interval = int(config.get("coordinator", {}).get("push_interval_seconds", 120))
     coordinator.ensure_wechat_pusher_process(push_interval)
+    coordinator.ensure_gate_watchdog_process("draft")
 
     log(
         project,

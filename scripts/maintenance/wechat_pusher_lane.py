@@ -14,7 +14,7 @@ TOOLS_ROOT = Path(__file__).resolve().parents[1]
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
-from core.novel_config import load_config
+from core.novel_config import load_config, resolve_project_dir
 from core.push_notifier import push_progress
 from core.workflow_state import outline_completed_count, scan_chapter_status
 
@@ -138,11 +138,12 @@ def main() -> int:
     parser.add_argument("--interval", type=int, default=120)
     args = parser.parse_args()
 
-    if not args.project:
-        print("错误: 必须指定 --project 或设置 NOVEL_PROJECT_DIR")
+    try:
+        project = resolve_project_dir(args.project)
+    except ValueError as exc:
+        print(f"错误: {exc}")
         return 1
 
-    project = Path(args.project).resolve()
     config = load_config(project)
     lock_file = acquire_lock(project)
     if lock_file is None:

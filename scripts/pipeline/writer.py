@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
-from core.novel_config import configure_stdio, load_config, load_origin_materials
+from core.novel_config import configure_stdio, load_config, load_origin_materials, resolve_project_dir
 from core.workflow_state import load_outline_chapter, outline_index_path, review_dir
 from core.workflow_state import is_valid_chapter_text, read_text_length
 
@@ -404,11 +404,13 @@ def main():
     parser.add_argument("--chapter", type=int, default=0, help="只生成某一章")
     args = parser.parse_args()
 
-    if not args.project:
-        print("错误: 必须指定 --project 或设置 NOVEL_PROJECT_DIR 环境变量")
+    try:
+        project = resolve_project_dir(args.project)
+    except ValueError as exc:
+        print(f"错误: {exc}")
         sys.exit(1)
 
-    init_project(args.project)
+    init_project(project)
 
     print("=" * 60)
     print("Writer Agent 启动")

@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
-from core.novel_config import configure_stdio, load_config, load_origin_materials
+from core.novel_config import configure_stdio, load_config, load_origin_materials, resolve_project_dir
 # 微信推送已禁用，改由 coordinator 统一推送进度
 # from core.push_notifier import push_stage_complete
 from core.workflow_state import (
@@ -405,11 +405,13 @@ def main():
     parser.add_argument("--final", action="store_true", help="审查终稿（final 目录）而非草稿")
     args = parser.parse_args()
 
-    if not args.project:
-        print("错误: 必须指定 --project 或设置 NOVEL_PROJECT_DIR 环境变量")
+    try:
+        project = resolve_project_dir(args.project)
+    except ValueError as exc:
+        print(f"错误: {exc}")
         sys.exit(1)
 
-    init_project(args.project)
+    init_project(project)
 
     global CHAPTERS_DIR, REVIEWS_DIR
     if args.final:

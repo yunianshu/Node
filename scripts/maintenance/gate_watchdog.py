@@ -15,7 +15,7 @@ TOOLS_ROOT = Path(__file__).resolve().parents[1]
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
-from core.novel_config import configure_stdio, load_config
+from core.novel_config import configure_stdio, load_config, resolve_project_dir
 from core.push_notifier import push_stage_event
 from core.workflow_state import atomic_write_json, report_path, scan_chapter_status
 
@@ -260,7 +260,7 @@ def acquire_lock(project: Path, mode: str) -> Path | None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="每隔固定时间检查大纲/初稿质量门卡章")
-    parser.add_argument("--project", "-p", required=True)
+    parser.add_argument("--project", "-p", default=os.getenv("NOVEL_PROJECT_DIR", ""))
     parser.add_argument("--mode", choices=("outline", "draft"), required=True)
     parser.add_argument("--interval", type=int, default=300)
     parser.add_argument("--stale-threshold", type=int, default=2)
@@ -268,7 +268,11 @@ def main() -> int:
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
 
-    project = Path(args.project).resolve()
+    try:
+        project = resolve_project_dir(args.project)
+    except ValueError as exc:
+        print(f"错误: {exc}")
+        return 1
     lock = acquire_lock(project, args.mode)
     if lock is None:
         print(f"{args.mode} gate watchdog 已存在，本进程退出")

@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
-from core.novel_config import load_config, load_origin_materials
+from core.novel_config import load_config, load_origin_materials, resolve_project_dir
 from core.workflow_state import list_outline_chapters, write_outline_chapters
 
 NOVELS_DIR = None
@@ -453,7 +453,7 @@ origin/ 原始参考素材：
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--project", "-p", type=str,
-                        default=os.getenv("NOVEL_PROJECT_DIR", ""),
+                        default="",
                         help="小说项目目录")
     parser.add_argument("--start", type=int, default=1, help="兼容参数，Planner不再生成大纲")
     parser.add_argument("--end", type=int, default=0, help="兼容参数，Planner不再生成大纲")
@@ -461,11 +461,13 @@ def main():
     parser.add_argument("--outline-file", type=str, default="", help="兼容参数，大纲请使用 outliner.py")
     args = parser.parse_args()
 
-    if not args.project:
-        print("错误: 必须指定 --project 或设置 NOVEL_PROJECT_DIR 环境变量")
+    try:
+        project = resolve_project_dir(args.project)
+    except ValueError as exc:
+        print(f"错误: {exc}")
         sys.exit(1)
 
-    init_project(args.project)
+    init_project(project)
 
     print("=" * 60)
     print("Planner Agent 启动 - 仅生成世界观和角色档案")

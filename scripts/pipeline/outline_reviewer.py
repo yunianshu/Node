@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
-from core.novel_config import configure_stdio, load_config, load_origin_materials
+from core.novel_config import configure_stdio, load_config, load_origin_materials, resolve_project_dir
 from core.workflow_state import (
     load_outline_chapter,
     outline_dir,
@@ -85,9 +85,9 @@ def load_json(filepath: Path) -> dict:
         return json.load(f)
 
 
-def review_outline(chapter_number: int) -> dict:
-    outline_file = outline_dir(NOVELS_DIR) / f"chapter_{chapter_number:04d}.json"
-    review_file = OUTLINE_REVIEW_DIR / f"chapter_{chapter_number:04d}_review.json"
+def review_outline(chapter_number: int, outline_file_override: Path | None = None, review_file_override: Path | None = None) -> dict:
+    outline_file = outline_file_override or outline_dir(NOVELS_DIR) / f"chapter_{chapter_number:04d}.json"
+    review_file = review_file_override or OUTLINE_REVIEW_DIR / f"chapter_{chapter_number:04d}_review.json"
 
     if not outline_file.exists():
         log(f"[OutlineReviewer] 第{chapter_number}章大纲文件不存在")
@@ -211,7 +211,7 @@ def review_outline(chapter_number: int) -> dict:
             "chapter_number": chapter_number,
             "status": "failed",
         }
-        OUTLINE_REVIEW_DIR.mkdir(parents=True, exist_ok=True)
+        review_file.parent.mkdir(parents=True, exist_ok=True)
         with open(review_file, "w", encoding="utf-8") as f:
             json.dump(review_data, f, ensure_ascii=False, indent=2)
         return review_data
@@ -255,7 +255,7 @@ def review_outline(chapter_number: int) -> dict:
             "raw_response": content,
         }
 
-    OUTLINE_REVIEW_DIR.mkdir(parents=True, exist_ok=True)
+    review_file.parent.mkdir(parents=True, exist_ok=True)
     with open(review_file, "w", encoding="utf-8") as f:
         json.dump(review_data, f, ensure_ascii=False, indent=2)
 
@@ -273,13 +273,17 @@ def main():
     parser.add_argument("--start", type=int, default=1, help="起始章节")
     parser.add_argument("--end", type=int, default=10, help="结束章节")
     parser.add_argument("--chapter", type=int, default=0, help="只审查某一章")
+    parser.add_argument("--outline-file", type=str, default="", help="候选大纲文件；启用后审查该文件而非正式大纲")
+    parser.add_argument("--review-file", type=str, default="", help="候选审查输出文件")
     args = parser.parse_args()
 
-    if not args.project:
-        print("错误: 必须指定 --project 或设置 NOVEL_PROJECT_DIR 环境变量")
+    try:
+        project = resolve_project_dir(args.project)
+    except ValueError as exc:
+        print(f"错误: {exc}")
         sys.exit(1)
 
-    init_project(args.project)
+    init_project(project)
 
     print("=" * 60)
     print("Outline Reviewer Agent 启动")
@@ -292,7 +296,11 @@ def main():
     total = 1 if args.chapter > 0 else (args.end - args.start + 1)
     failed = 0
     if args.chapter > 0:
-        result = review_outline(args.chapter)
+        result = review_outline(
+            args.chapter,
+            Path(args.outline_file) if args.outline_file else None,
+            Path(args.review_file) if args.review_file else None,
+        )
         if result.get("status") in ("failed", "no_file", "parse_error"):
             failed += 1
     else:

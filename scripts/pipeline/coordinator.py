@@ -16,14 +16,17 @@ if str(TOOLS_ROOT) not in sys.path:
 import argparse
 import json
 import os
+import queue
 import subprocess
 import sys
 import threading
 import time
 import re
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
-from core.novel_config import configure_stdio, get_webhook_url, load_config
+from core.mmx_client import _mmx_base_cmd
+from core.novel_config import configure_stdio, get_webhook_url, load_config, resolve_project_dir
 from core.push_notifier import (
     push_progress as _push_progress,
     push_stage_event as _push_stage_event,
@@ -32,6 +35,7 @@ from core.push_notifier import (
     push_error as _push_error,
 )
 from core.workflow_state import (
+    atomic_write_json,
     highest_contiguous,
     load_outline_review_status,
     load_review_status,
@@ -58,6 +62,7 @@ PIPELINE_SCRIPTS = {
 
 MAINTENANCE_SCRIPTS = {
     "wechat_pusher_lane.py": TOOLS_ROOT / "maintenance" / "wechat_pusher_lane.py",
+    "gate_watchdog.py": TOOLS_ROOT / "maintenance" / "gate_watchdog.py",
 }
 
 
@@ -68,7 +73,6 @@ def resolve_script_path(script_name: str) -> Path:
         raise ValueError(f"Unsupported pipeline script: {script_name}") from exc
 
 NOVELS_DIR = None
-MMX_CLI_PATH = "C:/Users/Administrator/AppData/Roaming/npm/node_modules/mmx-cli/dist/mmx.mjs"
 CHAPTERS_DIR = None
 REVIEWS_DIR = None
 LOGS_DIR = None
@@ -236,7 +240,10 @@ def progress_pusher_thread(interval_seconds: int = 120):
             active_writers=_active_writers,
         )
         status = "已推送" if ok else "跳过(无webhook)"
-        log(f"[WeChat] 进度{status}: 大纲审{p["outline_reviewed"]}/{CONFIG["total_chapters"]}, 初稿{p["draft"]}/{CONFIG["total_chapters"]}, 审查{p["reviewed"]}/{CONFIG["total_chapters"]}")
+        log(
+            f"[WeChat] 进度{status}: 大纲审{p['outline_reviewed']}/{CONFIG['total_chapters']}, "
+            f"初稿{p['draft']}/{CONFIG['total_chapters']}, 审查{p['reviewed']}/{CONFIG['total_chapters']}"
+        )
 
 
 def ensure_wechat_pusher_process(interval_seconds: int | None = None) -> None:
@@ -269,6 +276,61 @@ def ensure_wechat_pusher_process(interval_seconds: int | None = None) -> None:
         log(f"[WeChat] 已确保独立进度推送进程运行（每{interval}秒）")
     except Exception as exc:
         log(f"[WeChat] 启动独立进度推送进程失败: {exc}")
+
+
+def ensure_gate_watchdog_process(
+    mode: str,
+    *,
+    interval_seconds: int | None = None,
+    stale_threshold: int | None = None,
+    notify_cooldown_seconds: int | None = None,
+) -> None:
+    """启动只读质量门 watchdog；实际单例由 watchdog 自己的 lock 文件保证。"""
+    if NOVELS_DIR is None or CONFIG is None:
+        return
+    if mode not in {"outline", "draft"}:
+        raise ValueError(f"unsupported watchdog mode: {mode}")
+    script = MAINTENANCE_SCRIPTS["gate_watchdog.py"]
+    if not script.exists():
+        log(f"[Watchdog] 监控脚本不存在，跳过: {script}")
+        return
+
+    coordinator_cfg = CONFIG.get("coordinator", {})
+    interval = interval_seconds or int(coordinator_cfg.get("watchdog_interval_seconds", 300) or 300)
+    threshold = stale_threshold or int(coordinator_cfg.get("watchdog_stale_threshold", 2) or 2)
+    cooldown = notify_cooldown_seconds or int(coordinator_cfg.get("watchdog_notify_cooldown_seconds", 900) or 900)
+    cmd = [
+        sys.executable,
+        str(script),
+        "--project",
+        str(NOVELS_DIR),
+        "--mode",
+        mode,
+        "--interval",
+        str(interval),
+        "--stale-threshold",
+        str(threshold),
+        "--notify-cooldown",
+        str(cooldown),
+    ]
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    try:
+        subprocess.Popen(
+            cmd,
+            cwd=str(TOOLS_ROOT.parent),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+        log(f"[Watchdog] 已确保{mode}质量门监控进程运行（每{interval}秒）")
+    except Exception as exc:
+        log(f"[Watchdog] 启动{mode}质量门监控失败: {exc}")
+
+
+def ensure_gate_watchdog_processes() -> None:
+    ensure_gate_watchdog_process("outline")
+    ensure_gate_watchdog_process("draft")
 
 
 def notify_stage(stage: str, status: str, start: int | None = None, end: int | None = None,
@@ -306,6 +368,102 @@ def run_streaming_process(cmd: list[str], child_log: Path) -> int:
         return proc.wait()
 
 
+def _terminate_process_tree(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+        else:
+            proc.terminate()
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def run_cancellable_process(cmd: list[str], child_log: Path, stop_event: threading.Event) -> int:
+    """运行可取消子进程；stop_event 设置后终止进程树。"""
+    child_log.parent.mkdir(parents=True, exist_ok=True)
+    with open(child_log, "a", encoding="utf-8") as lf:
+        lf.write(f"$ {' '.join(cmd)}\n")
+        lf.flush()
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        output_queue: queue.Queue[str | None] = queue.Queue()
+
+        def _reader() -> None:
+            try:
+                if proc.stdout is None:
+                    return
+                for line in proc.stdout:
+                    output_queue.put(line)
+            finally:
+                output_queue.put(None)
+
+        reader = threading.Thread(target=_reader, daemon=True)
+        reader.start()
+        try:
+            stream_done = False
+            while True:
+                if stop_event.is_set():
+                    lf.write("[cancelled] stop_event set, terminating process tree\n")
+                    lf.flush()
+                    _terminate_process_tree(proc)
+                    return -9
+                try:
+                    while True:
+                        line = output_queue.get_nowait()
+                        if line is None:
+                            stream_done = True
+                            break
+                        text = line.rstrip("\n")
+                        lf.write(text + "\n")
+                        lf.flush()
+                        if text:
+                            log(f"[Child] {text}")
+                except queue.Empty:
+                    pass
+                rc = proc.poll()
+                if rc is not None:
+                    if not stream_done:
+                        reader.join(timeout=1)
+                        try:
+                            while True:
+                                line = output_queue.get_nowait()
+                                if line is None:
+                                    break
+                                text = line.rstrip("\n")
+                                lf.write(text + "\n")
+                                lf.flush()
+                                if text:
+                                    log(f"[Child] {text}")
+                        except queue.Empty:
+                            pass
+                    return rc
+                time.sleep(0.2)
+        finally:
+            if proc.stdout:
+                try:
+                    proc.stdout.close()
+                except Exception:
+                    pass
+
+
 def _stream_child_output(proc: subprocess.Popen, child_log: Path) -> None:
     child_log.parent.mkdir(parents=True, exist_ok=True)
     with open(child_log, "a", encoding="utf-8") as lf:
@@ -332,7 +490,7 @@ def run_script(script_name: str, *args) -> int:
 
 def check_all_quotas():
     result = subprocess.run(
-        ["node", MMX_CLI_PATH, "quota", "show", "--quiet", "--output", "json"],
+        [*_mmx_base_cmd(CONFIG["mmx_path"]), "quota", "show", "--quiet", "--output", "json"],
         capture_output=True, text=True, encoding="utf-8"
     )
     quotas = {}
@@ -949,6 +1107,247 @@ def _outline_gate_passed(chapter: int) -> bool:
     return ok
 
 
+def _outline_race_config() -> dict:
+    cfg = CONFIG.get("outline_race", {}) if isinstance(CONFIG.get("outline_race"), dict) else {}
+    return {
+        "enabled": bool(cfg.get("enabled", False)),
+        "candidates": max(1, int(cfg.get("candidates", 3) or 3)),
+        "stop_on_first_pass": bool(cfg.get("stop_on_first_pass", True)),
+        "max_workers": max(1, int(cfg.get("max_workers", cfg.get("candidates", 3)) or 3)),
+    }
+
+
+def _candidate_root(chapter: int, round_no: int, attempt: int) -> Path:
+    return LOGS_DIR / "outline_candidates" / f"ch{chapter:04d}" / f"round{round_no}_attempt{attempt}"
+
+
+def _candidate_paths(chapter: int, round_no: int, attempt: int, candidate_no: int) -> tuple[Path, Path, Path]:
+    root = _candidate_root(chapter, round_no, attempt)
+    prefix = f"candidate_{candidate_no:02d}"
+    return (
+        root / f"{prefix}.json",
+        root / f"{prefix}_review.json",
+        root / f"{prefix}.log",
+    )
+
+
+def _candidate_feedback(review_data: dict, chapter: int, candidate_no: int, round_no: int, attempt: int) -> dict:
+    item = _review_feedback(review_data, chapter, "outline", round_no, attempt)
+    item["candidate"] = candidate_no
+    return item
+
+
+def _candidate_score(result: dict) -> float:
+    try:
+        return float(result.get("overall_score"))
+    except (TypeError, ValueError):
+        return -1.0
+
+
+def _publish_outline_candidate(chapter: int, candidate_file: Path, candidate_review_file: Path) -> None:
+    outline_data = _load_json_file(candidate_file)
+    review_data = _load_json_file(candidate_review_file)
+    if not outline_data:
+        raise ValueError(f"候选大纲为空: {candidate_file}")
+    if not review_data:
+        raise ValueError(f"候选审查为空: {candidate_review_file}")
+    if outline_data.get("chapter_number") != chapter:
+        raise ValueError(f"候选大纲章节号不匹配: expected={chapter}, actual={outline_data.get('chapter_number')}")
+    if review_data.get("chapter_number") != chapter:
+        raise ValueError(f"候选审查章节号不匹配: expected={chapter}, actual={review_data.get('chapter_number')}")
+    min_score = float(CONFIG.get("outline_reviewer", {}).get("min_score", 8.5))
+    _, status, score, ok = load_outline_review_status(candidate_review_file, min_score)
+    if not ok:
+        raise ValueError(f"候选审查未达标: status={status}, score={score}, min_score={min_score:g}")
+    _drop_text_artifacts(chapter, reason="大纲候选赛马已发布新正式大纲")
+    _safe_unlink(outline_chapter_path(NOVELS_DIR, chapter))
+    _safe_unlink(_outline_review_file(chapter))
+    atomic_write_json(outline_chapter_path(NOVELS_DIR, chapter), outline_data)
+    atomic_write_json(_outline_review_file(chapter), review_data)
+    log(
+        f"[Coordinator] 第{chapter}章采用候选大纲: {candidate_file.name}, "
+        f"score={review_data.get('overall_score')} verdict={review_data.get('verdict')}"
+    )
+
+
+def _run_outline_candidate(
+    chapter: int,
+    round_no: int,
+    attempt: int,
+    candidate_no: int,
+    feedback_file: Path | None,
+    rescue: bool,
+    stop_event: threading.Event,
+) -> dict:
+    candidate_file, candidate_review_file, child_log = _candidate_paths(chapter, round_no, attempt, candidate_no)
+    candidate_file.parent.mkdir(parents=True, exist_ok=True)
+    _safe_unlink(candidate_file)
+    _safe_unlink(candidate_review_file)
+
+    outliner_args = [
+        sys.executable,
+        str(resolve_script_path("outliner.py")),
+        "--project",
+        str(NOVELS_DIR),
+        "--chapter",
+        str(chapter),
+        "--candidate-file",
+        str(candidate_file),
+    ]
+    if feedback_file:
+        outliner_args += ["--review-feedback", str(feedback_file)]
+    if rescue:
+        outliner_args.append("--rescue")
+
+    log(f"[Coordinator] 第{chapter}章候选{candidate_no}开始生成")
+    rc = run_cancellable_process(outliner_args, child_log, stop_event)
+    if rc != 0:
+        return {
+            "chapter": chapter,
+            "candidate": candidate_no,
+            "status": "outliner_failed" if rc != -9 else "cancelled",
+            "weaknesses": ["候选大纲生成失败、被取消、JSON解析失败或结构字段不完整"],
+            "suggestions": ["重新生成时必须补齐summary、key_events、foreshadowing、power_progression等必填字段"],
+            "candidate_file": str(candidate_file),
+            "review_file": str(candidate_review_file),
+        }
+
+    reviewer_args = [
+        sys.executable,
+        str(resolve_script_path("outline_reviewer.py")),
+        "--project",
+        str(NOVELS_DIR),
+        "--chapter",
+        str(chapter),
+        "--outline-file",
+        str(candidate_file),
+        "--review-file",
+        str(candidate_review_file),
+    ]
+    log(f"[Coordinator] 第{chapter}章候选{candidate_no}开始审查")
+    rc = run_cancellable_process(reviewer_args, child_log, stop_event)
+    if rc != 0:
+        return {
+            "chapter": chapter,
+            "candidate": candidate_no,
+            "status": "outline_reviewer_failed" if rc != -9 else "cancelled",
+            "weaknesses": ["候选大纲审查器执行失败或被取消"],
+            "suggestions": ["重新生成大纲并确保结构完整、剧情冲突明确、伏笔和能力进展具体"],
+            "candidate_file": str(candidate_file),
+            "review_file": str(candidate_review_file),
+        }
+
+    review_data = _load_json_file(candidate_review_file)
+    min_score = float(CONFIG.get("outline_reviewer", {}).get("min_score", 8.5))
+    _, _, _, ok = load_outline_review_status(candidate_review_file, min_score)
+    result = _candidate_feedback(review_data, chapter, candidate_no, round_no, attempt)
+    result["passed"] = ok
+    result["candidate_file"] = str(candidate_file)
+    result["review_file"] = str(candidate_review_file)
+    return result
+
+
+def _process_outline_gate_race(chapter: int, *, push_on_failure: bool = True) -> bool:
+    if outline_chapter_path(NOVELS_DIR, chapter).exists() and _outline_gate_passed(chapter):
+        log(f"[Coordinator] 第{chapter}章大纲和大纲审已通过，跳过")
+        return True
+
+    max_rounds = int(CONFIG.get("coordinator", {}).get("outline_analysis_rounds", 3) or 3)
+    attempts_per_round = int(CONFIG.get("coordinator", {}).get("outline_attempts_per_round", 3) or 3)
+    race_cfg = _outline_race_config()
+    candidates = race_cfg["candidates"]
+    max_workers = min(candidates, race_cfg["max_workers"])
+    reviews: list[dict] = []
+    feedback_file: Path | None = None
+
+    for round_no in range(1, max_rounds + 1):
+        if reviews:
+            feedback_file = _write_gate_feedback(chapter, "outline", reviews, round_no)
+            log(f"[Coordinator] 第{chapter}章大纲赛马进入第{round_no}轮原因调整: {feedback_file}")
+
+        for attempt in range(1, attempts_per_round + 1):
+            log(f"[Coordinator] 第{chapter}章大纲候选赛马 {round_no}.{attempt} candidates={candidates}")
+            existing_review = _load_json_file(_outline_review_file(chapter))
+            if existing_review:
+                reviews.append(_review_feedback(existing_review, chapter, "outline", round_no, attempt))
+                feedback_file = _write_gate_feedback(chapter, "outline", reviews, round_no)
+                log(f"[Coordinator] 第{chapter}章读取现有大纲审查意见，反馈给候选赛马: {feedback_file}")
+
+            stop_event = threading.Event()
+            accepted: dict | None = None
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_candidates = {
+                    executor.submit(
+                        _run_outline_candidate,
+                        chapter,
+                        round_no,
+                        attempt,
+                        candidate_no,
+                        feedback_file,
+                        len(reviews) >= 8,
+                        stop_event,
+                    ): candidate_no
+                    for candidate_no in range(1, candidates + 1)
+                }
+                pending = set(future_candidates)
+                while pending:
+                    done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        candidate_no = future_candidates.get(future, 0)
+                        try:
+                            result = future.result()
+                        except Exception as exc:
+                            result = {
+                                "chapter": chapter,
+                                "candidate": candidate_no,
+                                "status": "candidate_exception",
+                                "weaknesses": [f"候选进程异常: {exc}"],
+                                "suggestions": ["检查候选日志、模型响应和候选文件写入"],
+                            }
+                        reviews.append(result)
+                        if not result.get("passed"):
+                            continue
+                        if race_cfg["stop_on_first_pass"]:
+                            accepted = result
+                            stop_event.set()
+                            break
+                        if accepted is None or _candidate_score(result) > _candidate_score(accepted):
+                            accepted = result
+                    if stop_event.is_set():
+                        break
+                if stop_event.is_set():
+                    wait(pending, timeout=10)
+
+            if accepted:
+                try:
+                    _publish_outline_candidate(
+                        chapter,
+                        Path(str(accepted["candidate_file"])),
+                        Path(str(accepted["review_file"])),
+                    )
+                except Exception as exc:
+                    reviews.append({
+                        "chapter": chapter,
+                        "status": "candidate_publish_failed",
+                        "weaknesses": [f"候选发布失败: {exc}"],
+                        "suggestions": ["重新生成候选并检查候选文件与正式目录写入权限"],
+                    })
+                    feedback_file = _write_gate_feedback(chapter, "outline", reviews, round_no)
+                    log(f"[Coordinator] 第{chapter}章候选发布失败，下一次重试使用反馈: {feedback_file}")
+                    continue
+                log(f"[Coordinator] 第{chapter}章大纲候选赛马通过")
+                return True
+
+            feedback_file = _write_gate_feedback(chapter, "outline", reviews, round_no)
+            best = _failure_analysis(chapter, "outline", reviews).get("best_score")
+            log(f"[Coordinator] 第{chapter}章本轮候选均未通过，最佳分数={best}，下一次使用汇总反馈: {feedback_file}")
+
+    report = _write_failure_report(chapter, "outline", reviews)
+    if push_on_failure:
+        _push_gate_failure(chapter, "大纲初审", report)
+    return False
+
+
 def _draft_gate_passed(chapter: int) -> bool:
     min_score = float(CONFIG.get("reviewer", {}).get("min_score", 7.0))
     _, _, _, ok = load_review_status(_review_file(chapter), min_score)
@@ -967,6 +1366,9 @@ def _promote_draft_to_final(chapter: int) -> bool:
 
 
 def process_outline_gate(chapter: int, *, push_on_failure: bool = True) -> bool:
+    if _outline_race_config()["enabled"]:
+        return _process_outline_gate_race(chapter, push_on_failure=push_on_failure)
+
     if outline_chapter_path(NOVELS_DIR, chapter).exists() and _outline_gate_passed(chapter):
         log(f"[Coordinator] 第{chapter}章大纲和大纲审已通过，跳过")
         return True
@@ -1234,11 +1636,13 @@ def main():
     parser.add_argument("--skip-planner", action="store_true", help="跳过Planner阶段")
     args = parser.parse_args()
 
-    if not args.project:
-        print("错误: 必须指定 --project 或设置 NOVEL_PROJECT_DIR 环境变量")
+    try:
+        project = resolve_project_dir(args.project)
+    except ValueError as exc:
+        print(f"错误: {exc}")
         sys.exit(1)
 
-    init_project(args.project)
+    init_project(project)
 
     print("=" * 70)
     print("  小说Agent系统 - Coordinator")
@@ -1252,6 +1656,7 @@ def main():
 
     push_interval = int(CONFIG["coordinator"].get("push_interval_seconds", 120))
     ensure_wechat_pusher_process(push_interval)
+    ensure_gate_watchdog_processes()
 
     progress = load_progress()
     log(f"[Coordinator] 当前进度: 大纲审 {progress.get('last_outline_reviewed_chapter', 0)} 章，已生成 {progress['last_generated_chapter']} 章，已审查 {progress['last_reviewed_chapter']} 章")

@@ -22,7 +22,7 @@ TOOLS_ROOT = Path(__file__).resolve().parents[1]
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
-from core.novel_config import configure_stdio, load_config
+from core.novel_config import configure_stdio, load_config, resolve_project_dir
 from core.workflow_state import atomic_write_json, outline_completed_count, report_path, scan_chapter_status
 
 configure_stdio()
@@ -360,7 +360,13 @@ def inspect_once(project: Path, interval_seconds: int, max_stale_checks: int, re
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="协调器守护监控子进程")
-    parser.add_argument("--project", "-p", type=str, required=True, help="小说项目目录")
+    parser.add_argument(
+        "--project",
+        "-p",
+        type=str,
+        default=os.getenv("NOVEL_PROJECT_DIR", ""),
+        help="小说项目目录",
+    )
     parser.add_argument("--interval", type=int, default=120, help="检查间隔（秒）")
     parser.add_argument("--max-stale-checks", type=int, default=2, help="连续多少次无变化后视为异常")
     parser.add_argument("--repair-limit", type=int, default=8, help="协调器退出后先执行的修复章节上限")
@@ -370,9 +376,10 @@ def main() -> int:
     parser.add_argument("--once", action="store_true", help="只执行一次监控")
     args = parser.parse_args()
 
-    project = Path(args.project).resolve()
-    if not project.exists():
-        print(f"错误: 项目目录不存在: {project}")
+    try:
+        project = resolve_project_dir(args.project)
+    except ValueError as exc:
+        print(f"错误: {exc}")
         return 1
 
     print(f"[{current_time_text()}] watchdog: start project={project}")

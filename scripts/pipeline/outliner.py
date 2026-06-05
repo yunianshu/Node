@@ -16,7 +16,7 @@ import json
 import os
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
-from core.novel_config import load_config, load_origin_materials
+from core.novel_config import load_config, load_origin_materials, resolve_project_dir
 from core.workflow_state import list_outline_chapters, write_outline_chapters
 
 NOVELS_DIR = None
@@ -410,7 +410,16 @@ JSON结构：
 }}"""
 
 
-def generate_outline_range(start: int, end: int, outline_file: Path = None, fill_gaps: bool = False, chapter: int = None, review_feedback: Path = None, rescue: bool = False):
+def generate_outline_range(
+    start: int,
+    end: int,
+    outline_file: Path = None,
+    fill_gaps: bool = False,
+    chapter: int = None,
+    review_feedback: Path = None,
+    rescue: bool = False,
+    candidate_file: Path = None,
+):
     batch_size = 15
     output_file = outline_file
     failures = []
@@ -478,13 +487,15 @@ def generate_outline_range(start: int, end: int, outline_file: Path = None, fill
             print(f"[Outliner] 单章大纲范围{start}-{end}已覆盖，跳过")
             return
 
-    if output_file and last_chapter >= end and not fill_gaps and not chapter:
+    if output_file and last_chapter >= end and not fill_gaps and not chapter and not candidate_file:
         print(f"[Outliner] 大纲已生成到第{last_chapter}章，范围{start}-{end}已覆盖，跳过")
         write_outline_chapters(NOVELS_DIR, outline)
         return
 
     # 计算实际需要生成的章节范围
-    if fill_gaps or chapter:
+    if candidate_file and chapter:
+        batch_ranges = [(chapter, chapter)]
+    elif fill_gaps or chapter:
         existing_chapters = {item.get("chapter_number") for item in outline.get("chapters", [])}
         missing = [ch for ch in range(start, end + 1) if ch not in existing_chapters]
         if not missing:
@@ -617,8 +628,13 @@ origin/ 原始参考素材：
                 raise ValueError("所有 JSON 解析策略均失败")
             new_chapters = batch_outline.get("chapters", [])
             _validate_outline_batch(new_chapters, batch_start, batch_end)
-            outline["chapters"].extend(new_chapters)
             print(f"[Outliner] 第 {batch_start}-{batch_end} 章大纲已生成（{len(new_chapters)}章）")
+            if candidate_file:
+                candidate_file.parent.mkdir(parents=True, exist_ok=True)
+                candidate_file.write_text(json.dumps(new_chapters[0], ensure_ascii=False, indent=2), encoding="utf-8")
+                print(f"[Outliner] 候选大纲已保存 -> {candidate_file}")
+                continue
+            outline["chapters"].extend(new_chapters)
             if output_file:
                 output_file.parent.mkdir(parents=True, exist_ok=True)
                 output_file.write_text(json.dumps(outline, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -632,10 +648,13 @@ origin/ 原始参考素材：
             raw_file.write_text(content, encoding="utf-8")
 
     generated_count = end - start + 1 - len(failures)
-    print(
-        f"[Outliner] 本次请求范围 {start}-{end} 已处理，"
-        f"本次成功 {max(0, generated_count)} 章，当前项目累计大纲 {len(outline['chapters'])} 章"
-    )
+    if candidate_file:
+        print(f"[Outliner] 候选请求范围 {start}-{end} 已处理，本次成功 {max(0, generated_count)} 章")
+    else:
+        print(
+            f"[Outliner] 本次请求范围 {start}-{end} 已处理，"
+            f"本次成功 {max(0, generated_count)} 章，当前项目累计大纲 {len(outline['chapters'])} 章"
+        )
     if failures:
         print(f"[Outliner] 失败批次: {failures}")
         return False
@@ -652,13 +671,16 @@ def main():
     parser.add_argument("--chapter", type=int, default=0, help="只生成指定单章的大纲")
     parser.add_argument("--review-feedback", type=str, default="", help="大纲审查意见JSON文件路径，用于指导改进")
     parser.add_argument("--rescue", action="store_true", help="启用单章卡点救援提示，压缩上下文并强制短JSON输出")
+    parser.add_argument("--candidate-file", type=str, default="", help="候选大纲输出文件；启用后不写入正式大纲目录")
     args = parser.parse_args()
 
-    if not args.project:
-        print("错误: 必须指定 --project 或设置 NOVEL_PROJECT_DIR 环境变量")
+    try:
+        project = resolve_project_dir(args.project)
+    except ValueError as exc:
+        print(f"错误: {exc}")
         sys.exit(1)
 
-    init_project(args.project)
+    init_project(project)
     end = args.end or CONFIG["total_chapters"]
 
     print("=" * 60)
@@ -673,12 +695,17 @@ def main():
 
     NOVELS_DIR.mkdir(parents=True, exist_ok=True)
     outline_file = Path(args.outline_file) if args.outline_file else None
+    candidate_file = Path(args.candidate_file) if args.candidate_file else None
+    if candidate_file and args.chapter <= 0:
+        print("错误: --candidate-file 必须与 --chapter 一起使用")
+        sys.exit(1)
     ok = generate_outline_range(
         args.start, end, outline_file,
         fill_gaps=args.fill_gaps,
         chapter=args.chapter if args.chapter > 0 else None,
         review_feedback=Path(args.review_feedback) if args.review_feedback else None,
         rescue=args.rescue,
+        candidate_file=candidate_file,
     )
 
     if not ok:

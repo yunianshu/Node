@@ -12,6 +12,7 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 from pipeline import coordinator
+from core.novel_config import resolve_project_dir
 
 
 def main() -> int:
@@ -28,15 +29,18 @@ def main() -> int:
     parser.add_argument("--passes", type=int, default=1, help="失败后因后章重叠触发的额外重试轮数")
     args = parser.parse_args()
 
-    if not args.project:
-        print("错误: 必须指定 --project 或设置 NOVEL_PROJECT_DIR")
+    try:
+        project = resolve_project_dir(args.project)
+    except ValueError as exc:
+        print(f"错误: {exc}")
         return 1
 
-    coordinator.init_project(args.project)
+    coordinator.init_project(project)
     end = args.end or int(coordinator.CONFIG["total_chapters"])
     start = max(1, args.start)
     push_interval = int(coordinator.CONFIG.get("coordinator", {}).get("push_interval_seconds", 120))
     coordinator.ensure_wechat_pusher_process(push_interval)
+    coordinator.ensure_gate_watchdog_process("outline")
 
     coordinator.log(f"[OutlineLane] 启动: 第{start}-{end}章，只处理大纲")
     for chapter in range(start, end + 1):

@@ -15,7 +15,8 @@ import os
 import subprocess
 import time
 
-from core.novel_config import configure_stdio, load_config
+from core.mmx_client import _mmx_base_cmd
+from core.novel_config import configure_stdio, load_config, resolve_project_dir
 
 configure_stdio()
 
@@ -53,7 +54,7 @@ def _load_world() -> dict:
 
 def _run_mmx(args: list[str], timeout: int) -> bool:
     assert CONFIG is not None
-    cmd = ["node", CONFIG["mmx_path"], *args]
+    cmd = [*_mmx_base_cmd(CONFIG["mmx_path"]), *args]
     try:
         result = subprocess.run(
             cmd,
@@ -202,14 +203,16 @@ def main() -> None:
         "--project",
         "-p",
         type=str,
-        default=os.getenv("NOVEL_PROJECT_DIR", ""),
+        default="",
         help="小说项目目录（默认从环境变量 NOVEL_PROJECT_DIR 读取）",
     )
     args = parser.parse_args()
-    if not args.project:
-        print("错误: 必须指定 --project 或设置 NOVEL_PROJECT_DIR 环境变量")
+    try:
+        project = resolve_project_dir(args.project)
+    except ValueError as exc:
+        print(f"错误: {exc}")
         sys.exit(1)
-    init_project(args.project)
+    init_project(project)
     ok = generate_media()
     sys.exit(0 if ok else 1)
 
