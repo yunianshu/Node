@@ -102,6 +102,43 @@ def current_status_note(statuses: dict) -> str:
     return "全部章节已通过当前质量门"
 
 
+def format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days > 0:
+        return f"{days}天{hours}小时"
+    if hours > 0:
+        return f"{hours}小时{minutes}分钟"
+    return f"{max(1, minutes)}分钟"
+
+
+def estimate_remaining_time(project: Path, total: int, final_count: int) -> str:
+    remaining = max(0, total - final_count)
+    if remaining == 0:
+        return "已完成"
+
+    final_dir = project / "chapters" / "final"
+    if not final_dir.exists():
+        return "样本不足"
+
+    now = time.time()
+    windows = (6 * 3600, 24 * 3600, 72 * 3600)
+    files = [
+        path for path in final_dir.glob("chapter_*.txt")
+        if path.is_file() and path.stat().st_size > 0
+    ]
+    for window in windows:
+        recent = [path.stat().st_mtime for path in files if now - path.stat().st_mtime <= window]
+        if len(recent) >= 2:
+            elapsed = max(1.0, max(recent) - min(recent))
+            rate = (len(recent) - 1) / elapsed
+            if rate > 0:
+                return format_duration(remaining / rate)
+    return "样本不足"
+
+
 def push_once(project: Path, config: dict) -> bool:
     total = int(config["total_chapters"])
     statuses = scan_chapter_status(project, 1, total, use_cache=False)
@@ -115,6 +152,7 @@ def push_once(project: Path, config: dict) -> bool:
     scores = [s.review_score for s in statuses.values() if s.final_ok and s.review_score is not None]
     avg_score = sum(scores) / len(scores) if scores else None
     status_note = current_status_note(statuses)
+    eta_text = estimate_remaining_time(project, total, final)
     return push_progress(
         config=config,
         title=book_title(project),
@@ -129,6 +167,7 @@ def push_once(project: Path, config: dict) -> bool:
         active_writers=active_lane_count(project),
         avg_score=avg_score,
         status_note=status_note,
+        eta_text=eta_text,
     )
 
 

@@ -24,7 +24,6 @@ from core.workflow_state import list_outline_chapters, write_outline_chapters
 
 NOVELS_DIR = None
 WORLD_FILE = None
-OUTLINE_FILE = None
 CHARACTERS_FILE = None
 CONFIG = None
 NOVEL_PREMISE = ""
@@ -32,10 +31,9 @@ ORIGIN_MATERIALS = ""
 
 
 def init_project(project_dir: str | Path) -> None:
-    global NOVELS_DIR, WORLD_FILE, OUTLINE_FILE, CHARACTERS_FILE, CONFIG, NOVEL_PREMISE, ORIGIN_MATERIALS
+    global NOVELS_DIR, WORLD_FILE, CHARACTERS_FILE, CONFIG, NOVEL_PREMISE, ORIGIN_MATERIALS
     NOVELS_DIR = Path(project_dir).resolve()
     WORLD_FILE = NOVELS_DIR / "world.json"
-    OUTLINE_FILE = None
     CHARACTERS_FILE = NOVELS_DIR / "characters.json"
     CONFIG = load_config(NOVELS_DIR)
     ORIGIN_MATERIALS = load_origin_materials(NOVELS_DIR)

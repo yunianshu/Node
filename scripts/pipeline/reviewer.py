@@ -25,7 +25,7 @@ from core.novel_config import configure_stdio, load_config, load_origin_material
 # 微信推送已禁用，改由 coordinator 统一推送进度
 # from core.push_notifier import push_stage_complete
 from core.workflow_state import (
-    load_outline_chapter, load_review_status, outline_index_path, review_dir,
+    load_outline_chapter, load_review_status, review_dir,
     scan_chapter_status, write_status_file, highest_contiguous, report_path,
 )
 
@@ -33,7 +33,6 @@ configure_stdio()
 
 NOVELS_DIR = None
 CHAPTERS_DIR = None
-OUTLINE_FILE = None
 CHARACTERS_FILE = None
 WORLD_FILE = None
 REVIEWS_DIR = None
@@ -43,12 +42,11 @@ ORIGIN_MATERIALS = ""
 
 
 def init_project(project_dir: str | Path) -> None:
-    global NOVELS_DIR, CHAPTERS_DIR, OUTLINE_FILE, CHARACTERS_FILE, WORLD_FILE, REVIEWS_DIR, LOG_FILE, CONFIG, ORIGIN_MATERIALS
+    global NOVELS_DIR, CHAPTERS_DIR, CHARACTERS_FILE, WORLD_FILE, REVIEWS_DIR, LOG_FILE, CONFIG, ORIGIN_MATERIALS
     NOVELS_DIR = Path(project_dir).resolve()
     CHAPTERS_DIR = NOVELS_DIR / "chapters" / "draft"
     CHARACTERS_FILE = NOVELS_DIR / "characters.json"
     WORLD_FILE = NOVELS_DIR / "world.json"
-    OUTLINE_FILE = outline_index_path(NOVELS_DIR)
     REVIEWS_DIR = review_dir(NOVELS_DIR)
     LOG_FILE = NOVELS_DIR / "logs" / "reviewer.log"
     CONFIG = load_config(NOVELS_DIR)
@@ -199,16 +197,21 @@ def _partial_review_from_raw(chapter_number: int, content: str, local_analysis: 
     }
 
 
-def review_chapter(chapter_number: int) -> dict:
-    chapter_file = CHAPTERS_DIR / f"chapter_{chapter_number:04d}.txt"
-    review_file = REVIEWS_DIR / f"chapter_{chapter_number:04d}_review.json"
+def review_chapter(
+    chapter_number: int,
+    chapter_file_override: str | Path | None = None,
+    review_file_override: str | Path | None = None,
+) -> dict:
+    chapter_file = Path(chapter_file_override) if chapter_file_override else CHAPTERS_DIR / f"chapter_{chapter_number:04d}.txt"
+    review_file = Path(review_file_override) if review_file_override else REVIEWS_DIR / f"chapter_{chapter_number:04d}_review.json"
 
     if not chapter_file.exists():
         log(f"[Reviewer] 第{chapter_number}章文件不存在")
         return {"status": "no_file"}
 
     if review_file.exists():
-        _, status, _, ok = load_review_status(review_file)
+        configured_min_score = float(CONFIG.get("reviewer", {}).get("min_score", 7.0))
+        _, status, _, ok = load_review_status(review_file, configured_min_score)
         if ok:
             log(f"[Reviewer] 第{chapter_number}章已有有效审查报告，跳过")
             with open(review_file, "r", encoding="utf-8") as f:
@@ -252,14 +255,26 @@ def review_chapter(chapter_number: int) -> dict:
     warn_min = int(quality.get("warn_min_chapter_words", min_words - 200))
     warn_max = int(quality.get("warn_max_chapter_words", max_words + 3000))
 
-    system = f"""你是一位资深网络小说编辑，拥有20年审稿经验。
-你需要从多个维度审查章节质量，并给出具体的修改建议。
+    system = f"""你是一位拥有20年经验的资深网络小说编辑，同时也是一位苛刻的"神作猎手"。
+你的任务不是找"合格"的章节，而是找出"为什么这章还没达到9分"的每一个原因。
 本书是《{book_title}》。
 {genre_text}
-评分标准：9-10分优秀，8-9分良好，达到{review_min_score}分为通过，低于{review_min_score}分需重写。
-优秀章节完全可以给出9分以上，请根据实际质量客观评分，不要人为压低分数。
+
+## 【9分神作评分标准】
+- 10分：传世级神作。每一句都在推动剧情或揭示人物，章末钩子让人失眠，读完之后心跳加速，无法停止思考。
+- 9-9.9分：优秀神作。悬念密集，情感冲击强烈，信息新鲜，读完立刻想打开下一章。只存在极小的可改进空间。
+- 8-8.9分：良好但不够惊艳。有可读性，但存在套路化倾向、悬念不足、情感平淡或信息重复等问题。低于{review_min_score}分，必须重写。
+- 7-7.9分：平庸。有明显水文、套路、OOC或逻辑问题，读者很可能中途弃书。
+- 低于7分：不合格，存在严重质量问题。
+
+【你的审查哲学】
+- 不要给"辛苦分"。写得多、写得顺不等于写得好。
+- 不要放过"还行"——"还行"就是失败的委婉说法。
+- 重点关注：读者读完这章后，会不会立刻想读下一章？如果不会，问题出在哪？
+- 如果你给不出9分以上，必须在 weaknesses 中明确说明"距离9分的具体差距"。
+
 输出必须是合法的紧凑JSON，不要使用Markdown代码块，不要输出JSON之外的任何文字。
-审查意见要短而具体，整份JSON尽量控制在1200个中文字符以内。"""
+审查意见要短而具体，整份JSON尽量控制在1500个中文字符以内。"""
 
     prompt = f"""请审查以下第{chapter_number}章的内容。
 
@@ -284,17 +299,22 @@ def review_chapter(chapter_number: int) -> dict:
 请只输出以下JSON格式的审查报告，数组最多3条，每条不超过80字：
 {{
   "chapter_number": {chapter_number},
-  "overall_score": "请给出0-10的客观评分，质量优秀的章节可给9分以上",
-  "verdict": "通过/需修改/需重写",
+  "overall_score": "请给出0-10的客观评分。9分意味着'非常想读下一章'，10分意味着'震撼到说不出话'。不要给辛苦分",
+  "verdict": "通过/需修改/需重写。注意：如果 overall_score >= {review_min_score}，verdict 必须写'通过'；只有低于{review_min_score}分才写'需重写'或'需修改'",
   "scores": {{
     "writing_quality": "文笔流畅度（0-10）",
     "plot_coherence": "剧情连贯性（0-10）",
     "character_consistency": "人物一致性（0-10）",
-    "scene_description": "场景描写（0-10）",
-    "dialogue_quality": "对话质量（0-10）",
+    "scene_description": "场景氛围感（0-10。不是画面多清晰，而是氛围多压迫/诡异/震撼）",
+    "dialogue_quality": "对话质量（0-10。是否有潜台词？是否推动情节？是否避免了解说员式对话？）",
     "outline_adherence": "大纲遵循度（0-10）",
-    "pacing": "节奏把控（0-10）",
-    "emotional_impact": "情感冲击力（0-10）"
+    "pacing": "节奏把控（0-10。是否存在平铺直叙超过1500字？中段是否有小高潮？）",
+    "emotional_impact": "情感冲击力（0-10。是否触及角色核心恐惧/欲望？是否有刺点？）",
+    "hook_strength": "章末钩子强度（0-10。最后200字是否让人心跳加速、必须读下一章？）",
+    "suspense_density": "悬念密度（0-10。每800-1200字是否有新信息/冲突升级/意外转折？）",
+    "information_freshness": "信息新鲜度（0-10。是否带来至少一个此前从未出现过的新元素？有无重复已知信息？）",
+    "anti_cliche": "反套路程度（0-10。是否存在标准升级流/打怪流/解谜流模板？是否有意外和不可预测性？）",
+    "read_desire": "读下去的欲望（0-10。假设你是第一次读的读者，读完这章后有多想立刻打开下一章？）"
   }},
   "word_count_check": {{
     "actual": {len(chapter_content)},
@@ -302,17 +322,28 @@ def review_chapter(chapter_number: int) -> dict:
     "status": "达标/偏短/偏长"
   }},
   "strengths": ["优点1，80字以内"],
-  "weaknesses": ["不足1，80字以内"],
+  "weaknesses": ["不足1，80字以内。如果给分低于9分，必须在这里明确写出'距离9分的具体差距'"],
   "suggestions": ["具体修改建议1，80字以内"],
   "continuity_issues": ["与前文不一致之处，80字以内"],
-  "summary": "总体评价，80字以内"
+  "summary": "总体评价，80字以内。如果评分低于9分，用一句话回答：'本章最致命的短板是什么？'"
 }}
 
+【9分神作审查清单——逐条自检】
+请你在给出评分前，先在心中逐条回答以下问题。如果有任何一条答案为"否"或"不够"，overall_score 不得超过8.5分：
+1. 章末最后200字是否包含一个让人心跳加速的强力钩子（危机升级/信息反转/情感爆点）？
+2. 本章是否有至少一个让读者心头一紧的"刺点"细节（反常动作、未说出口的话、突然沉默）？
+3. 每800-1200字是否至少有一次有效推进（新信息、冲突升级、意外转折、人物关系质变）？
+4. 本章是否给读者带来至少一个"此前从未出现过的新元素"？
+5. 心理描写是否展现了真实的情感波动，而不是代码化/分析化的流水账？
+6. 冲突是否触及角色核心恐惧或核心欲望，而非表层利害计算？
+7. 是否存在套路化描写（标准战斗模板、标准解谜流程、配角当解说员）？
+8. 如果我是第一次读这本书的读者，读完这章后会不会立刻想打开下一章？
+
 要求：
-1. 评分要客观公正，质量优秀的章节完全可以给出9分以上，不要人为压低分数
-2. 重点审查内容是否符合本书的世界观设定和角色性格
+1. 评分要冷酷客观。不要给辛苦分，不要给"还行"分。9分意味着"非常想读下一章"，8分意味着"看完了，还行"。
+2. 重点审查：悬念密度、情感冲击、信息新鲜度、反套路程度、读下去的欲望。这五个维度比文笔更重要。
 3. 剧情推进是否自然，有无逻辑漏洞或突兀转折
-4. 对话是否符合角色身份和时代背景
+4. 对话是否有潜台词，是否符合角色身份，是否避免了解说员式长篇大论
 5. 必须给出具体的修改建议，不能泛泛而谈，但每类最多3条
 6. 如果 origin/ 中存在素材，必须检查正文是否参考并遵守原始素材；与素材冲突需列入 weaknesses 或 continuity_issues
 7. 如低于{review_min_score}分必须标记为"需重写"
@@ -329,7 +360,7 @@ def review_chapter(chapter_number: int) -> dict:
             "status": "failed",
             "local_analysis": local_analysis,
         }
-        REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
+        review_file.parent.mkdir(parents=True, exist_ok=True)
         with open(review_file, "w", encoding="utf-8") as f:
             json.dump(review_data, f, ensure_ascii=False, indent=2)
         return review_data
@@ -353,7 +384,7 @@ def review_chapter(chapter_number: int) -> dict:
         if review_data.get("status") == "completed":
             log(f"[Reviewer] 已从截断JSON中提取评分: {review_data.get('overall_score')}，verdict: {review_data.get('verdict')}")
 
-    REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
+    review_file.parent.mkdir(parents=True, exist_ok=True)
     with open(review_file, "w", encoding="utf-8") as f:
         json.dump(review_data, f, ensure_ascii=False, indent=2)
 
@@ -403,6 +434,8 @@ def main():
     parser.add_argument("--end", type=int, default=10, help="结束章节")
     parser.add_argument("--chapter", type=int, default=0, help="只审查某一章")
     parser.add_argument("--final", action="store_true", help="审查终稿（final 目录）而非草稿")
+    parser.add_argument("--chapter-file", type=str, default="", help="候选模式：审查指定正文文件")
+    parser.add_argument("--review-file", type=str, default="", help="候选模式：审查报告写入指定文件")
     args = parser.parse_args()
 
     try:
@@ -432,10 +465,15 @@ def main():
     total = 1 if args.chapter > 0 else (args.end - args.start + 1)
     failed = 0
     if args.chapter > 0:
-        result = review_chapter(args.chapter)
+        result = review_chapter(
+            args.chapter,
+            chapter_file_override=args.chapter_file or None,
+            review_file_override=args.review_file or None,
+        )
         if result.get("status") in ("failed", "no_file", "parse_error"):
             failed += 1
-        _refresh_status(args.chapter, args.chapter)
+        if not (args.chapter_file or args.review_file):
+            _refresh_status(args.chapter, args.chapter)
     else:
         for ch in range(args.start, args.end + 1):
             result = review_chapter(ch)

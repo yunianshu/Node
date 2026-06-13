@@ -17,11 +17,12 @@ import os
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
 from core.novel_config import load_config, load_origin_materials, resolve_project_dir
+from core.outline_constraints import format_outline_constraints
+from core.outline_memory import build_outline_memory, format_outline_memory
 from core.workflow_state import list_outline_chapters, write_outline_chapters
 
 NOVELS_DIR = None
 WORLD_FILE = None
-OUTLINE_FILE = None
 CHARACTERS_FILE = None
 CONFIG = None
 NOVEL_PREMISE = ""
@@ -29,10 +30,9 @@ ORIGIN_MATERIALS = ""
 
 
 def init_project(project_dir: str | Path) -> None:
-    global NOVELS_DIR, WORLD_FILE, OUTLINE_FILE, CHARACTERS_FILE, CONFIG, NOVEL_PREMISE, ORIGIN_MATERIALS
+    global NOVELS_DIR, WORLD_FILE, CHARACTERS_FILE, CONFIG, NOVEL_PREMISE, ORIGIN_MATERIALS
     NOVELS_DIR = Path(project_dir).resolve()
     WORLD_FILE = NOVELS_DIR / "world.json"
-    OUTLINE_FILE = None
     CHARACTERS_FILE = NOVELS_DIR / "characters.json"
     CONFIG = load_config(NOVELS_DIR)
     ORIGIN_MATERIALS = load_origin_materials(NOVELS_DIR, max_chars=3000)
@@ -161,6 +161,9 @@ REQUIRED_CHAPTER_FIELDS = (
     "foreshadowing",
     "power_progression",
     "word_count_target",
+    "chapter_hook",
+    "emotional_arc",
+    "tension_points",
 )
 
 PLACEHOLDER_TEXTS = {
@@ -176,6 +179,9 @@ PLACEHOLDER_TEXTS = {
     "事件2",
     "埋下的伏笔",
     "实力变化说明",
+    "章末钩子",
+    "情绪曲线",
+    "张力节点",
 }
 
 
@@ -219,12 +225,18 @@ def _validate_chapter_outline(chapter: dict, expected_number: int | None = None)
     elif _has_placeholder(key_events):
         issues.append("key_events包含占位文本")
 
-    for field in ("title", "location", "mood", "foreshadowing", "power_progression"):
+    for field in ("title", "location", "mood", "foreshadowing", "power_progression", "chapter_hook", "emotional_arc"):
         value = str(chapter.get(field, "")).strip()
         if len(value) < 2:
             issues.append(f"{field}不能为空")
         if _has_placeholder(value):
             issues.append(f"{field}仍是占位文本")
+
+    tension_points = chapter.get("tension_points")
+    if not isinstance(tension_points, list) or len([item for item in tension_points if str(item).strip()]) < 3:
+        issues.append("tension_points必须至少包含3个张力节点")
+    elif _has_placeholder(tension_points):
+        issues.append("tension_points包含占位文本")
 
     try:
         target = int(chapter.get("word_count_target", 0))
@@ -255,17 +267,38 @@ def _validate_outline_batch(chapters: list, batch_start: int, batch_end: int) ->
 
 def _outline_quality_contract() -> str:
     min_score = float(CONFIG.get("outline_reviewer", {}).get("min_score", 8.5))
-    return f"""## 大纲质量契约（必须满足）
+    return f"""## 【9分神作大纲契约】（必须满足，否则视为不合格）
 - 大纲审查目标分必须达到 {min_score:g} 分及以上；低于该分数视为不合格，需要重写。
 - 必须顺接前章结尾的人物状态、地点、时间和危机，不能跳场景、跳时间、跳动机。
-- 必须为下一章留下清晰接口：章末钩子、未解决危机、情报增量或行动目标至少具备一项。
+
+### 【章末钩子·强制要求】
+- chapter_hook 字段必须明确写出本章最后200字要落地的强力钩子，且必须是以下三种之一：
+  1. 危机升级钩子：主角或核心人物突然陷入更大危险
+  2. 信息反转钩子：抛出颠覆前文认知的关键信息
+  3. 情感爆点钩子：人物关系发生剧烈撕裂或质变
+- 禁止以"平静收尾、总结现状、铺垫过渡"作为章末钩子。
+
+### 【情绪曲线·强制要求】
+- emotional_arc 字段必须描述本章的情绪变化轨迹，例如："压抑→紧张→短暂希望→绝望反转"。
+- 禁止一整章都是同一种情绪（如全程紧张或全程平淡）。
+
+### 【张力节点·强制要求】
+- tension_points 字段必须列出至少3个"让人无法停止阅读"的关键时刻，标注它们在章节中的大致位置（前/中/后）。
+- 每个张力节点必须是：新信息曝光、冲突升级、意外转折、或人物关系质变。
+
+### 【反套路·强制要求】
 - 不得与前后章节核心事件重复；若发现重复，必须重新设计本章独有冲突和爽点。
+- 禁止套路化设计：禁止"遇敌→分析→升级→打赢"的标准战斗流程，禁止"发现问题→查资料→解决"的标准解谜流程。
+- 每章必须包含至少一个"此前从未出现过的新元素"（新人物、新地点、新规则、新真相、新威胁、新情感关系）。
+
+### 【基础要求】
 - summary 必须写具体剧情链路：起因、冲突、转折、结果、章末钩子，不得写模板话。
 - key_events 至少 5 条，按发生顺序列出，每条必须包含行动、阻碍和结果。
 - foreshadowing 必须包含本章埋下或回收的具体伏笔，不能只写抽象评价。
 - power_progression 必须说明主角能力、资源、关系、情报或目标的具体变化。
 - 人物动机必须可执行、可理解，不能为了剧情强行行动。
-- 每章必须有危机升级和读者爽点，且爽点来自主角判断、能力、资源或协作的实际发挥。"""
+- 每章必须有危机升级和读者爽点，且爽点来自主角判断、能力、资源或协作的实际发挥。
+- 爽点必须触及角色核心恐惧或核心欲望，不能停留在表层利害计算。"""
 
 
 def _feedback_attempt_count(review_feedback_data: dict, chapter_no: int) -> int:
@@ -363,6 +396,8 @@ def _build_rescue_prompt(
     chars_json: str,
     prev_context: str,
     review_feedback_data: dict,
+    long_memory: str,
+    ledger_constraints: str,
 ) -> str:
     constraints = _feedback_hard_constraints(review_feedback_data, batch_start, batch_end)
     constraints_text = "\n".join(f"- {item}" for item in constraints) or "- 修复上一轮所有审查问题，保持前后章连续。"
@@ -378,6 +413,12 @@ def _build_rescue_prompt(
 故事前提摘要：
 {premise}
 
+前序全局记忆：
+{long_memory}
+
+全书结构化台账硬约束：
+{ledger_constraints}
+
 {prev_context}
 必须修复的硬约束：
 {constraints_text}
@@ -387,7 +428,7 @@ def _build_rescue_prompt(
 输出要求：
 - 只输出合法JSON，不要Markdown代码块，不要解释文字。
 - 只生成第{batch_start}章到第{batch_end}章，共{batch_end - batch_start + 1}个章节对象。
-- 字段必须完整：chapter_number/title/summary/characters_involved/location/mood/key_events/foreshadowing/power_progression/word_count_target。
+- 字段必须完整：chapter_number/title/summary/characters_involved/location/mood/key_events/foreshadowing/power_progression/word_count_target/chapter_hook/emotional_arc/tension_points。
 - summary 控制在150-220字，key_events 只写5-6条，每条不超过70字。
 - 不允许尾随逗号，不允许注释，不允许省略号，不允许占位文本。
 
@@ -404,7 +445,10 @@ JSON结构：
       "key_events": ["事件1", "事件2", "事件3", "事件4", "事件5"],
       "foreshadowing": "具体伏笔",
       "power_progression": "具体能力、资源、关系或情报进展",
-      "word_count_target": 5000
+      "word_count_target": 5000,
+      "chapter_hook": "最后200字落地的危机升级、信息反转或情感爆点",
+      "emotional_arc": "压抑→紧张→短暂希望→反转",
+      "tension_points": ["前段张力节点", "中段张力节点", "后段张力节点"]
     }}
   ]
 }}"""
@@ -525,6 +569,22 @@ def generate_outline_range(
 
     for batch_start, batch_end in batch_ranges:
         print(f"[Outliner] 正在生成第 {batch_start}-{batch_end} 章大纲...")
+        memory_cfg = CONFIG.get("outline_memory", {})
+        long_memory = format_outline_memory(
+            build_outline_memory(
+                NOVELS_DIR,
+                batch_start,
+                milestone_size=int(memory_cfg.get("milestone_size", 25) or 25),
+                recent_chapters=int(memory_cfg.get("recent_chapters", 8) or 8),
+            ),
+            max_chars=int(memory_cfg.get("max_prompt_chars", 7000) or 7000),
+        )
+        ledger_constraints = format_outline_constraints(
+            NOVELS_DIR,
+            batch_start,
+            batch_end,
+            max_chars=int(memory_cfg.get("ledger_max_prompt_chars", 7000) or 7000),
+        )
 
         rescue_mode = rescue or (
             chapter is not None
@@ -548,7 +608,16 @@ def generate_outline_range(
 
         if rescue_mode:
             print(f"[Outliner] 第 {batch_start}-{batch_end} 章启用卡章救援模式")
-            prompt = _build_rescue_prompt(batch_start, batch_end, world_json, chars_json, prev_context, review_feedback_data)
+            prompt = _build_rescue_prompt(
+                batch_start,
+                batch_end,
+                world_json,
+                chars_json,
+                prev_context,
+                review_feedback_data,
+                long_memory,
+                ledger_constraints,
+            )
         else:
             prompt = f"""请根据以下世界观和角色设定，生成第{batch_start}章到第{batch_end}章的详细大纲。
 
@@ -562,6 +631,14 @@ def generate_outline_range(
 
 origin/ 原始参考素材：
 {prompt_origin}
+
+## 前序大纲全局压缩记忆
+以下记忆由此前全部单章大纲派生，用于保持长期主线、角色、能力和伏笔连续；不得机械重复其中事件：
+{long_memory}
+
+## 全书结构化台账硬约束
+以下内容来自人物、能力、时间、地点、伏笔和重复事件台账；不得违反：
+{ledger_constraints}
 
 {prev_context}
 {review_section}
@@ -580,7 +657,10 @@ origin/ 原始参考素材：
       "key_events": ["5-7个具体事件，按发生顺序列出，每条不超过90字"],
       "foreshadowing": "本章埋下或回收的具体伏笔",
       "power_progression": "本章主角能力、资源、关系或事业进展",
-      "word_count_target": 5000
+      "word_count_target": 5000,
+      "chapter_hook": "最后200字落地的危机升级、信息反转或情感爆点",
+      "emotional_arc": "压抑→紧张→短暂希望→反转",
+      "tension_points": ["前段张力节点", "中段张力节点", "后段张力节点"]
     }}
   ]
 }}

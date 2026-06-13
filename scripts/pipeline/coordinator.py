@@ -27,6 +27,8 @@ from pathlib import Path
 
 from core.mmx_client import _mmx_base_cmd
 from core.novel_config import configure_stdio, get_webhook_url, load_config, resolve_project_dir
+from core.outline_quality_gate import aggregate_outline_reviews
+from core.outline_batch_lock import is_chapter_locked, unlock_chapters
 from core.push_notifier import (
     push_progress as _push_progress,
     push_stage_event as _push_stage_event,
@@ -41,7 +43,6 @@ from core.workflow_state import (
     load_review_status,
     outline_chapter_path,
     outline_completed_count,
-    outline_index_path,
     outline_review_dir,
     outlines_complete,
     report_path,
@@ -49,6 +50,7 @@ from core.workflow_state import (
     scan_chapter_status,
     write_status_file,
 )
+from maintenance.build_outline_ledgers import build_ledgers
 configure_stdio()
 
 PIPELINE_SCRIPTS = {
@@ -57,12 +59,14 @@ PIPELINE_SCRIPTS = {
     "outline_reviewer.py": TOOLS_ROOT / "pipeline" / "outline_reviewer.py",
     "writer.py": TOOLS_ROOT / "pipeline" / "writer.py",
     "reviewer.py": TOOLS_ROOT / "pipeline" / "reviewer.py",
+    "polisher.py": TOOLS_ROOT / "pipeline" / "polisher.py",
     "media_generator.py": TOOLS_ROOT / "pipeline" / "media_generator.py",
 }
 
 MAINTENANCE_SCRIPTS = {
     "wechat_pusher_lane.py": TOOLS_ROOT / "maintenance" / "wechat_pusher_lane.py",
     "gate_watchdog.py": TOOLS_ROOT / "maintenance" / "gate_watchdog.py",
+    "outline_book_reviewer.py": TOOLS_ROOT / "maintenance" / "outline_book_reviewer.py",
 }
 
 
@@ -77,7 +81,6 @@ CHAPTERS_DIR = None
 REVIEWS_DIR = None
 LOGS_DIR = None
 WORLD_FILE = None
-OUTLINE_FILE = None
 CHARACTERS_FILE = None
 PROGRESS_FILE = None
 LOG_FILE = None
@@ -86,6 +89,8 @@ SCRIPTS_DIR = None
 WECHAT_WEBHOOK = ""
 
 _progress_lock = threading.Lock()
+_outline_review_budget_lock = threading.Lock()
+_outline_review_call_counts: dict[int, int] = {}
 _last_push_time = 0
 _active_writers = 0
 _pusher_started = False
@@ -98,7 +103,7 @@ review_workers = None
 
 
 def init_project(project_dir: str | Path) -> None:
-    global NOVELS_DIR, CHAPTERS_DIR, REVIEWS_DIR, OUTLINE_REVIEW_DIR, LOGS_DIR, WORLD_FILE, OUTLINE_FILE
+    global NOVELS_DIR, CHAPTERS_DIR, REVIEWS_DIR, OUTLINE_REVIEW_DIR, LOGS_DIR, WORLD_FILE
     global CHARACTERS_FILE, PROGRESS_FILE, LOG_FILE, CONFIG, SCRIPTS_DIR, WECHAT_WEBHOOK
     global default_num_workers, num_workers, default_review_workers, review_workers
     NOVELS_DIR = Path(project_dir).resolve()
@@ -107,7 +112,6 @@ def init_project(project_dir: str | Path) -> None:
     OUTLINE_REVIEW_DIR = outline_review_dir(NOVELS_DIR)
     LOGS_DIR = NOVELS_DIR / "logs"
     WORLD_FILE = NOVELS_DIR / "world.json"
-    OUTLINE_FILE = outline_index_path(NOVELS_DIR)
     CHARACTERS_FILE = NOVELS_DIR / "characters.json"
     PROGRESS_FILE = report_path(NOVELS_DIR, "progress.json")
     LOG_FILE = LOGS_DIR / "coordinator.log"
@@ -158,8 +162,44 @@ def get_progress_summary():
         "draft": draft_count,
         "reviewed": reviewed,
         "final": final_count,
-        "total_words": total_words
+        "total_words": total_words,
+        "eta_text": estimate_remaining_time(final_count),
     }
+
+
+def _format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days > 0:
+        return f"{days}天{hours}小时"
+    if hours > 0:
+        return f"{hours}小时{minutes}分钟"
+    return f"{max(1, minutes)}分钟"
+
+
+def estimate_remaining_time(final_count: int) -> str:
+    total = int(CONFIG["total_chapters"])
+    remaining = max(0, total - final_count)
+    if remaining == 0:
+        return "已完成"
+    final_dir = NOVELS_DIR / "chapters" / "final"
+    if not final_dir.exists():
+        return "样本不足"
+    now = time.time()
+    files = [
+        path for path in final_dir.glob("chapter_*.txt")
+        if path.is_file() and path.stat().st_size > 0
+    ]
+    for window in (6 * 3600, 24 * 3600, 72 * 3600):
+        recent = [path.stat().st_mtime for path in files if now - path.stat().st_mtime <= window]
+        if len(recent) >= 2:
+            elapsed = max(1.0, max(recent) - min(recent))
+            rate = (len(recent) - 1) / elapsed
+            if rate > 0:
+                return _format_duration(remaining / rate)
+    return "样本不足"
 
 
 def progress_pusher_thread(interval_seconds: int = 120):
@@ -238,6 +278,7 @@ def progress_pusher_thread(interval_seconds: int = 120):
             total_words=p["total_words"],
             total_chapters=CONFIG["total_chapters"],
             active_writers=_active_writers,
+            eta_text=p["eta_text"],
         )
         status = "已推送" if ok else "跳过(无webhook)"
         log(
@@ -898,6 +939,21 @@ def run_outline_reviewer_batch(start: int, end: int) -> list:
     log("=" * 60)
     log(f"[Coordinator] 启动 Outline Reviewer Agent: 第{start}-{end}章")
     log("=" * 60)
+    if _outline_quality_gate_config()["enabled"]:
+        failed: list[int] = []
+        for chapter in range(start, end + 1):
+            outline_file = outline_chapter_path(NOVELS_DIR, chapter)
+            if not outline_file.exists():
+                failed.append(chapter)
+                continue
+            rc, _ = _run_outline_review_rounds(
+                chapter,
+                outline_file,
+                _outline_review_file(chapter),
+            )
+            if rc != 0 or not _outline_gate_passed(chapter):
+                failed.append(chapter)
+        return failed
     return run_parallel_agents("outline_reviewer.py", start, end)
 
 
@@ -906,7 +962,11 @@ def check_outline_rewrites(start: int, end: int) -> list:
     min_score = float(CONFIG.get("outline_reviewer", {}).get("min_score", 8.5))
     for ch in range(start, end + 1):
         review_file = OUTLINE_REVIEW_DIR / f"chapter_{ch:04d}_review.json"
-        exists, status, score, ok = load_outline_review_status(review_file, min_score)
+        exists, status, score, ok = load_outline_review_status(
+            review_file,
+            min_score,
+            require_quality_gate=_outline_quality_gate_config()["enabled"],
+        )
         if exists and not ok:
             rewrite_list.append(ch)
             log(f"[Coordinator] 第{ch}章大纲评分{score}（门槛{min_score}），状态{status}，标记为需重生成")
@@ -1023,12 +1083,62 @@ def _final_file(chapter: int) -> Path:
     return NOVELS_DIR / "chapters" / "final" / f"chapter_{chapter:04d}.txt"
 
 
-def _review_feedback(review_data: dict, chapter: int, gate: str, round_no: int, attempt: int) -> dict:
+def _best_draft_file(chapter: int) -> Path:
+    return CHAPTERS_DIR / f"chapter_{chapter:04d}_best.txt"
+
+
+def _best_score_file(chapter: int) -> Path:
+    return CHAPTERS_DIR / f"chapter_{chapter:04d}_best.json"
+
+
+def _candidate_draft_file(chapter: int, candidate_id: int) -> Path:
+    return CHAPTERS_DIR / f"chapter_{chapter:04d}_polish_{candidate_id}.txt"
+
+
+def _candidate_review_file(chapter: int, candidate_id: int) -> Path:
+    return REVIEWS_DIR / f"chapter_{chapter:04d}_polish_{candidate_id}_review.json"
+
+
+def _load_best_score(chapter: int) -> float:
+    path = _best_score_file(chapter)
+    if not path.exists():
+        return 0.0
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return float(data.get("score", 0.0))
+    except Exception:
+        return 0.0
+
+
+def _save_best_draft(chapter: int, score: float, source: Path) -> None:
+    best_draft = _best_draft_file(chapter)
+    best_score = _best_score_file(chapter)
+    best_draft.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    best_score.write_text(
+        json.dumps({"score": score, "saved_at": time.strftime("%Y-%m-%d %H:%M:%S")}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    log(f"[Coordinator] 第{chapter}章保存最佳草稿 {score} 分 -> {best_draft}")
+
+
+def _restore_best_draft(chapter: int) -> float:
+    best_draft = _best_draft_file(chapter)
+    if not best_draft.exists():
+        return 0.0
+    current = _draft_file(chapter)
+    current.write_text(best_draft.read_text(encoding="utf-8"), encoding="utf-8")
+    score = _load_best_score(chapter)
+    log(f"[Coordinator] 第{chapter}章从 {best_draft} 恢复最佳草稿 {score} 分")
+    return score
+
+
+def _review_feedback(review_data: dict, chapter: int, gate: str, round_no: int, attempt: int, label: str = "") -> dict:
     return {
         "chapter": chapter,
         "gate": gate,
         "round": round_no,
         "attempt": attempt,
+        "label": label,
         "overall_score": review_data.get("overall_score"),
         "verdict": review_data.get("verdict"),
         "weaknesses": review_data.get("weaknesses", []),
@@ -1036,6 +1146,16 @@ def _review_feedback(review_data: dict, chapter: int, gate: str, round_no: int, 
         "continuity_issues": review_data.get("continuity_issues", []),
         "summary": review_data.get("summary", ""),
     }
+
+
+def _score_from_review(review_data: dict) -> float:
+    score = review_data.get("overall_score")
+    if score is None:
+        return 0.0
+    try:
+        return float(score)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _failure_analysis(chapter: int, gate: str, reviews: list[dict]) -> dict:
@@ -1103,8 +1223,187 @@ def _push_gate_failure(chapter: int, gate: str, report: dict) -> None:
 
 def _outline_gate_passed(chapter: int) -> bool:
     min_score = float(CONFIG.get("outline_reviewer", {}).get("min_score", 8.5))
-    _, _, _, ok = load_outline_review_status(_outline_review_file(chapter), min_score)
+    _, _, _, ok = load_outline_review_status(
+        _outline_review_file(chapter),
+        min_score,
+        require_quality_gate=_outline_quality_gate_config()["enabled"],
+    )
     return ok
+
+
+def _outline_quality_gate_config() -> dict:
+    cfg = CONFIG.get("outline_quality_gate", {})
+    if not isinstance(cfg, dict):
+        cfg = {}
+    rounds = max(1, int(cfg.get("review_rounds", 3) or 3))
+    required_votes = max(1, int(cfg.get("required_votes", rounds // 2 + 1) or 1))
+    return {
+        "enabled": bool(cfg.get("enabled", False)),
+        "review_rounds": rounds,
+        "required_votes": min(rounds, required_votes),
+        "max_score_spread": max(0.0, float(cfg.get("max_score_spread", 0.6) or 0.6)),
+        "screening_score": float(cfg.get("screening_score", 8.7) or 8.7),
+        "max_review_calls_per_candidate": max(
+            1,
+            int(cfg.get("max_review_calls_per_candidate", rounds) or rounds),
+        ),
+        "max_review_calls_per_chapter": max(
+            1,
+            int(cfg.get("max_review_calls_per_chapter", 15) or 15),
+        ),
+    }
+
+
+def _consume_outline_review_budget(chapter: int) -> tuple[bool, int, int]:
+    limit = _outline_quality_gate_config()["max_review_calls_per_chapter"]
+    with _outline_review_budget_lock:
+        used = _outline_review_call_counts.get(chapter, 0)
+        if used >= limit:
+            return False, used, limit
+        used += 1
+        _outline_review_call_counts[chapter] = used
+        return True, used, limit
+
+
+def _aggregate_review_files(
+    chapter: int,
+    review_files: list[Path],
+    aggregate_file: Path,
+) -> dict:
+    reviews = [_load_json_file(path) for path in review_files]
+    reviews = [review for review in reviews if review.get("status") == "completed"]
+    gate_cfg = _outline_quality_gate_config()
+    aggregate = aggregate_outline_reviews(
+        chapter,
+        reviews,
+        min_score=float(CONFIG.get("outline_reviewer", {}).get("min_score", 8.5)),
+        required_rounds=gate_cfg["review_rounds"],
+        required_votes=gate_cfg["required_votes"],
+        max_score_spread=gate_cfg["max_score_spread"],
+    )
+    atomic_write_json(aggregate_file, aggregate)
+    return aggregate
+
+
+def _run_outline_review_rounds(
+    chapter: int,
+    outline_file: Path,
+    aggregate_file: Path,
+    *,
+    child_log: Path | None = None,
+    stop_event: threading.Event | None = None,
+) -> tuple[int, dict]:
+    gate_cfg = _outline_quality_gate_config()
+    if not gate_cfg["enabled"]:
+        args = [
+            "--chapter",
+            str(chapter),
+            "--outline-file",
+            str(outline_file),
+            "--review-file",
+            str(aggregate_file),
+        ]
+        rc = run_script("outline_reviewer.py", *args)
+        return rc, _load_json_file(aggregate_file)
+
+    round_dir = aggregate_file.parent / f"{aggregate_file.stem}_rounds"
+    round_dir.mkdir(parents=True, exist_ok=True)
+    review_files: list[Path] = []
+    review_limit = min(
+        gate_cfg["review_rounds"],
+        gate_cfg["max_review_calls_per_candidate"],
+    )
+    for round_number in range(1, review_limit + 1):
+        allowed, used, budget = _consume_outline_review_budget(chapter)
+        if not allowed:
+            aggregate = aggregate_outline_reviews(
+                chapter,
+                [_load_json_file(path) for path in review_files],
+                min_score=float(CONFIG.get("outline_reviewer", {}).get("min_score", 8.5)),
+                required_rounds=gate_cfg["review_rounds"],
+                required_votes=gate_cfg["required_votes"],
+                max_score_spread=gate_cfg["max_score_spread"],
+            )
+            aggregate["review_budget"] = {
+                "exhausted": True,
+                "used": used,
+                "limit": budget,
+            }
+            atomic_write_json(aggregate_file, aggregate)
+            log(f"[Coordinator] 第{chapter}章审查调用预算耗尽 {used}/{budget}")
+            return 0, aggregate
+        review_file = round_dir / f"round_{round_number:02d}.json"
+        _safe_unlink(review_file)
+        reviewer_args = [
+            sys.executable,
+            str(resolve_script_path("outline_reviewer.py")),
+            "--project",
+            str(NOVELS_DIR),
+            "--chapter",
+            str(chapter),
+            "--outline-file",
+            str(outline_file),
+            "--review-file",
+            str(review_file),
+        ]
+        log(
+            f"[Coordinator] 第{chapter}章独立质量审查 "
+            f"{round_number}/{gate_cfg['review_rounds']}，章节预算{used}/{budget}"
+        )
+        if child_log is not None:
+            rc = run_cancellable_process(
+                reviewer_args,
+                child_log,
+                stop_event or threading.Event(),
+            )
+        else:
+            rc = run_streaming_process(
+                reviewer_args,
+                LOGS_DIR / "coordinator_outline_reviewer.log",
+            )
+        if rc != 0:
+            return rc, {}
+        review_files.append(review_file)
+        if round_number == 1:
+            first_review = _load_json_file(review_file)
+            first_score = first_review.get("overall_score")
+            first_design_ok = first_review.get("design_gate_passed") is True
+            if (
+                not isinstance(first_score, (int, float))
+                or float(first_score) < gate_cfg["screening_score"]
+                or not first_design_ok
+            ):
+                aggregate = aggregate_outline_reviews(
+                    chapter,
+                    [first_review],
+                    min_score=float(CONFIG.get("outline_reviewer", {}).get("min_score", 8.5)),
+                    required_rounds=gate_cfg["review_rounds"],
+                    required_votes=gate_cfg["required_votes"],
+                    max_score_spread=gate_cfg["max_score_spread"],
+                )
+                aggregate["screening"] = {
+                    "passed": False,
+                    "score": first_score,
+                    "min_score": gate_cfg["screening_score"],
+                    "design_gate_passed": first_design_ok,
+                }
+                atomic_write_json(aggregate_file, aggregate)
+                log(
+                    f"[Coordinator] 第{chapter}章初筛未过，"
+                    f"score={first_score} design={first_design_ok}，停止后续复审"
+                )
+                return 0, aggregate
+
+    aggregate = _aggregate_review_files(chapter, review_files, aggregate_file)
+    gate = aggregate.get("quality_gate", {})
+    log(
+        f"[Coordinator] 第{chapter}章三层质量门: "
+        f"median={aggregate.get('overall_score')} "
+        f"score_votes={gate.get('score_pass_votes')}/{gate.get('required_votes')} "
+        f"design={aggregate.get('design_gate_passed')} "
+        f"passed={gate.get('passed')}"
+    )
+    return 0, aggregate
 
 
 def _outline_race_config() -> dict:
@@ -1156,7 +1455,11 @@ def _publish_outline_candidate(chapter: int, candidate_file: Path, candidate_rev
     if review_data.get("chapter_number") != chapter:
         raise ValueError(f"候选审查章节号不匹配: expected={chapter}, actual={review_data.get('chapter_number')}")
     min_score = float(CONFIG.get("outline_reviewer", {}).get("min_score", 8.5))
-    _, status, score, ok = load_outline_review_status(candidate_review_file, min_score)
+    _, status, score, ok = load_outline_review_status(
+        candidate_review_file,
+        min_score,
+        require_quality_gate=_outline_quality_gate_config()["enabled"],
+    )
     if not ok:
         raise ValueError(f"候选审查未达标: status={status}, score={score}, min_score={min_score:g}")
     _drop_text_artifacts(chapter, reason="大纲候选赛马已发布新正式大纲")
@@ -1164,6 +1467,7 @@ def _publish_outline_candidate(chapter: int, candidate_file: Path, candidate_rev
     _safe_unlink(_outline_review_file(chapter))
     atomic_write_json(outline_chapter_path(NOVELS_DIR, chapter), outline_data)
     atomic_write_json(_outline_review_file(chapter), review_data)
+    build_ledgers(NOVELS_DIR)
     log(
         f"[Coordinator] 第{chapter}章采用候选大纲: {candidate_file.name}, "
         f"score={review_data.get('overall_score')} verdict={review_data.get('verdict')}"
@@ -1212,20 +1516,14 @@ def _run_outline_candidate(
             "review_file": str(candidate_review_file),
         }
 
-    reviewer_args = [
-        sys.executable,
-        str(resolve_script_path("outline_reviewer.py")),
-        "--project",
-        str(NOVELS_DIR),
-        "--chapter",
-        str(chapter),
-        "--outline-file",
-        str(candidate_file),
-        "--review-file",
-        str(candidate_review_file),
-    ]
-    log(f"[Coordinator] 第{chapter}章候选{candidate_no}开始审查")
-    rc = run_cancellable_process(reviewer_args, child_log, stop_event)
+    log(f"[Coordinator] 第{chapter}章候选{candidate_no}开始多轮审查")
+    rc, review_data = _run_outline_review_rounds(
+        chapter,
+        candidate_file,
+        candidate_review_file,
+        child_log=child_log,
+        stop_event=stop_event,
+    )
     if rc != 0:
         return {
             "chapter": chapter,
@@ -1237,9 +1535,12 @@ def _run_outline_candidate(
             "review_file": str(candidate_review_file),
         }
 
-    review_data = _load_json_file(candidate_review_file)
     min_score = float(CONFIG.get("outline_reviewer", {}).get("min_score", 8.5))
-    _, _, _, ok = load_outline_review_status(candidate_review_file, min_score)
+    _, _, _, ok = load_outline_review_status(
+        candidate_review_file,
+        min_score,
+        require_quality_gate=_outline_quality_gate_config()["enabled"],
+    )
     result = _candidate_feedback(review_data, chapter, candidate_no, round_no, attempt)
     result["passed"] = ok
     result["candidate_file"] = str(candidate_file)
@@ -1247,8 +1548,13 @@ def _run_outline_candidate(
     return result
 
 
-def _process_outline_gate_race(chapter: int, *, push_on_failure: bool = True) -> bool:
-    if outline_chapter_path(NOVELS_DIR, chapter).exists() and _outline_gate_passed(chapter):
+def _process_outline_gate_race(
+    chapter: int,
+    *,
+    push_on_failure: bool = True,
+    initial_feedback: Path | None = None,
+) -> bool:
+    if initial_feedback is None and outline_chapter_path(NOVELS_DIR, chapter).exists() and _outline_gate_passed(chapter):
         log(f"[Coordinator] 第{chapter}章大纲和大纲审已通过，跳过")
         return True
 
@@ -1258,7 +1564,7 @@ def _process_outline_gate_race(chapter: int, *, push_on_failure: bool = True) ->
     candidates = race_cfg["candidates"]
     max_workers = min(candidates, race_cfg["max_workers"])
     reviews: list[dict] = []
-    feedback_file: Path | None = None
+    feedback_file: Path | None = initial_feedback
 
     for round_no in range(1, max_rounds + 1):
         if reviews:
@@ -1348,8 +1654,12 @@ def _process_outline_gate_race(chapter: int, *, push_on_failure: bool = True) ->
     return False
 
 
+def _draft_min_score() -> float:
+    return float(CONFIG.get("reviewer", {}).get("min_score", 7.0))
+
+
 def _draft_gate_passed(chapter: int) -> bool:
-    min_score = float(CONFIG.get("reviewer", {}).get("min_score", 7.0))
+    min_score = _draft_min_score()
     _, _, _, ok = load_review_status(_review_file(chapter), min_score)
     return ok
 
@@ -1365,18 +1675,33 @@ def _promote_draft_to_final(chapter: int) -> bool:
     return True
 
 
-def process_outline_gate(chapter: int, *, push_on_failure: bool = True) -> bool:
+def process_outline_gate(
+    chapter: int,
+    *,
+    push_on_failure: bool = True,
+    initial_feedback: Path | None = None,
+) -> bool:
+    if is_chapter_locked(NOVELS_DIR, chapter):
+        if initial_feedback is None:
+            log(f"[Coordinator] 第{chapter}章所在25章批次已锁定，跳过重生成")
+            return _outline_gate_passed(chapter)
+        unlocked = unlock_chapters(NOVELS_DIR, [chapter])
+        log(f"[Coordinator] 应用修订反馈前解锁批次: {unlocked}")
     if _outline_race_config()["enabled"]:
-        return _process_outline_gate_race(chapter, push_on_failure=push_on_failure)
+        return _process_outline_gate_race(
+            chapter,
+            push_on_failure=push_on_failure,
+            initial_feedback=initial_feedback,
+        )
 
-    if outline_chapter_path(NOVELS_DIR, chapter).exists() and _outline_gate_passed(chapter):
+    if initial_feedback is None and outline_chapter_path(NOVELS_DIR, chapter).exists() and _outline_gate_passed(chapter):
         log(f"[Coordinator] 第{chapter}章大纲和大纲审已通过，跳过")
         return True
 
     max_rounds = int(CONFIG.get("coordinator", {}).get("outline_analysis_rounds", 3) or 3)
     attempts_per_round = int(CONFIG.get("coordinator", {}).get("outline_attempts_per_round", 3) or 3)
     reviews: list[dict] = []
-    feedback_file: Path | None = None
+    feedback_file: Path | None = initial_feedback
 
     for round_no in range(1, max_rounds + 1):
         if reviews:
@@ -1410,7 +1735,12 @@ def process_outline_gate(chapter: int, *, push_on_failure: bool = True) -> bool:
                 feedback_file = _write_gate_feedback(chapter, "outline", reviews, round_no)
                 log(f"[Coordinator] 第{chapter}章大纲生成失败，下一次重生成将使用反馈: {feedback_file}")
                 continue
-            if run_script("outline_reviewer.py", "--chapter", str(chapter)) != 0:
+            rc, review_data = _run_outline_review_rounds(
+                chapter,
+                outline_chapter_path(NOVELS_DIR, chapter),
+                _outline_review_file(chapter),
+            )
+            if rc != 0:
                 reviews.append({
                     "chapter": chapter,
                     "status": "outline_reviewer_failed",
@@ -1421,9 +1751,9 @@ def process_outline_gate(chapter: int, *, push_on_failure: bool = True) -> bool:
                 log(f"[Coordinator] 第{chapter}章大纲审查失败，下一次重生成将使用反馈: {feedback_file}")
                 continue
 
-            review_data = _load_json_file(_outline_review_file(chapter))
             reviews.append(_review_feedback(review_data, chapter, "outline", round_no, attempt))
             if _outline_gate_passed(chapter):
+                build_ledgers(NOVELS_DIR)
                 log(f"[Coordinator] 第{chapter}章大纲初审通过")
                 return True
             feedback_file = _write_gate_feedback(chapter, "outline", reviews, round_no)
@@ -1435,32 +1765,262 @@ def process_outline_gate(chapter: int, *, push_on_failure: bool = True) -> bool:
     return False
 
 
+def _run_polish_only(chapter: int, candidate_id: int, temperature: float) -> bool:
+    """仅运行 Polisher 生成候选精修稿，不评分。"""
+    rc = run_script("polisher.py", "--chapter", str(chapter), "--candidate-id", str(candidate_id), "--temperature", str(temperature))
+    if rc != 0:
+        log(f"[Coordinator] 第{chapter}章 Polisher 候选{candidate_id} 生成失败")
+        return False
+    return True
+
+
+def _review_candidate(chapter: int, candidate_id: int) -> tuple[float, dict]:
+    """对指定候选稿运行 reviewer 并返回评分和报告。"""
+    main_draft = _draft_file(chapter)
+    cand_draft = _candidate_draft_file(chapter, candidate_id)
+    cand_review = _candidate_review_file(chapter, candidate_id)
+    main_review = _review_file(chapter)
+
+    if not cand_draft.exists():
+        return 0.0, {}
+
+    # 将候选稿复制到主稿位置供 reviewer 评分
+    main_draft.write_text(cand_draft.read_text(encoding="utf-8"), encoding="utf-8")
+    _safe_unlink(main_review)
+    rc = run_script("reviewer.py", "--chapter", str(chapter))
+    if rc != 0 or not main_review.exists():
+        log(f"[Coordinator] 第{chapter}章 Polisher 候选{candidate_id} 评分失败")
+        return 0.0, {}
+
+    review_data = _load_json_file(main_review)
+    # 将评分报告保存为候选报告
+    cand_review.write_text(main_review.read_text(encoding="utf-8"), encoding="utf-8")
+    score = _score_from_review(review_data)
+    log(f"[Coordinator] 第{chapter}章 Polisher 候选{candidate_id} 评分: {score}")
+    return score, review_data
+
+
+def _try_polish_race(chapter: int, round_no: int, attempt: int, reviews: list[dict]) -> bool:
+    """Polisher 赛马模式：并行生成多个精修候选，再逐个评分，取最高分继续。"""
+    race_cfg = CONFIG.get("polisher", {}).get("race", {})
+    candidates = int(race_cfg.get("candidates", 3) or 3)
+    max_workers = int(race_cfg.get("max_workers", 3) or 3)
+    stop_on_first_pass = bool(race_cfg.get("stop_on_first_pass", True))
+    base_temp = float(CONFIG.get("polisher", {}).get("temperature", 0.2))
+    # 为不同候选微调 temperature，增加多样性
+    temps = [round(max(0.0, min(1.0, base_temp + (i - candidates // 2) * 0.05)), 2) for i in range(1, candidates + 1)]
+
+    current_review = _load_json_file(_review_file(chapter))
+    current_score = _score_from_review(current_review)
+
+    # 安全网：如果当前已是历史最佳，先备份
+    best_score = _load_best_score(chapter)
+    if current_score >= best_score:
+        _save_best_draft(chapter, current_score, _draft_file(chapter))
+        best_score = current_score
+
+    main_draft = _draft_file(chapter)
+    main_review = _review_file(chapter)
+
+    log(f"[Coordinator] 第{chapter}章评分 {current_score}，触发 Polisher 赛马模式（{candidates} 候选并行精修）")
+
+    # 阶段1：并行生成所有候选精修稿
+    polished_ids: list[int] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_run_polish_only, chapter, i, temps[i - 1]): i
+            for i in range(1, candidates + 1)
+        }
+        for future in futures:
+            i = futures[future]
+            try:
+                ok = future.result()
+            except Exception as e:
+                log(f"[Coordinator] 第{chapter}章 Polisher 候选{i} 任务异常: {e}")
+                ok = False
+            if ok:
+                polished_ids.append(i)
+
+    if not polished_ids:
+        log(f"[Coordinator] 第{chapter}章 Polisher 赛马模式无候选生成成功，回退到最佳草稿")
+        _restore_best_draft(chapter)
+        return False
+
+    # 阶段2：逐个评分（避免 reviewer 共享文件冲突）
+    results: list[tuple[int, float, dict]] = []
+    for i in polished_ids:
+        score, review_data = _review_candidate(chapter, i)
+        if not review_data:
+            continue
+        results.append((i, score, review_data))
+        reviews.append(_review_feedback(review_data, chapter, "draft", round_no, attempt, label=f"polish_race_{i}"))
+        if stop_on_first_pass and score >= _draft_min_score():
+            break
+
+    if not results:
+        log(f"[Coordinator] 第{chapter}章 Polisher 赛马模式无可用评分，回退到最佳草稿")
+        _restore_best_draft(chapter)
+        return False
+
+    # 选择最高分的候选
+    best_cand_id, best_cand_score, best_cand_review = max(results, key=lambda x: x[1])
+    cand_draft = _candidate_draft_file(chapter, best_cand_id)
+    cand_review = _candidate_review_file(chapter, best_cand_id)
+
+    # 恢复主稿/主评分为最佳候选
+    if cand_draft.exists():
+        main_draft.write_text(cand_draft.read_text(encoding="utf-8"), encoding="utf-8")
+    if cand_review.exists():
+        main_review.write_text(cand_review.read_text(encoding="utf-8"), encoding="utf-8")
+
+    log(f"[Coordinator] 第{chapter}章 Polisher 赛马模式最优候选: {best_cand_id}，评分 {best_cand_score}")
+
+    # 刷新最佳草稿
+    if best_cand_score > best_score:
+        _save_best_draft(chapter, best_cand_score, main_draft)
+        best_score = best_cand_score
+
+    # 清理候选文件
+    for i in range(1, candidates + 1):
+        _safe_unlink(_candidate_draft_file(chapter, i))
+        _safe_unlink(_candidate_review_file(chapter, i))
+
+    if _draft_gate_passed(chapter):
+        return True
+
+    # 如果最优候选没有超过历史最佳，回退到历史最佳草稿，保留最好的底稿
+    if best_cand_score <= best_score:
+        log(f"[Coordinator] 第{chapter}章 Polisher 赛马模式最优候选 {best_cand_score} 分未超过历史最佳 {best_score} 分，回退到最佳草稿")
+        restored_score = _restore_best_draft(chapter)
+        if restored_score >= _draft_min_score():
+            return _promote_draft_to_final(chapter)
+        return False
+
+    # 有提升但未达标，继续下一轮（由外层循环再次触发）
+    return False
+
+
+def _try_polish_pass(chapter: int, round_no: int, attempt: int, reviews: list[dict]) -> bool:
+    """尝试 Polisher 精修直到通过、分数不再提升或达到最大尝试次数。
+    新增安全网：Polisher 改坏稿件时自动恢复到历史最佳草稿。
+    新增赛马模式：可并行生成多个精修候选，取最高分。"""
+    enable_polisher = bool(CONFIG.get("polisher", {}).get("enabled", True))
+    if not enable_polisher:
+        return False
+    polish_threshold = float(CONFIG.get("polisher", {}).get("threshold", 8.0))
+    current_review = _load_json_file(_review_file(chapter))
+    current_score = _score_from_review(current_review)
+    if current_score < polish_threshold:
+        return False
+
+    race_cfg = CONFIG.get("polisher", {}).get("race", {})
+    if race_cfg.get("enabled", False):
+        return _try_polish_race(chapter, round_no, attempt, reviews)
+
+    max_polish_attempts = int(CONFIG.get("polisher", {}).get("max_attempts", 3) or 3)
+
+    # 安全网：如果当前已是历史最佳，先备份
+    best_score = _load_best_score(chapter)
+    if current_score >= best_score:
+        _save_best_draft(chapter, current_score, _draft_file(chapter))
+        best_score = current_score
+
+    last_score = current_score
+    for polish_attempt in range(1, max_polish_attempts + 1):
+        log(f"[Coordinator] 第{chapter}章评分 {last_score}，触发 Polisher 精修（第{polish_attempt}次）")
+        if run_script("polisher.py", "--chapter", str(chapter)) != 0:
+            # Polisher 执行失败，尝试恢复最佳草稿
+            restored_score = _restore_best_draft(chapter)
+            if restored_score >= _draft_min_score():
+                return _promote_draft_to_final(chapter)
+            return False
+        _safe_unlink(_review_file(chapter))
+        if run_script("reviewer.py", "--chapter", str(chapter)) != 0:
+            _restore_best_draft(chapter)
+            return False
+        polish_review = _load_json_file(_review_file(chapter))
+        reviews.append(_review_feedback(polish_review, chapter, "draft", round_no, attempt, label=f"polish_{polish_attempt}"))
+        if _draft_gate_passed(chapter):
+            return True
+        new_score = _score_from_review(polish_review)
+        if new_score > last_score and new_score > best_score:
+            # 刷新最佳草稿
+            _save_best_draft(chapter, new_score, _draft_file(chapter))
+            best_score = new_score
+        if new_score <= last_score:
+            log(f"[Coordinator] 第{chapter}章 Polisher 后分数未提升（{last_score} -> {new_score}），回退到最佳草稿 {best_score} 分")
+            restored_score = _restore_best_draft(chapter)
+            # 回退后如果已达标，直接通过
+            if restored_score >= _draft_min_score():
+                return _promote_draft_to_final(chapter)
+            return False
+        last_score = new_score
+    return False
+
+
 def process_draft_gate(chapter: int) -> bool:
     if _draft_file(chapter).exists() and _draft_gate_passed(chapter):
         return _promote_draft_to_final(chapter)
 
     max_rounds = int(CONFIG.get("coordinator", {}).get("draft_analysis_rounds", 3) or 3)
     attempts_per_round = int(CONFIG.get("coordinator", {}).get("draft_attempts_per_round", 3) or 3)
+    enable_polisher = bool(CONFIG.get("polisher", {}).get("enabled", True))
+    polish_threshold = float(CONFIG.get("polisher", {}).get("threshold", 8.0))
     reviews: list[dict] = []
+    feedback_file: Path | None = None
 
     for round_no in range(1, max_rounds + 1):
         if reviews:
             feedback_file = _write_gate_feedback(chapter, "draft", reviews, round_no)
             log(f"[Coordinator] 第{chapter}章初稿进入第{round_no}轮原因调整: {feedback_file}")
 
+        # 优先精修：如果已有 draft 和 review，且评分达到精修阈值，直接调用 Polisher，不浪费底稿
+        if enable_polisher and _draft_file(chapter).exists() and _review_file(chapter).exists():
+            existing_review = _load_json_file(_review_file(chapter))
+            existing_score = _score_from_review(existing_review)
+            if polish_threshold <= existing_score < _draft_min_score():
+                log(f"[Coordinator] 第{chapter}章已有 {existing_score} 分底稿，跳过 writer 重写，直接 Polisher 精修")
+                if _try_polish_pass(chapter, round_no, 1, reviews):
+                    return _promote_draft_to_final(chapter)
+                # Polisher 未能通过，继续 writer 重写
+
         for attempt in range(1, attempts_per_round + 1):
             log(f"[Coordinator] 第{chapter}章初稿生成/审查 {round_no}.{attempt}")
-            if run_script("writer.py", "--chapter", str(chapter)) != 0:
+            writer_args = ["--chapter", str(chapter)]
+            if feedback_file:
+                writer_args += ["--review-feedback", str(feedback_file)]
+            if run_script("writer.py", *writer_args) != 0:
                 reviews.append({"chapter": chapter, "status": "writer_failed"})
+                feedback_file = _write_gate_feedback(chapter, "draft", reviews, round_no)
                 continue
             _safe_unlink(_review_file(chapter))
             if run_script("reviewer.py", "--chapter", str(chapter)) != 0:
                 reviews.append({"chapter": chapter, "status": "reviewer_failed"})
                 continue
             review_data = _load_json_file(_review_file(chapter))
+            current_score = _score_from_review(review_data)
             reviews.append(_review_feedback(review_data, chapter, "draft", round_no, attempt))
+            feedback_file = _write_gate_feedback(chapter, "draft", reviews, round_no)
+
+            # 安全网：刷新历史最佳草稿
+            best_score = _load_best_score(chapter)
+            if current_score >= best_score:
+                _save_best_draft(chapter, current_score, _draft_file(chapter))
+
             if _draft_gate_passed(chapter):
                 return _promote_draft_to_final(chapter)
+
+            # 如果评分达到精修阈值但未直接通过，尝试 Polisher 定向修改
+            if enable_polisher and current_score >= polish_threshold:
+                if _try_polish_pass(chapter, round_no, attempt, reviews):
+                    return _promote_draft_to_final(chapter)
+
+    # 所有轮次结束仍未通过：如果历史最佳草稿已达标，回退并通过
+    best_score = _load_best_score(chapter)
+    if best_score >= _draft_min_score():
+        log(f"[Coordinator] 第{chapter}章最终回退到历史最佳草稿 {best_score} 分并通过")
+        _restore_best_draft(chapter)
+        return _promote_draft_to_final(chapter)
 
     report = _write_failure_report(chapter, "draft", reviews)
     _push_gate_failure(chapter, "初稿审查", report)
@@ -1591,6 +2151,116 @@ def run_serial_quality_workflow(start: int, end: int, outline_lookahead: int | N
     return True
 
 
+def run_outline_book_review(force: bool = False) -> bool:
+    script = MAINTENANCE_SCRIPTS["outline_book_reviewer.py"]
+    cmd = [sys.executable, str(script), "--project", str(NOVELS_DIR)]
+    if force:
+        cmd.append("--force")
+    child_log = LOGS_DIR / "outline_book_reviewer_child.log"
+    rc = run_streaming_process(cmd, child_log)
+    report = _load_json_file(
+        report_path(NOVELS_DIR, "outline_book_review") / "final_outline_review.json"
+    )
+    if rc != 0 or not report.get("gate_passed"):
+        log(
+            f"[Coordinator] 整本大纲总审未通过: rc={rc}, "
+            f"score={report.get('score')}, verdict={report.get('verdict')}"
+        )
+        return False
+    log(f"[Coordinator] 整本大纲总审通过: score={report.get('score')}")
+    return True
+
+
+def _outline_book_review_report() -> dict:
+    return _load_json_file(
+        report_path(NOVELS_DIR, "outline_book_review") / "final_outline_review.json"
+    )
+
+
+def _global_outline_feedback(chapter: int, issues: list[dict], round_no: int) -> Path:
+    relevant = []
+    for issue in issues:
+        chapters = issue.get("chapters", [])
+        if isinstance(chapters, list) and chapter in chapters:
+            relevant.append(issue)
+    reasons = [str(item.get("detail", "")).strip() for item in relevant if item.get("detail")]
+    suggestions = [str(item.get("suggestion", "")).strip() for item in relevant if item.get("suggestion")]
+    payload = {
+        str(chapter): {
+            "chapter": chapter,
+            "gate": "outline_book_review",
+            "analysis_round": round_no,
+            "failure_analysis": {
+                "attempts": len(relevant),
+                "likely_reasons": reasons[:8],
+                "adjustments": suggestions[:8] or reasons[:8],
+            },
+            "reviews": [{
+                "overall_score": None,
+                "verdict": "需重写",
+                "weaknesses": reasons[:6],
+                "suggestions": suggestions[:6],
+                "continuity_issues": reasons[:3],
+                "summary": "整本大纲总审要求修复跨章结构问题",
+            }],
+        }
+    }
+    path = LOGS_DIR / f"outline_book_feedback_ch{chapter:04d}_round{round_no}.json"
+    atomic_write_json(path, payload)
+    return path
+
+
+def repair_outline_book_review(round_no: int) -> bool:
+    report = _outline_book_review_report()
+    issues = report.get("issues", []) if isinstance(report.get("issues"), list) else []
+    chapters = []
+    for issue in issues:
+        values = issue.get("chapters", []) if isinstance(issue, dict) else []
+        if isinstance(values, list):
+            chapters.extend(value for value in values if isinstance(value, int))
+    total = int(CONFIG["total_chapters"])
+    limit = int(CONFIG.get("outline_book_reviewer", {}).get("max_repair_chapters", 80) or 80)
+    targets = sorted({chapter for chapter in chapters if 1 <= chapter <= total})[:max(1, limit)]
+    if not targets:
+        log("[Coordinator] 整本大纲总审未提供可定位章节，无法自动修复")
+        return False
+    unlocked = unlock_chapters(NOVELS_DIR, targets)
+    if unlocked:
+        log(f"[Coordinator] 整本审查修复前已解锁批次: {unlocked}")
+
+    log(f"[Coordinator] 整本大纲总审第{round_no}轮修复，重生成章节: {targets}")
+    for chapter in targets:
+        feedback = _global_outline_feedback(chapter, issues, round_no)
+        _drop_outline_artifacts(chapter)
+        if not process_outline_gate(
+            chapter,
+            push_on_failure=False,
+            initial_feedback=feedback,
+        ):
+            log(f"[Coordinator] 第{chapter}章应用整本总审反馈后仍未通过逐章大纲门")
+            return False
+    return True
+
+
+def prepare_all_outlines_and_book_review(end: int, force_review: bool = False) -> bool:
+    log(f"[Coordinator] 全量大纲优先模式：先完成第1-{end}章逐章大纲质量门")
+    for chapter in range(1, end + 1):
+        if not process_outline_gate(chapter):
+            return False
+    if run_outline_book_review(force=force_review):
+        return True
+
+    max_rounds = int(
+        CONFIG.get("outline_book_reviewer", {}).get("max_repair_rounds", 2) or 2
+    )
+    for round_no in range(1, max_rounds + 1):
+        if not repair_outline_book_review(round_no):
+            return False
+        if run_outline_book_review(force=True):
+            return True
+    return False
+
+
 def generate_summary_report():
     log("=" * 60)
     log("[Coordinator] 生成总结报告")
@@ -1634,6 +2304,16 @@ def main():
     parser.add_argument("--outline-lookahead", type=int, default=0,
                         help="写正文前预先通过审查的大纲章数，默认读取 coordinator.outline_lookahead_chapters")
     parser.add_argument("--skip-planner", action="store_true", help="跳过Planner阶段")
+    parser.add_argument(
+        "--outline-first",
+        action="store_true",
+        help="先完成全书逐章大纲及整本大纲总审，通过后再生成正文",
+    )
+    parser.add_argument(
+        "--force-outline-book-review",
+        action="store_true",
+        help="忽略整本大纲审查缓存并重新审查",
+    )
     args = parser.parse_args()
 
     try:
@@ -1697,6 +2377,18 @@ def main():
 
     outline_lookahead = args.outline_lookahead or int(CONFIG["coordinator"].get("outline_lookahead_chapters", 10) or 10)
     outline_lookahead = max(1, outline_lookahead)
+    outline_book_cfg = CONFIG.get("outline_book_reviewer", {})
+    outline_first = bool(
+        args.outline_first
+        or outline_book_cfg.get("required_before_draft", False)
+    )
+    if outline_first:
+        if not prepare_all_outlines_and_book_review(
+            end_chapter,
+            force_review=args.force_outline_book_review,
+        ):
+            log("[Coordinator] 全量大纲或整本大纲总审未通过，正文阶段未启动")
+            return
     log(f"[Coordinator] 单章质量门范围: 第{args.start}-{end_chapter}章；大纲提前窗口: {outline_lookahead}章")
     ok = run_serial_quality_workflow(args.start, end_chapter, outline_lookahead)
     if not ok:

@@ -55,24 +55,24 @@ def build_progress_message(
     active_writers: int = 0,
     avg_score: float | None = None,
     status_note: str = "",
+    eta_text: str = "",
 ) -> str:
     """构建统一的定期进度报告文本。"""
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    outline_display = outline_approved if outline_approved is not None else outline_reviewed if outline_reviewed is not None else outline
     lines = [
         f"📖 《{title}》生成进度 ({ts})",
         _SEPARATOR,
-        f"📋 大纲: {outline}/{total_chapters} 章",
+        f"📋 大纲: {outline_display}/{total_chapters} 章",
     ]
-    if outline_reviewed is not None:
-        lines.append(f"📋 大纲审: {outline_reviewed}/{total_chapters} 章")
-    if outline_approved is not None:
-        lines.append(f"✅ 大纲过审: {outline_approved}/{total_chapters} 章")
     lines.extend([
         f"✍ 初稿: {draft}/{total_chapters} 章",
         f"📝 字数: {total_words:,}",
         f"🔍 审查: {reviewed}/{total_chapters} 章",
         f"📤 终稿: {final}/{total_chapters} 章",
     ])
+    if eta_text:
+        lines.append(f"⏱ 预计剩余: {eta_text}")
     if avg_score is not None:
         lines.append(f"⭐ 平均评分: {avg_score:.2f}")
     if status_note:
@@ -98,6 +98,7 @@ def push_progress(
     active_writers: int = 0,
     avg_score: float | None = None,
     status_note: str = "",
+    eta_text: str = "",
 ) -> bool:
     """推送定期进度报告。"""
     msg = build_progress_message(
@@ -113,6 +114,7 @@ def push_progress(
         active_writers=active_writers,
         avg_score=avg_score,
         status_note=status_note,
+        eta_text=eta_text,
     )
     return _send(_get_webhook(config), msg)
 

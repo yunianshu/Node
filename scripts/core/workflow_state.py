@@ -21,7 +21,7 @@ MIN_PARAGRAPHS = 20
 MAX_DUPLICATE_PARAGRAPH_RATIO = 0.25
 MAX_SIMILAR_PARAGRAPH_RATIO = 0.20
 SIMILAR_PARAGRAPH_THRESHOLD = 0.88
-VALID_ENDINGS = tuple('\u3002\uff01\uff1f.!?\u300d\u201d\u2019\uff09)"\'`*')
+VALID_ENDINGS = tuple('。！？.!?」”’）】』》\"\'*`')
 FORBIDDEN_PHRASES = (
     "无法生成",
     "作为AI",
@@ -66,10 +66,6 @@ def final_dir(base_dir: Path) -> Path:
 
 def outline_dir(base_dir: Path) -> Path:
     return chapters_dir(base_dir) / "outline"
-
-
-def outline_index_path(base_dir: Path) -> Path:
-    return outline_dir(base_dir) / "index.json"
 
 
 def review_dir(base_dir: Path) -> Path:
@@ -364,7 +360,11 @@ def load_review_status(path: Path, min_score: float = 7.0) -> tuple[bool, str, f
     return True, status or "unknown", score_value, ok
 
 
-def load_outline_review_status(path: Path, min_score: float = 8.5) -> tuple[bool, str, float | None, bool]:
+def load_outline_review_status(
+    path: Path,
+    min_score: float = 8.5,
+    require_quality_gate: bool = False,
+) -> tuple[bool, str, float | None, bool]:
     if not path.exists():
         return False, "missing", None, False
     try:
@@ -376,7 +376,21 @@ def load_outline_review_status(path: Path, min_score: float = 8.5) -> tuple[bool
     score = data.get("overall_score")
     score_value = score if isinstance(score, (int, float)) else None
     verdict = data.get("verdict", "")
-    ok = status == "completed" and verdict not in {"需重写", "需修改"} and (score_value is None or score_value >= min_score)
+    quality_gate_ok = True
+    if require_quality_gate:
+        quality_gate = data.get("quality_gate")
+        quality_gate_ok = (
+            isinstance(quality_gate, dict)
+            and quality_gate.get("passed") is True
+            and data.get("design_gate_passed") is True
+        )
+    ok = (
+        status == "completed"
+        and verdict not in {"需重写", "需修改"}
+        and score_value is not None
+        and score_value >= min_score
+        and quality_gate_ok
+    )
     return True, status or "unknown", score_value, ok
 
 
@@ -408,7 +422,15 @@ def scan_one_chapter(base_dir: Path, chapter: int, rules: dict | None = None) ->
     draft_exists, draft_words, draft_grade, draft_ok, draft_issues = load_text_quality(draft_file, rules)
     final_exists, final_words, final_grade, final_length_ok, final_issues = load_text_quality(final_file, rules)
     review_exists, review_status, review_score, review_ok = load_review_status(review_file, review_min_score)
-    outline_review_exists, outline_review_status, outline_review_score, outline_review_ok = load_outline_review_status(outline_review_file, outline_min_score)
+    gate_cfg = config.get("outline_quality_gate", {})
+    require_outline_quality_gate = bool(
+        isinstance(gate_cfg, dict) and gate_cfg.get("enabled", False)
+    )
+    outline_review_exists, outline_review_status, outline_review_score, outline_review_ok = load_outline_review_status(
+        outline_review_file,
+        outline_min_score,
+        require_quality_gate=require_outline_quality_gate,
+    )
     final_ok = final_exists and final_length_ok and review_ok
 
     failed_reason = ""

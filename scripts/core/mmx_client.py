@@ -6,7 +6,9 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import time
+import uuid
 from pathlib import Path
 
 
@@ -141,7 +143,10 @@ def call_mmx(
         tmp_dir = Path(log_dir) if log_dir else Path(tempfile.gettempdir())
         tmp_dir.mkdir(parents=True, exist_ok=True)
         import time as _t
-        tmp_path = tmp_dir / f"mmx_msgs_{_t.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}.json"
+        tmp_path = tmp_dir / (
+            f"mmx_msgs_{_t.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}_"
+            f"{threading.get_ident()}_{uuid.uuid4().hex}.json"
+        )
         try:
             tmp_path.write_text(json.dumps(messages, ensure_ascii=False), encoding="utf-8")
             cmd = [

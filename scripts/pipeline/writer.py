@@ -15,6 +15,7 @@ if str(TOOLS_ROOT) not in sys.path:
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -22,27 +23,26 @@ from typing import Any
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
 from core.novel_config import configure_stdio, load_config, load_origin_materials, resolve_project_dir
-from core.workflow_state import load_outline_chapter, outline_index_path, review_dir
-from core.workflow_state import is_valid_chapter_text, read_text_length
+from core.workflow_state import load_outline_chapter, review_dir
+from core.workflow_state import FORBIDDEN_PHRASES, VALID_ENDINGS, is_valid_chapter_text, read_text_length
 
 configure_stdio()
 
 NOVELS_DIR = None
 CHAPTERS_DIR = None
 WORLD_FILE = None
-OUTLINE_FILE = None
 CHARACTERS_FILE = None
 LOG_FILE = None
 CONFIG = None
 ORIGIN_MATERIALS = ""
+CANDIDATE_MODE = False
 
 
 def init_project(project_dir: str | Path) -> None:
-    global NOVELS_DIR, CHAPTERS_DIR, WORLD_FILE, OUTLINE_FILE, CHARACTERS_FILE, LOG_FILE, CONFIG, ORIGIN_MATERIALS
+    global NOVELS_DIR, CHAPTERS_DIR, WORLD_FILE, CHARACTERS_FILE, LOG_FILE, CONFIG, ORIGIN_MATERIALS
     NOVELS_DIR = Path(project_dir).resolve()
     CHAPTERS_DIR = NOVELS_DIR / "chapters" / "draft"
     WORLD_FILE = NOVELS_DIR / "world.json"
-    OUTLINE_FILE = outline_index_path(NOVELS_DIR)
     CHARACTERS_FILE = NOVELS_DIR / "characters.json"
     LOG_FILE = NOVELS_DIR / "logs" / "writer.log"
     CONFIG = load_config(NOVELS_DIR)
@@ -60,6 +60,7 @@ def log(msg: str):
 
 def call_mmx(system_prompt: str, user_prompt: str, max_tokens: int = 8192, temperature: float = 0.7) -> str:
     try:
+        writer_cfg = CONFIG.get("writer", {})
         return call_mmx_client(
             system_prompt,
             user_prompt,
@@ -67,10 +68,11 @@ def call_mmx(system_prompt: str, user_prompt: str, max_tokens: int = 8192, tempe
             mmx_path=CONFIG["mmx_path"],
             max_tokens=max_tokens,
             temperature=temperature,
-            retries=CONFIG["writer"]["max_retries"],
-            retry_delay=CONFIG["writer"]["retry_delay"],
+            retries=int(writer_cfg.get("candidate_retries", 0) if CANDIDATE_MODE else writer_cfg.get("max_retries", 3)),
+            retry_delay=float(writer_cfg.get("retry_delay", 5.0)),
             log_dir=NOVELS_DIR / "logs" / "raw_responses",
             raw_name="writer",
+            timeout=int(writer_cfg.get("candidate_timeout_seconds", 240) if CANDIDATE_MODE else writer_cfg.get("timeout_seconds", 300)),
             qps=CONFIG["api_qps"],
             rate_state_dir=NOVELS_DIR / "logs" / "rate_limit",
         )
@@ -140,28 +142,199 @@ def _writer_quality_contract() -> str:
     quality = CONFIG.get("quality", {})
     min_words = int(quality.get("min_chapter_words", 5000))
     max_words = int(quality.get("max_chapter_words", 12000))
-    return f"""## 正文质量契约（必须满足）
-- 正文审查目标分必须达到 {min_score:g} 分及以上；低于该分数视为不合格，需要重写。
+    return f"""## 【9分神作契约】正文质量红线（必须满足，否则视为不合格）
+- 审查目标分必须达到 {min_score:g} 分及以上；低于该分数视为不合格，必须重写。
 - 字数必须达到配置要求，建议不少于 {min_words} 字，避免超过 {max_words} 字。
 - 必须严格执行本章大纲的核心事件、人物、地点、危机和章末钩子，不得擅自改主线。
-- 开头必须自然承接上一章结尾的人物状态、地点、时间和未解决危机。
-- 结尾必须为下一章留下行动目标、危机升级、信息反转或悬念钩子。
-- 每 800-1200 字必须有有效推进：新信息、冲突升级、行动结果、人物关系变化至少一项。
+- 开头必须自然承接上一章结尾的人物状态、地点、时间和未解决危机，禁止生硬跳转。
+
+### 【悬念密度·强制要求】
+- 每章必须包含至少 3 个"让人无法停止阅读"的关键时刻（tension points）。
+- 每 800-1200 字必须有一次有效推进：新信息曝光、冲突升级、意外转折、人物关系质变至少一项。
+- 禁止连续超过 1500 字没有任何情绪转折或悬念推进的"平铺直叙"。
+
+### 【章末钩子·强制要求】
+- 每章结尾必须是以下三种强力钩子之一，且必须在最后 200 字内落地：
+  1. 危机升级钩子：主角或核心人物突然陷入更大危险，生存/目标受到直接威胁。
+  2. 信息反转钩子：抛出颠覆前文认知的关键信息，让读者产生"原来如此"或"竟然是这样"的震惊。
+  3. 情感爆点钩子：人物关系发生剧烈撕裂或质变，让读者对角色命运产生强烈牵挂。
+- 禁止以"平静收尾、总结现状、铺垫过渡"作为章末结尾。每一章结束都必须让读者产生"我必须立刻读下一章"的焦虑感。
+
+### 【反套路·强制要求】
+- 禁止套路化战斗描写：禁止"主角遇敌→分析弱点→能力爆发→战胜敌人"的标准升级流模板。
+- 禁止套路化解谜描写：禁止"发现问题→查阅资料→恍然大悟→轻松解决"的流水账推演。
+- 禁止用技术细节、设定解释、数据参数替代人物情感和剧情张力。技术元素必须服务于"人"的困境，不能成为叙事主体。
+- 禁止配角沦为解说员或工具人。每个有台词的配角必须有自己的欲望、恐惧和秘密。
+
+### 【情感冲击·强制要求】
+- 心理描写必须展现"真实的恐惧、孤独、愤怒或渴望"，禁止空泛的IDE式颅内注释或代码化思维流水账。
+- 每章至少有一个"刺点"——一个让读者心头一紧的细节：一个反常的动作、一句没说出口的话、一个突然沉默的瞬间。
+- 冲突必须触及角色的核心恐惧或核心欲望，不能停留在表层利害计算。
+
+### 【信息新鲜度·强制要求】
+- 每章必须给读者带来至少一个"此前从未出现过的新元素"：新人物、新地点、新规则、新真相、新威胁、新情感关系。
+- 禁止整章都在重复已知信息或进行无新意的铺垫。
+
+### 【基础禁令】
 - 不得用设定解释替代剧情现场；世界观信息必须通过行动、对话、发现或冲突呈现。
-- 人物动机和说话方式必须符合既有设定，不能OOC，配角不能只当背景板。
+- 人物动机和说话方式必须符合既有设定，不能OOC。
 - 爽点必须来自主角判断、能力、资源或协作的实际发挥，不能靠巧合硬赢。
 - 不得水文、重复段落、空泛心理独白、元叙述或输出“本章完”等非正文信息。"""
 
 
-def generate_chapter(chapter_number: int, retry: int = 0) -> str:
-    chapter_file = CHAPTERS_DIR / f"chapter_{chapter_number:04d}.txt"
+def _load_9star_examples(chapter_number: int, min_score: float = 9.0, max_examples: int = 2) -> str:
+    """加载此前评分 >= min_score 的章节作为9分范本参考。"""
+    rd = review_dir(NOVELS_DIR)
+    if not rd.exists():
+        return ""
+    examples = []
+    for f in sorted(rd.glob("chapter_*_review.json")):
+        try:
+            data = json.loads(f.read_text("utf-8"))
+            score = float(data.get("overall_score", 0))
+        except Exception:
+            continue
+        if score < min_score:
+            continue
+        m = re.search(r"chapter_(\d+)_review", f.name)
+        if not m:
+            continue
+        ex_num = int(m.group(1))
+        if ex_num >= chapter_number:
+            continue
+        final_file = NOVELS_DIR / "chapters" / "final" / f"chapter_{ex_num:04d}.txt"
+        draft_file = NOVELS_DIR / "chapters" / "draft" / f"chapter_{ex_num:04d}.txt"
+        src = final_file if final_file.exists() else draft_file
+        if not src.exists():
+            continue
+        text = src.read_text("utf-8")
+        head = text[:1200]
+        tail = text[-600:] if len(text) > 1800 else ""
+        snippet = head + ("\n...\n" if tail else "") + tail
+        examples.append((ex_num, score, snippet))
+        if len(examples) >= max_examples:
+            break
+    if not examples:
+        return ""
+    parts = ["## 9分神作范本参考（仅学习其节奏、悬念与情感写法，不得抄袭剧情）\n"]
+    for num, score, snippet in examples:
+        parts.append(f"### 第{num}章（评分 {score} 分）节选\n{snippet}\n")
+    return "\n".join(parts)
 
-    review_file = review_dir(NOVELS_DIR) / f"chapter_{chapter_number:04d}_review.json"
+
+def _load_feedback_as_review(feedback_file: Path, chapter_number: int) -> dict:
+    try:
+        payload = load_json(feedback_file)
+    except Exception:
+        return {}
+    item = payload.get(str(chapter_number), payload) if isinstance(payload, dict) else {}
+    if not isinstance(item, dict):
+        return {}
+    reviews = item.get("reviews", [])
+    analysis = item.get("failure_analysis", {})
+    latest = reviews[-1] if isinstance(reviews, list) and reviews else {}
+    if not isinstance(latest, dict):
+        latest = {}
+    if not isinstance(analysis, dict):
+        analysis = {}
+    return {
+        "status": "completed",
+        "verdict": "需重写",
+        "overall_score": analysis.get("best_score", latest.get("overall_score", 0)),
+        "weaknesses": analysis.get("likely_reasons", latest.get("weaknesses", [])),
+        "suggestions": analysis.get("adjustments", latest.get("suggestions", [])),
+        "continuity_issues": latest.get("continuity_issues", []),
+        "summary": latest.get("summary", ""),
+    }
+
+
+def _auto_compress(content: str, chapter_number: int, max_words: int, target_min: int, chapter_outline: dict) -> str:
+    """如果章节超过 max_words，自动调用压缩 agent 精简内容。"""
+    word_count = len(content)
+    if word_count <= max_words:
+        return content
+
+    key_events = chapter_outline.get("key_events", [])
+    if isinstance(key_events, str):
+        key_events = [key_events]
+    key_events_text = "\n".join(f"{i+1}. {str(ev)}" for i, ev in enumerate(key_events) if str(ev).strip())
+    chapter_hook = str(chapter_outline.get("chapter_hook", "")).strip()
+
+    compress_system = """你是一位资深小说编辑，专门负责将超过字数限制的章节压缩到合格范围。
+你的任务是删减冗余，保留精华。禁止改变核心剧情、禁止删除关键事件、禁止削弱章末钩子。
+你尤其擅长：删除重复描写、压缩过长的测试/列举/解释段落、把学术论文式对话改写成紧张的对峙。"""
+
+    target = min(max(target_min + 1000, 7000), max_words - 500)
+    for attempt in range(3):
+        current_count = len(content)
+        if current_count <= max_words:
+            break
+
+        compress_prompt = f"""以下第{chapter_number}章字数过多（{current_count}字），需要压缩到 {target} 字左右（绝对不要超过 {max_words} 字）。
+
+## 本章必须保留的关键事件
+{key_events_text}
+
+## 本章章末钩子（最后200字必须保留）
+{chapter_hook}
+
+## 压缩原则
+1. 保留所有关键事件和情绪转折点，不能省略大纲规定的任何事件。
+2. 删除重复的心理描写、重复的环境渲染、重复的身体感受。
+3. 对于AI测试/挑战/列举类场景，最多展示3-4个具体例子，其余用"后面还有数十道类似的题目"等方式概括。
+4. 删除大段技术参数、算法解释、设定说明，只保留对情节至关重要的信息。
+5. 保留所有对话中的潜台词和情感张力，但删除解释性插话。
+6. 章末钩子最后200字必须完整保留，不能削弱。
+7. 压缩后仍然是流畅的小说正文，不是大纲或摘要。
+
+请直接输出压缩后的正文，不要输出任何解释、分析或元信息：
+
+{content}"""
+
+        log(f"[Writer] 第{chapter_number}章字数过多（{current_count}字），启动第{attempt+1}次压缩...")
+        compressed = call_mmx(compress_system, compress_prompt, max_tokens=8192, temperature=0.3)
+        if compressed:
+            compressed = compressed.strip()
+            if compressed.startswith("```"):
+                lines = compressed.split("\n")
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].startswith("```"):
+                    lines = lines[:-1]
+                compressed = "\n".join(lines).strip()
+            if len(compressed) >= target_min and len(compressed) <= max_words:
+                log(f"[Writer] 第{chapter_number}章压缩成功（{len(compressed)}字）")
+                return compressed
+            if len(compressed) < len(content):
+                content = compressed
+                log(f"[Writer] 第{chapter_number}章压缩后仍为{len(content)}字，继续压缩...")
+            else:
+                log(f"[Writer] 第{chapter_number}章压缩未减少字数，停止压缩")
+                break
+        else:
+            log(f"[Writer] 第{chapter_number}章压缩调用失败")
+            break
+
+    return content
+
+
+def generate_chapter(
+    chapter_number: int,
+    retry: int = 0,
+    output_file: str | Path | None = None,
+    review_feedback: str | Path | None = None,
+) -> str:
+    chapter_file = Path(output_file) if output_file else CHAPTERS_DIR / f"chapter_{chapter_number:04d}.txt"
+
+    review_file = Path(review_feedback) if review_feedback else review_dir(NOVELS_DIR) / f"chapter_{chapter_number:04d}_review.json"
     review_data = None
     is_rewrite = False
     if review_file.exists():
         try:
-            review_data = load_json(review_file)
+            if review_feedback:
+                review_data = _load_feedback_as_review(review_file, chapter_number)
+            else:
+                review_data = load_json(review_file)
             status = review_data.get("status", "")
             verdict = review_data.get("verdict", "")
             score = review_data.get("overall_score", 10)
@@ -286,30 +459,59 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
 关键势力/角色：
 {key_chars_text}"""
 
+    examples_section = _load_9star_examples(chapter_number)
+
     genre = _infer_genre(world)
     power_system = world.get("power_system", {})
     power_name = power_system.get("name", "")
+    quality = CONFIG.get("quality", {})
+    min_words = int(quality.get("min_chapter_words", 5000))
+    max_words = int(quality.get("max_chapter_words", 12000))
+    target_min = max(min_words + 500, 5500)
+
+    # 从大纲提取关键事件和章末钩子，强制 writer 按节点执行
+    key_events = chapter_outline.get("key_events", [])
+    if isinstance(key_events, str):
+        key_events = [key_events]
+    key_events_text = "\n".join(f"{i+1}. {str(ev)}" for i, ev in enumerate(key_events) if str(ev).strip())
+    chapter_hook = str(chapter_outline.get("chapter_hook", "")).strip()
+    emotional_arc = str(chapter_outline.get("emotional_arc", "")).strip()
+    tension_points = chapter_outline.get("tension_points", [])
+    if isinstance(tension_points, str):
+        tension_points = [tension_points]
+    tension_text = "\n".join(f"- {str(tp)}" for tp in tension_points if str(tp).strip())
 
     if is_rewrite:
-        system = f"""你是一位顶尖的中文网络小说作家，同时也是一位资深编辑。
-你现在需要对一篇已完成的章节进行**重写**，而不是从零创作。
-你擅长创作{genre}，文笔流畅、对话生动、场景描写细腻、节奏紧凑。
-重写原则：
-1. 保留原文的优点和核心情节框架
-2. 严格落实验编给出的具体修改建议
-3. 修正连续性问题
-4. 弥补原文的不足之处
-5. 每章约5000字，尽量控制在4500-8000字之间
-6. 保持角色性格一致性，前后情节衔接自然
-7. 文笔要比原文更加流畅、细腻、有张力
-8. 主角是{protagonist_name}，请参考故事设定保持角色一致性"""
+        system = f"""你是一位追求9分神作的顶尖中文网络小说作家，同时也是一位冷酷的资深编辑。
+你现在需要对一篇接近9分但未达标的章节进行**局部精修**，而不是推倒重来。
+你擅长创作{genre}，但你的标准不是"合格"，而是"惊艳"。
+
+## 精修原则（必须遵守）
+1. **保留优点，只改问题**：原文中 reviewer 没有批评的部分（特别是高张力的对话、成功的悬念场景、有效的刺点）必须保留，不得因为重写而丢失。
+2. **逐条落实修改建议**：你必须针对 reviewer 的每一条 weakness 和 suggestion 进行具体修改，修改后要在心中自检"这条建议是否已被解决"。
+3. **禁止为改而改**：不要改变原文中本已有效的部分，不要为了"创新"而破坏原有节奏。
+4. **局部手术，整体保留**：大多数问题只需要修改几个段落、几句对话或一个场景结尾，不需要全文重写。
+5. **修正连续性问题**
+6. 正文字数必须不少于{min_words}字，建议写到{target_min}-8000字，严格不得超过{max_words}字
+7. 保持角色性格一致性
+8. 主角是{protagonist_name}，请参考故事设定保持角色一致性
+9. 核心目标：精修后的章节必须让第一次读的人产生"我必须立刻知道下一章发生了什么"的冲动
+
+## 精修操作指南
+- 如果 reviewer 说"某段落太长"，直接删减该段落至合适长度，不要重写其他部分。
+- 如果 reviewer 说"某角色符号化"，给该角色增加一个动作、一句潜台词或一个反常反应，不要重写整个场景。
+- 如果 reviewer 说"章末钩子弱"，只修改最后200字，保留前文。
+- 如果 reviewer 说"技术细节过多"，删除技术解释，替换为人物反应。
+- 如果 reviewer 说"中段缺乏小高潮"，在中段插入一个短小的冲突或转折场景，不要打乱整体结构。"""
     else:
-        system = f"""你是一位顶尖的中文网络小说作家，擅长创作{genre}。
-你的文笔流畅、对话生动、场景描写细腻、节奏紧凑。
-你尤其擅长描写人物成长、社会百态、人际冲突和心理活动。
-每章约5000字，尽量控制在4500-8000字之间。
+        system = f"""你是一位追求9分神作的顶尖中文网络小说作家，擅长创作{genre}。
+你的标准不是"写出一章合格的内容"，而是"写出一章让人欲罢不能的神作"。
+你的文笔锋利如刀，对话充满潜台词，场景描写让人身临其境，节奏像过山车一样让人喘不过气。
+你痛恨套路，痛恨水文，痛恨用技术细节或设定解释来填充篇幅。
+你相信真正的好小说每一章都必须回答一个问题："读者为什么必须继续读下去？"
+正文字数必须不少于{min_words}字，建议写到{target_min}-8000字；低于{min_words}字会被系统拒绝。
 注意保持角色性格一致性，前后情节衔接自然。
-要写出主角在故事中逐步成长的独特风格。
+但"衔接自然"不等于"平淡过渡"——衔接处也要有张力、有悬念、有未知。
 主角是{protagonist_name}，请参考故事设定保持角色一致性。"""
 
     prompt = f"""请根据以下信息，写出第{chapter_number}章《{chapter_outline.get('title', '未命名')}》的完整内容。
@@ -326,6 +528,19 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
 ## 本章大纲
 {json.dumps(chapter_outline, ensure_ascii=False, indent=2)}
 
+## 本章【必须严格执行的关键事件清单】
+以下是大纲中规定的关键事件，你必须按顺序、按时间点全部写入正文，不能遗漏、不能跳过、不能过度发挥成无关内容：
+{key_events_text}
+
+## 本章【情绪曲线】
+{emotional_arc}
+
+## 本章【张力节点】
+{tension_text}
+
+## 本章【章末钩子——最后200字必须落在这里】
+{chapter_hook}
+
 ## 前一章摘要（用于衔接）
 {prev_summary}
 
@@ -340,21 +555,36 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
 
 {_writer_quality_contract()}
 
-## 写作要求
-1. 本章约5000字，严格按照大纲核心事件展开
-2. 开头要自然衔接前一章，结尾要留悬念或引出下一章
-3. 对话要符合角色性格，推动情节发展
-4. 场景描写要生动，让读者有画面感
-5. 冲突/对抗场面要紧张刺激，有层次感
-6. 心理描写要细腻，展现主角内心变化和成长
-7. 要体现主角逐步成长、逆风翻盘的核心爽点
-8. 主角言行要符合其身份性格和故事背景，不能OOC
-9. 配角要有各自的剧情线和存在感，不是纯背景板
-10. 探索不同场景时要展现环境差异，增加趣味性
-11. 如果 origin/ 中存在素材，必须参考其中的原始设定、人物关系、历史事件、语气风格和限制，不能与其冲突
-12. 不要流水账，要有起伏和转折
-13. 不要输出章节标题，直接从正文开始
-14. 不要输出任何元信息（如"字数：""本章完"等），只输出正文
+{examples_section}
+
+## 写作要求（9分神作执行清单）
+1. 【字数红线】本章必须不少于{min_words}字，**严格不得超过{max_words}字**。建议写到{target_min}-8000字。超过{max_words}字视为不合格，必须删减。低于{min_words}字不得结束，必须继续补充。
+2. 【关键事件红线】必须严格按照上方【必须严格执行的关键事件清单】逐条写入正文，不能遗漏、不能跳过、不能替换时间点。每个关键事件都必须有主角的现场参与和情感反应。
+3. 【技术细节禁令】禁止大段参数、数值、算法、代码、专业术语的解释。Loss值可以出现，但只能用一句话带过；禁止连续超过200字解释技术概念。读者要的是"沈越害怕了"，不是"Loss值的小数点后第八位代表什么"。
+4. 【开头】必须自然衔接前一章，但衔接的第一句话就要有张力——禁止以"过了几天""沈越醒来"等平淡方式开头。理想开头：直接切入一个正在进行的动作、一个突然发生的事件、或一个让人不安的细节
+5. 【对话】要符合角色性格，推动情节发展，且每段重要对话必须包含至少一层潜台词（言外之意）。禁止长篇解释性对话，禁止配角当解说员
+6. 【场景】描写要生动，但重点不是"画面感"，而是"氛围感"——让读者感到压抑、紧迫、诡异或震撼，而不是"看清了这个地方长什么样"
+7. 【冲突】必须触及角色核心恐惧或核心欲望，不能停留在表层利害计算。冲突的输赢不重要，重要的是冲突过程中暴露了什么秘密、改变了什么关系
+8. 【心理】描写要展现真实的情感波动（恐惧、愤怒、孤独、渴望、自我怀疑），严禁代码化/分析化的"IDE式颅内注释"。主角是程序员，但他首先是个人——他会害怕、会冲动、会后悔
+9. 【感官冲击】必须有至少一个"主角本人直面威胁"的近距离刺点，不能所有危险都发生在监控屏幕或远处。
+10. 【爽点】必须来自主角在极端压力下的判断、抉择或牺牲，不能靠巧合、升级或突然觉醒硬赢。最顶级的爽点是"主角明知道会输，还是做了最正确的选择"
+11. 【配角】要有各自的欲望、恐惧和秘密，不是纯背景板。即使是只出现一次的龙套，也要让读者感觉到"这个人有自己的故事"
+12. 如果 origin/ 中存在素材，必须参考其中的原始设定、人物关系、历史事件、语气风格和限制，不能与其冲突
+13. 【节奏】禁止流水账。每800-1200字必须有一次有效推进。章节中段必须有一个"小高潮"或"小反转"，不能把所有爆点都堆在结尾
+14. 【信息】每章必须给读者带来至少一个"此前从未出现过的新元素"，禁止整章重复已知信息
+15. 不要输出章节标题，直接从正文开始
+16. 不要输出任何元信息（如"字数：""本章完"等），只输出正文
+
+## 最终硬性要求
+输出正文必须不少于{min_words}字，严格不得超过{max_words}字。生成结束前请自行检查篇幅：
+- 如果低于{min_words}字，必须继续补充符合大纲的行动、冲突、对话和场景细节。
+- 如果超过{max_words}字，必须删减冗余描写、重复叙述和技术解释，保留核心事件和情感张力。
+生成结束前，请额外自检以下5个问题并确保答案为"是"：
+- 本章最后200字是否精准落在上方【章末钩子】上，且让人心跳加速？
+- 本章是否包含上方【关键事件清单】中的每一个事件？
+- 本章是否至少有一个"主角本人直面威胁"的近距离刺点？
+- 本章是否至少有三个有效的情绪转折（参考上方【情绪曲线】）？
+- 如果我是第一次读这本书的读者，读完这章后会不会立刻想打开下一章？
 
 请开始写作："""
 
@@ -367,7 +597,7 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
         if retry < max_retry:
             log(f"[Writer] 第{chapter_number}章生成失败，重试({retry+1}/{max_retry})...")
             time.sleep(CONFIG["writer"]["retry_delay"])
-            return generate_chapter(chapter_number, retry + 1)
+            return generate_chapter(chapter_number, retry + 1, output_file, review_feedback)
         log(f"[Writer] 第{chapter_number}章生成失败，已达最大重试次数")
         return "failed"
 
@@ -379,6 +609,28 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
         if lines and lines[-1].startswith("```"):
             lines = lines[:-1]
         content = "\n".join(lines).strip()
+
+    # 清理禁用短语
+    for phrase in FORBIDDEN_PHRASES:
+        content = content.replace(phrase, "")
+
+    # 处理截断：如果文本没有以有效标点结尾，移除最后一个不完整的段落/句子
+    if content and not content.endswith(VALID_ENDINGS):
+        # 尝试找到最后一个完整段落结尾
+        paragraphs = content.split("\n\n")
+        if len(paragraphs) > 1 and not paragraphs[-1].strip().endswith(VALID_ENDINGS):
+            content = "\n\n".join(paragraphs[:-1]).strip()
+        # 如果还是不完整，找到最后一个有效标点位置
+        if content and not content.endswith(VALID_ENDINGS):
+            last_valid = max(
+                (content.rfind(end) for end in VALID_ENDINGS if end in content),
+                default=-1,
+            )
+            if last_valid > len(content) * 0.9:  # 只截掉最后不到10%的不完整内容
+                content = content[: last_valid + 1].strip()
+
+    # 自动压缩：如果超过 max_words，调用压缩 agent
+    content = _auto_compress(content, chapter_number, max_words, target_min, chapter_outline)
 
     word_count = len(content)
     if not is_valid_chapter_text(content):
@@ -395,6 +647,7 @@ def generate_chapter(chapter_number: int, retry: int = 0) -> str:
 
 
 def main():
+    global CANDIDATE_MODE
     parser = argparse.ArgumentParser()
     parser.add_argument("--project", "-p", type=str,
                         default=os.getenv("NOVEL_PROJECT_DIR", ""),
@@ -402,7 +655,10 @@ def main():
     parser.add_argument("--start", type=int, default=1, help="起始章节")
     parser.add_argument("--end", type=int, default=10, help="结束章节")
     parser.add_argument("--chapter", type=int, default=0, help="只生成某一章")
+    parser.add_argument("--output-file", type=str, default="", help="候选模式：写入指定初稿文件，而非正式 draft 目录")
+    parser.add_argument("--review-feedback", type=str, default="", help="重写时读取汇总审查反馈")
     args = parser.parse_args()
+    CANDIDATE_MODE = bool(args.output_file)
 
     try:
         project = resolve_project_dir(args.project)
@@ -422,7 +678,7 @@ def main():
 
     failed_chapters = []
     if args.chapter > 0:
-        result = generate_chapter(args.chapter)
+        result = generate_chapter(args.chapter, output_file=args.output_file or None, review_feedback=args.review_feedback or None)
         if result == "failed":
             failed_chapters.append(args.chapter)
     else:

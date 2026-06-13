@@ -21,6 +21,7 @@ from core.mmx_client import MmxError, call_mmx as call_mmx_client
 from core.novel_config import configure_stdio, load_config, load_origin_materials, resolve_project_dir
 from core.workflow_state import (
     load_outline_chapter,
+    load_outline_review_status,
     outline_dir,
     outline_review_dir,
 )
@@ -85,7 +86,12 @@ def load_json(filepath: Path) -> dict:
         return json.load(f)
 
 
-def review_outline(chapter_number: int, outline_file_override: Path | None = None, review_file_override: Path | None = None) -> dict:
+def review_outline(
+    chapter_number: int,
+    outline_file_override: Path | None = None,
+    review_file_override: Path | None = None,
+    context_outline_dir: Path | None = None,
+) -> dict:
     outline_file = outline_file_override or outline_dir(NOVELS_DIR) / f"chapter_{chapter_number:04d}.json"
     review_file = review_file_override or OUTLINE_REVIEW_DIR / f"chapter_{chapter_number:04d}_review.json"
 
@@ -96,20 +102,30 @@ def review_outline(chapter_number: int, outline_file_override: Path | None = Non
     if review_file.exists():
         try:
             existing = json.loads(review_file.read_text(encoding="utf-8"))
-            status = existing.get("status")
-            if status == "completed":
-                log(f"[OutlineReviewer] 第{chapter_number}章大纲已有审查报告，跳过")
+            min_score = float(CONFIG.get("outline_reviewer", {}).get("min_score", 8.5))
+            _, status, score, ok = load_outline_review_status(review_file, min_score)
+            if ok:
+                log(f"[OutlineReviewer] 第{chapter_number}章大纲已有达标审查报告（{score}分），跳过")
                 return existing
-            # 只有 failed/parse_error/no_file 才重新审查
-            log(f"[OutlineReviewer] 第{chapter_number}章大纲审查报告状态为{status}，重新审查")
+            log(
+                f"[OutlineReviewer] 第{chapter_number}章现有审查未达门槛"
+                f"（status={status}, score={score}, min={min_score:g}），重新审查"
+            )
         except Exception:
             pass
 
     outline = load_json(outline_file)
 
     # 加载前后章节作为上下文
-    prev_outline = load_outline_chapter(NOVELS_DIR, chapter_number - 1)
-    next_outline = load_outline_chapter(NOVELS_DIR, chapter_number + 1)
+    def load_context_outline(number: int) -> dict:
+        if number <= 0:
+            return {}
+        if context_outline_dir is None:
+            return load_outline_chapter(NOVELS_DIR, number)
+        return load_json(context_outline_dir / f"chapter_{number:04d}.json")
+
+    prev_outline = load_context_outline(chapter_number - 1)
+    next_outline = load_context_outline(chapter_number + 1)
 
     world = load_json(NOVELS_DIR / "world.json")
     characters = load_json(NOVELS_DIR / "characters.json")
@@ -132,14 +148,26 @@ def review_outline(chapter_number: int, outline_file_override: Path | None = Non
 
     min_score = float(CONFIG.get("outline_reviewer", {}).get("min_score", 8.5))
 
-    system = f"""你是一位资深网络小说总编，拥有20年大纲评审经验。
-你需要从多个维度审查单章大纲的质量，判断该大纲是否足以支撑 Writer 写出高质量正文。
+    system = f"""你是一位拥有20年经验的资深网络小说总编，同时也是一位苛刻的"神作猎手"。
+你的任务不是找"合格"的大纲，而是找出"为什么这章大纲还没达到9分"的每一个原因。
 本书是《{book_title}》。
 {genre_text}
-评分标准：9-10分优秀，达到{min_score}分为良好可写，低于{min_score}分需修改或重生成。
-优秀大纲完全可以给出9分以上，请根据实际质量客观评分，不要人为压低分数。
+
+## 【9分神作大纲评分标准】
+- 10分：大纲足以支撑传世级神作。悬念密集，情感冲击强烈，信息新鲜，章末钩子让人失眠，Writer据此必能写出让人欲罢不能的章节。
+- 9-9.9分：优秀大纲。悬念设计到位，情绪曲线清晰，反套路，有新鲜感，足以支撑9分正文。
+- 8-8.9分：良好但不够惊艳。大纲完整，但存在套路化倾向、悬念不足、情绪平淡或信息重复。低于{min_score}分，必须重写。
+- 7-7.9分：平庸大纲。有明显套路、重复、动机牵强或缺乏钩子的问题。
+- 低于7分：不合格，存在严重设计缺陷。
+
+【你的审查哲学】
+- 不要给"辛苦分"。字段全不等于设计好。
+- 不要放过"还行"——"还行"的大纲只会产出"还行"的正文，而"还行"就是失败。
+- 重点关注：这个大纲能否让 Writer 写出一章让人"读完立刻想打开下一章"的内容？
+- 如果你给不出9分以上，必须在 weaknesses 中明确说明"距离9分的具体差距"。
+
 输出必须是合法的紧凑JSON，不要使用Markdown代码块，不要输出JSON之外的任何文字。
-审查意见要短而具体，整份JSON尽量控制在1200个中文字符以内。"""
+审查意见要短而具体，整份JSON尽量控制在1500个中文字符以内。"""
 
     context_parts = []
     if prev_outline:
@@ -170,37 +198,60 @@ def review_outline(chapter_number: int, outline_file_override: Path | None = Non
 请只输出以下JSON格式的审查报告，数组最多3条，每条不超过80字：
 {{
   "chapter_number": {chapter_number},
-  "overall_score": "请给出0-10的客观评分，质量优秀的大纲可给9分以上",
-  "verdict": "通过/需修改/需重写",
+  "overall_score": "请给出0-10的客观评分。9分意味着Writer据此必能写出让人欲罢不能的章节。不要给辛苦分",
+  "verdict": "通过/需修改/需重写。注意：如果 overall_score >= {min_score}，verdict 必须写'通过'；只有低于{min_score}分才写'需重写'或'需修改'",
   "scores": {{
     "plot_attraction": "剧情吸引力（0-10）",
-    "pacing": "节奏把控（0-10）",
+    "pacing": "节奏把控（0-10。中段是否有小高潮？是否存在超过1500字无转折的平铺直叙？）",
     "character_motivation": "人物动机合理性（0-10）",
-    "satisfaction_design": "爽点设计（0-10）",
+    "satisfaction_design": "爽点设计（0-10。爽点是否触及核心恐惧/欲望？是否反套路？）",
     "foreshadowing": "伏笔与呼应（0-10）",
     "scene_diversity": "场景多样性（0-10）",
     "power_consistency": "力量体系一致性（0-10）",
-    "writeability": "整体可写性（0-10）"
+    "hook_strength": "章末钩子强度（0-10。chapter_hook是否明确、强力、让人心跳加速？）",
+    "emotional_arc": "情绪曲线设计（0-10。emotional_arc是否有起伏？是否全程单一情绪？）",
+    "suspense_density": "悬念密度（0-10。tension_points是否有至少3个有效张力节点？分布是否合理？）",
+    "information_freshness": "信息新鲜度（0-10。是否有至少一个此前从未出现的新元素？有无重复已知信息？）",
+    "anti_cliche": "反套路程度（0-10。是否存在标准战斗/解谜模板？是否有意外和不可预测性？）",
+    "writeability": "整体可写性（0-10。Writer能否据此写出9分神作级正文？）"
+  }},
+  "design_gates": {{
+    "core_desire": {{"passed": true, "evidence": "主角本章具体想得到或保护什么，60字以内"}},
+    "irreversible_choice": {{"passed": true, "evidence": "本章不可撤销的选择、损失或暴露，60字以内"}},
+    "midpoint_reversal": {{"passed": true, "evidence": "中段如何改变原行动方案，60字以内"}},
+    "strong_hook": {{"passed": true, "evidence": "章末正在发生的具体危机或反转，60字以内"}}
   }},
   "strengths": ["优点1，80字以内"],
-  "weaknesses": ["不足1，80字以内"],
+  "weaknesses": ["不足1，80字以内。如果给分低于9分，必须在这里明确写出距离9分的具体差距"],
   "suggestions": ["具体修改建议1，80字以内"],
   "continuity_issues": ["与前后章衔接问题，80字以内"],
-  "summary": "总体评价，80字以内"
+  "summary": "总体评价，80字以内。如果评分低于9分，用一句话回答：本章大纲最致命的短板是什么？"
 }}
 
+【9分神作大纲审查清单——逐条自检】
+请你在给出评分前，先在心中逐条回答以下问题。如果有任何一条答案为否或不够，overall_score不得超过8.5分：
+1. chapter_hook字段是否明确写出了一个让人心跳加速的强力钩子（危机升级/信息反转/情感爆点）？
+2. chapter_hook是否禁止了平静收尾、总结现状、铺垫过渡？
+3. emotional_arc是否描述了清晰的情绪起伏（如压抑→紧张→希望→绝望），而非全程单一情绪？
+4. tension_points是否至少包含3个有效的让人无法停止阅读的关键时刻？
+5. 本章是否包含至少一个此前从未出现过的新元素（新人物、新地点、新规则、新真相、新威胁、新情感关系）？
+6. 是否存在套路化设计（标准战斗流程、标准解谜流程、配角当解说员）？
+7. 爽点设计是否触及角色核心恐惧或核心欲望，而非表层利害计算？
+8. 如果Writer严格按这个大纲写，能否产出一章让人读完立刻想打开下一章的内容？
+
 要求：
-1. 评分要客观公正，质量优秀的大纲完全可以给出9分以上
-2. 重点审查：剧情是否有真正的冲突和转折，而非流水账
-3. 爽点设计是否到位：是否有期待感、压制、反转、碾压等要素
-4. 人物动机是否合理，是否与角色设定一致
-5. 与前后章的衔接是否自然，伏笔是否呼应
-6. 场景是否多样，避免反复在同一地点做同样的事
-7. 力量体系是否自洽，实力成长是否有合理铺垫
-8. 信息是否足够详细，Writer 能否据此写出{outline.get('word_count_target', 5000)}字高质量正文
-9. 如果 origin/ 中存在素材，必须检查大纲是否参考并遵守原始素材；与素材冲突需列入 weaknesses 或 continuity_issues
-10. 如低于{min_score}分必须标记为\"需重写\"
-11. 必须输出合法JSON，不要Markdown，不要长篇解释"""
+1. 评分要冷酷客观。不要给辛苦分，不要给还行分。9分意味着Writer据此必能写出神作，8分意味着大纲完整但正文可能平庸。
+2. 重点审查：悬念密度、钩子强度、情绪曲线、信息新鲜度、反套路程度。这五个维度比字段完整性更重要。
+3. 剧情是否有真正的冲突和转折，而非流水账
+4. 爽点设计是否到位：是否有期待感、压制、反转、碾压等要素，且是否触及角色内核
+5. 人物动机是否合理，是否与角色设定一致
+6. 与前后章的衔接是否自然，伏笔是否呼应
+7. 场景是否多样，避免反复在同一地点做同样的事
+8. 力量体系是否自洽，实力成长是否有合理铺垫
+9. 信息是否足够详细，Writer能否据此写出{outline.get('word_count_target', 5000)}字高质量正文
+10. 如果origin/中存在素材，必须检查大纲是否参考并遵守原始素材；与素材冲突需列入weaknesses或continuity_issues
+11. 如低于{min_score}分必须标记为需重写
+12. 必须输出合法JSON，不要Markdown，不要长篇解释"""
 
     log(f"[OutlineReviewer] 正在审查第{chapter_number}章大纲...")
     content = call_mmx(system, prompt, max_tokens=4096, temperature=0.3)
@@ -233,12 +284,22 @@ def review_outline(chapter_number: int, outline_file_override: Path | None = Non
                 pass
         return val
 
+    def _extract_first_json_object(text: str) -> dict:
+        cleaned = text.strip()
+        if "```json" in cleaned:
+            cleaned = cleaned.split("```json", 1)[1].split("```", 1)[0].strip()
+        elif "```" in cleaned:
+            cleaned = cleaned.split("```", 1)[1].split("```", 1)[0].strip()
+        start = cleaned.find("{")
+        if start < 0:
+            raise ValueError("response contains no JSON object")
+        data, _ = json.JSONDecoder().raw_decode(cleaned[start:])
+        if not isinstance(data, dict):
+            raise ValueError("review response is not a JSON object")
+        return data
+
     try:
-        if "```json" in content:
-            content = content.split("```json")[1].split("```")[0].strip()
-        elif "```" in content:
-            content = content.split("```")[1].split("```")[0].strip()
-        review_data = json.loads(content)
+        review_data = _extract_first_json_object(content)
         review_data["status"] = "completed"
         # 将 overall_score 统一转为 float
         review_data["overall_score"] = _parse_score(review_data.get("overall_score"))
@@ -247,6 +308,32 @@ def review_outline(chapter_number: int, outline_file_override: Path | None = Non
         if isinstance(scores, dict):
             for k, v in list(scores.items()):
                 scores[k] = _parse_score(v)
+        design_gates = review_data.get("design_gates")
+        required_gates = (
+            "core_desire",
+            "irreversible_choice",
+            "midpoint_reversal",
+            "strong_hook",
+        )
+        gate_results = []
+        if isinstance(design_gates, dict):
+            normalized_gates = {
+                str(key).replace(" ", "").replace("-", "_"): value
+                for key, value in design_gates.items()
+            }
+            for gate_name in required_gates:
+                gate = normalized_gates.get(gate_name)
+                passed = isinstance(gate, dict) and gate.get("passed") is True
+                evidence = gate.get("evidence", "") if isinstance(gate, dict) else ""
+                gate_results.append(passed and isinstance(evidence, str) and bool(evidence.strip()))
+            review_data["design_gates"] = normalized_gates
+        design_gate_passed = len(gate_results) == len(required_gates) and all(gate_results)
+        review_data["design_gate_passed"] = design_gate_passed
+        if not design_gate_passed:
+            score = review_data.get("overall_score")
+            if isinstance(score, (int, float)) and score >= 9.0:
+                review_data["overall_score"] = 8.8
+            review_data["verdict"] = "需修改"
     except Exception as e:
         log(f"[OutlineReviewer] JSON解析失败: {e}")
         review_data = {
@@ -275,6 +362,8 @@ def main():
     parser.add_argument("--chapter", type=int, default=0, help="只审查某一章")
     parser.add_argument("--outline-file", type=str, default="", help="候选大纲文件；启用后审查该文件而非正式大纲")
     parser.add_argument("--review-file", type=str, default="", help="候选审查输出文件")
+    parser.add_argument("--outline-dir", type=str, default="", help="候选大纲目录；批量审查时同时作为前后章上下文")
+    parser.add_argument("--review-dir", type=str, default="", help="候选审查报告输出目录")
     args = parser.parse_args()
 
     try:
@@ -295,17 +384,41 @@ def main():
 
     total = 1 if args.chapter > 0 else (args.end - args.start + 1)
     failed = 0
+    candidate_outline_dir = Path(args.outline_dir).resolve() if args.outline_dir else None
+    candidate_review_dir = Path(args.review_dir).resolve() if args.review_dir else None
     if args.chapter > 0:
+        outline_override = Path(args.outline_file) if args.outline_file else None
+        if outline_override is None and candidate_outline_dir is not None:
+            outline_override = candidate_outline_dir / f"chapter_{args.chapter:04d}.json"
+        review_override = Path(args.review_file) if args.review_file else None
+        if review_override is None and candidate_review_dir is not None:
+            review_override = candidate_review_dir / f"chapter_{args.chapter:04d}_review.json"
         result = review_outline(
             args.chapter,
-            Path(args.outline_file) if args.outline_file else None,
-            Path(args.review_file) if args.review_file else None,
+            outline_override,
+            review_override,
+            candidate_outline_dir,
         )
         if result.get("status") in ("failed", "no_file", "parse_error"):
             failed += 1
     else:
         for ch in range(args.start, args.end + 1):
-            result = review_outline(ch)
+            outline_override = (
+                candidate_outline_dir / f"chapter_{ch:04d}.json"
+                if candidate_outline_dir is not None
+                else None
+            )
+            review_override = (
+                candidate_review_dir / f"chapter_{ch:04d}_review.json"
+                if candidate_review_dir is not None
+                else None
+            )
+            result = review_outline(
+                ch,
+                outline_override,
+                review_override,
+                candidate_outline_dir,
+            )
             if result.get("status") in ("failed", "no_file", "parse_error"):
                 failed += 1
             time.sleep(1)

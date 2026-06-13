@@ -213,11 +213,11 @@ python "scripts/maintenance/wechat_notify.py" --project "projects/<book_id>"
 📖 《书名》生成进度 (YYYY-MM-DD HH:MM:SS)
 ━━━━━━━━━━━━━━━━━━━━
 📋 大纲: 1450/2000 章
-📋 大纲审: 1450/2000 章
 ✍ 初稿: 415/2000 章
 📝 字数: 2,547,051
 🔍 审查: 0/2000 章
 📤 终稿: 0/2000 章
+⏱ 预计剩余: 3天6小时
 🤖 活跃进程: 49
 ━━━━━━━━━━━━━━━━━━━━
 ```
@@ -226,6 +226,7 @@ python "scripts/maintenance/wechat_notify.py" --project "projects/<book_id>"
 - `《书名》进度更新`
 - `Coordinator已启动，正在生成中..`
 - 只显示四行进度且无字数/活跃进程的格式
+- 同时显示“大纲 / 大纲审 / 大纲过审”三行重复指标的格式；大纲行应优先使用已过审大纲数量。
 
 ## 验证
 
