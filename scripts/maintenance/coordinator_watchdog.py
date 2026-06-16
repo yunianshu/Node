@@ -205,7 +205,6 @@ def progress_signature(project: Path, config: dict) -> tuple[str, dict]:
         "last_reviewed": int(progress.get("last_reviewed_chapter", 0) or 0),
         "last_outline_reviewed": int(progress.get("last_outline_reviewed_chapter", 0) or 0),
         "failed": len(progress.get("failed_chapters", []) or []),
-        "outline_rewrite_queue": len(progress.get("outline_rewrite_queue", []) or []),
     }
     signature = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     return signature, payload
@@ -220,13 +219,26 @@ def lower_worker_counts(project: Path, reason: str) -> bool:
     except Exception:
         return False
 
-    coordinator = config.setdefault("coordinator", {})
     changed = False
-    for key in ("num_workers", "review_workers"):
+
+    coordinator = config.setdefault("coordinator", {})
+    for key in ("draft_workers", "num_workers", "review_workers"):
+        if key not in coordinator:
+            continue
         current = int(coordinator.get(key, 1) or 1)
         new_value = max(1, current - 1)
         if new_value < current:
             coordinator[key] = new_value
+            changed = True
+
+    for section_name in ("outline_race", "draft_race"):
+        section = config.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        current = int(section.get("max_workers", 1) or 1)
+        new_value = max(1, current - 1)
+        if new_value < current:
+            section["max_workers"] = new_value
             changed = True
 
     if changed:

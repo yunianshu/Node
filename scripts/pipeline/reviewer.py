@@ -210,7 +210,7 @@ def review_chapter(
         return {"status": "no_file"}
 
     if review_file.exists():
-        configured_min_score = float(CONFIG.get("reviewer", {}).get("min_score", 7.0))
+        configured_min_score = float(CONFIG.get("reviewer", {}).get("min_score", 8.5))
         _, status, _, ok = load_review_status(review_file, configured_min_score)
         if ok:
             log(f"[Reviewer] 第{chapter_number}章已有有效审查报告，跳过")
@@ -249,7 +249,7 @@ def review_chapter(
     genre_text = "\n".join(genre_hints) if genre_hints else "请根据世界观和角色设定判断题材类型。"
 
     quality = CONFIG.get("quality", {})
-    review_min_score = float(CONFIG.get("reviewer", {}).get("min_score", 7.0))
+    review_min_score = float(CONFIG.get("reviewer", {}).get("min_score", 8.5))
     min_words = int(quality.get("min_chapter_words", 5000))
     max_words = int(quality.get("max_chapter_words", 12000))
     warn_min = int(quality.get("warn_min_chapter_words", min_words - 200))
@@ -411,7 +411,6 @@ def _refresh_status(start: int, end: int) -> None:
                 "last_generated_chapter": 0,
                 "last_reviewed_chapter": 0,
                 "failed_chapters": [],
-                "rewrite_queue": [],
             }
 
         all_statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"], use_cache=False)

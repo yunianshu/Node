@@ -24,28 +24,28 @@ const PROJECT_OPTIONS = [
   { value: 'novels12', label: 'novels12' },
 ]
 
-const STATUS_TAG = {
-  pending: <Tag color="grey">待生成</Tag>,
-  draft: <Tag color="blue">初稿</Tag>,
-  final: <Tag color="green">终稿</Tag>,
+const VERDICT_TAG = {
+  通过: <Tag color="green">通过</Tag>,
+  需修改: <Tag color="orange">需修改</Tag>,
+  需重写: <Tag color="red">需重写</Tag>,
 }
 
-function Chapters() {
+function Outlines() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const [projectId, setProjectId] = useState(searchParams.get('project') || 'novels6')
+  const [projectId, setProjectId] = useState(searchParams.get('project') || 'novels12')
   const [data, setData] = useState([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [searchText, setSearchText] = useState('')
-  const [selectedOutline, setSelectedOutline] = useState(null)
+  const [selected, setSelected] = useState(null)
 
-  const fetchChapters = useCallback(async () => {
+  const fetchOutlines = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await novelApi.getChapters(projectId, page, pageSize)
-      setData(res.chapters)
+      const res = await novelApi.getOutlines(projectId, page, pageSize)
+      setData(res.outlines)
       setTotal(res.total)
     } finally {
       setLoading(false)
@@ -53,8 +53,8 @@ function Chapters() {
   }, [projectId, page, pageSize])
 
   useEffect(() => {
-    fetchChapters()
-  }, [fetchChapters])
+    fetchOutlines()
+  }, [fetchOutlines])
 
   const handleProjectChange = (value) => {
     setProjectId(value)
@@ -62,16 +62,16 @@ function Chapters() {
     setSearchParams({ project: value })
   }
 
-  const handleBatchAction = (action) => {
-    Toast.info(`${action} 功能待实现`)
-  }
-
-  const handleViewOutline = async (record) => {
+  const handleViewDetail = async (record) => {
+    if (!record.hasOutline) {
+      Toast.warning('该章节暂无大纲')
+      return
+    }
     try {
-      const outline = await novelApi.getOutline(projectId, record.id)
-      setSelectedOutline(outline)
+      const detail = await novelApi.getOutline(projectId, record.id)
+      setSelected(detail)
     } catch {
-      Toast.error('加载大纲失败')
+      Toast.error('加载大纲详情失败')
     }
   }
 
@@ -83,63 +83,65 @@ function Chapters() {
       render: (id) => `第${id}章`,
     },
     {
-      title: '状态',
-      dataIndex: 'status',
-      width: 100,
-      render: (status) => STATUS_TAG[status] || status,
+      title: '标题',
+      dataIndex: 'title',
+      width: 180,
+      render: (title, record) => (
+        <Text type={record.hasOutline ? undefined : 'tertiary'}>{title}</Text>
+      ),
     },
     {
-      title: '字数',
-      dataIndex: 'wordCount',
-      width: 100,
-      render: (v) => v > 0 ? v.toLocaleString() : '-',
+      title: '摘要',
+      dataIndex: 'summary',
+      ellipsis: true,
+    },
+    {
+      title: '关键事件',
+      dataIndex: 'keyEvents',
+      width: 140,
+      render: (events) => (
+        <Space wrap>
+          {events.slice(0, 2).map((evt, idx) => (
+            <Tag key={idx} size="small">{evt}</Tag>
+          ))}
+          {events.length > 2 && <Tag size="small">+{events.length - 2}</Tag>}
+        </Space>
+      ),
     },
     {
       title: '评分',
       dataIndex: 'score',
-      width: 100,
+      width: 90,
       render: (v) => v ? (
-        <Text type={v >= 7 ? 'success' : v >= 6 ? 'warning' : 'danger'} strong>{v}</Text>
+        <Text type={parseFloat(v) >= 8 ? 'success' : parseFloat(v) >= 7 ? 'warning' : 'danger'} strong>{v}</Text>
       ) : '-',
     },
     {
-      title: '初稿',
-      dataIndex: 'hasDraft',
-      width: 80,
-      render: (v) => v ? <Tag color="green" size="small">有</Tag> : <Tag size="small">无</Tag>,
-    },
-    {
-      title: '终稿',
-      dataIndex: 'hasFinal',
-      width: 80,
-      render: (v) => v ? <Tag color="green" size="small">有</Tag> : <Tag size="small">无</Tag>,
-    },
-    {
-      title: '评审',
-      dataIndex: 'hasReview',
-      width: 80,
-      render: (v) => v ? <Tag color="green" size="small">有</Tag> : <Tag size="small">无</Tag>,
+      title: ' verdict',
+      dataIndex: 'verdict',
+      width: 100,
+      render: (verdict) => VERDICT_TAG[verdict] || verdict || '-',
     },
     {
       title: '操作',
-      width: 160,
+      width: 100,
       render: (_, record) => (
-        <Space>
-          <Button size="small" disabled={!record.hasDraft}>查看</Button>
-          <Button size="small" onClick={() => handleViewOutline(record)}>大纲</Button>
-        </Space>
+        <Button size="small" onClick={() => handleViewDetail(record)}>
+          查看
+        </Button>
       ),
     },
   ]
 
-  const filteredData = data.filter((ch) => {
+  const filteredData = data.filter((item) => {
     if (!searchText) return true
-    return ch.title.includes(searchText)
+    const text = `${item.title} ${item.summary} ${item.keyEvents.join(' ')}`
+    return text.toLowerCase().includes(searchText.toLowerCase())
   })
 
   return (
     <div>
-      <Title heading={3} style={{ marginBottom: 16 }}>章节管理</Title>
+      <Title heading={3} style={{ marginBottom: 16 }}>大纲查看</Title>
 
       <Space style={{ marginBottom: 16 }} wrap>
         <Select
@@ -150,14 +152,12 @@ function Chapters() {
         />
         <Input
           prefix={<IconSearch />}
-          placeholder="搜索章节"
+          placeholder="搜索标题或摘要"
           value={searchText}
           onChange={(v) => setSearchText(v)}
-          style={{ width: 200 }}
+          style={{ width: 220 }}
         />
-        <Button icon={<IconRefresh />} onClick={fetchChapters}>刷新</Button>
-        <Button onClick={() => handleBatchAction('补全缺失章节')}>补全缺失</Button>
-        <Button onClick={() => handleBatchAction('批量评审')}>批量评审</Button>
+        <Button icon={<IconRefresh />} onClick={fetchOutlines}>刷新</Button>
       </Space>
 
       {loading ? (
@@ -185,48 +185,51 @@ function Chapters() {
       )}
 
       <SideSheet
-        title={selectedOutline ? selectedOutline.title : '章节大纲'}
-        visible={!!selectedOutline}
-        onCancel={() => setSelectedOutline(null)}
-        width={520}
+        title={selected ? selected.title : '大纲详情'}
+        visible={!!selected}
+        onCancel={() => setSelected(null)}
+        width={560}
       >
-        {selectedOutline && (
+        {selected && (
           <Space vertical align="start" style={{ width: '100%' }}>
             <div>
               <Text type="secondary">章节</Text>
-              <div><Text strong>第{selectedOutline.id}章</Text></div>
+              <div><Text strong>第{selected.id}章</Text></div>
             </div>
             <div>
               <Text type="secondary">评分</Text>
-              <div><Text strong>{selectedOutline.score}</Text> <Tag color="green">{selectedOutline.verdict}</Tag></div>
+              <div>
+                <Text strong style={{ marginRight: 8 }}>{selected.score}</Text>
+                {VERDICT_TAG[selected.verdict] || selected.verdict}
+              </div>
             </div>
             <div>
               <Text type="secondary">摘要</Text>
-              <Paragraph>{selectedOutline.summary}</Paragraph>
+              <Paragraph>{selected.summary}</Paragraph>
             </div>
             <div>
               <Text type="secondary">关键事件</Text>
               <Space vertical align="start" style={{ marginTop: 8 }}>
-                {selectedOutline.keyEvents.map((evt, idx) => (
+                {selected.keyEvents.map((evt, idx) => (
                   <Tag key={idx} size="large">{idx + 1}. {evt}</Tag>
                 ))}
               </Space>
             </div>
             <div>
               <Text type="secondary">伏笔</Text>
-              <Paragraph>{selectedOutline.foreshadowing || '-'}</Paragraph>
+              <Paragraph>{selected.foreshadowing || '-'}</Paragraph>
             </div>
             <div>
               <Text type="secondary">战力/能力成长</Text>
-              <Paragraph>{selectedOutline.powerProgression || '-'}</Paragraph>
+              <Paragraph>{selected.powerProgression || '-'}</Paragraph>
             </div>
             <div>
               <Text type="secondary">情绪弧线</Text>
-              <Paragraph>{selectedOutline.emotionalArc || '-'}</Paragraph>
+              <Paragraph>{selected.emotionalArc || '-'}</Paragraph>
             </div>
             <div>
               <Text type="secondary">章末钩子</Text>
-              <Paragraph>{selectedOutline.hook || '-'}</Paragraph>
+              <Paragraph>{selected.hook || '-'}</Paragraph>
             </div>
           </Space>
         )}
@@ -235,4 +238,4 @@ function Chapters() {
   )
 }
 
-export default Chapters
+export default Outlines

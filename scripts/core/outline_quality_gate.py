@@ -44,9 +44,9 @@ def aggregate_outline_reviews(
         for gate in REQUIRED_DESIGN_GATES
     }
     complete = len(reviews) == required_rounds and len(scores) == required_rounds
-    median_score = float(statistics.median(scores)) if complete else 0.0
+    median_score = float(statistics.median(scores)) if scores else 0.0
     score_pass_votes = sum(score >= min_score for score in scores)
-    score_spread = max(scores) - min(scores) if complete else None
+    score_spread = max(scores) - min(scores) if len(scores) >= 2 else None
     score_stable = score_spread is not None and score_spread <= max_score_spread
     all_gates_pass = all(votes >= required_votes for votes in gate_votes.values())
     passed = (

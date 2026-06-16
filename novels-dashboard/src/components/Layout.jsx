@@ -8,6 +8,7 @@ import {
   IconPieChartStroked,
   IconImage,
   IconFile,
+  IconList,
 } from '@douyinfe/semi-icons'
 
 const { Sider, Content } = SemiLayout
@@ -15,6 +16,7 @@ const { Sider, Content } = SemiLayout
 const navItems = [
   { itemKey: '/projects', text: '小说项目', icon: <IconBookOpenStroked /> },
   { itemKey: '/chapters', text: '章节管理', icon: <IconArticle /> },
+  { itemKey: '/outlines', text: '大纲查看', icon: <IconList /> },
   { itemKey: '/config', text: '配置管理', icon: <IconSetting /> },
   { itemKey: '/quota', text: '配额监控', icon: <IconPieChartStroked /> },
   { itemKey: '/multimedia', text: '多媒体', icon: <IconImage /> },

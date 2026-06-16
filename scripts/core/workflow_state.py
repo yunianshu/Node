@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, Iterable
@@ -341,7 +343,7 @@ def load_text_quality(path: Path, rules: dict | None = None) -> tuple[bool, int,
     return True, length, grade, ok, issues
 
 
-def load_review_status(path: Path, min_score: float = 7.0) -> tuple[bool, str, float | None, bool]:
+def load_review_status(path: Path, min_score: float = 8.5) -> tuple[bool, str, float | None, bool]:
     if not path.exists():
         return False, "missing", None, False
     try:
@@ -356,7 +358,7 @@ def load_review_status(path: Path, min_score: float = 7.0) -> tuple[bool, str, f
     schema_errors = validate_review_schema(data)
     if schema_errors:
         return True, "schema_" + schema_errors[0], score_value, False
-    ok = status == "completed" and verdict not in {"需重写", "需修改"} and (score_value is None or score_value >= min_score)
+    ok = status == "completed" and verdict not in {"需重写", "需修改"} and score_value is not None and score_value >= min_score
     return True, status or "unknown", score_value, ok
 
 
@@ -417,7 +419,7 @@ def scan_one_chapter(base_dir: Path, chapter: int, rules: dict | None = None) ->
     outline_review_file = outline_review_path(base_dir, chapter)
     config = load_config(base_dir)
     outline_min_score = float(config.get("outline_reviewer", {}).get("min_score", 8.5))
-    review_min_score = float(config.get("reviewer", {}).get("min_score", 7.0))
+    review_min_score = float(config.get("reviewer", {}).get("min_score", 8.5))
 
     draft_exists, draft_words, draft_grade, draft_ok, draft_issues = load_text_quality(draft_file, rules)
     final_exists, final_words, final_grade, final_length_ok, final_issues = load_text_quality(final_file, rules)
@@ -532,9 +534,30 @@ def highest_contiguous(statuses: Dict[int, ChapterStatus], start: int, attr: str
 
 def atomic_write_json(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    tmp = path.with_name(
+        f"{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
+    )
+    lock = path.with_name(f"{path.name}.write.lock")
+    lock_fd = None
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        while lock_fd is None:
+            try:
+                lock_fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                try:
+                    if time.time() - lock.stat().st_mtime > 30:
+                        lock.unlink(missing_ok=True)
+                        continue
+                except FileNotFoundError:
+                    continue
+                time.sleep(0.02)
+        os.replace(tmp, path)
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
+            lock.unlink(missing_ok=True)
+        tmp.unlink(missing_ok=True)
 
 
 def write_status_file(base_dir: Path, statuses: Iterable[ChapterStatus]) -> None:

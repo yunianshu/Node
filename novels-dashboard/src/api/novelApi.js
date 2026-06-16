@@ -109,6 +109,81 @@ const PROJECTS = [
     hasTrailer: false,
     createdAt: '2025-05',
   },
+  {
+    id: 'novels8',
+    name: 'novels8',
+    title: 'novels8',
+    dir: 'D:/AiProject/Node/projects/novels8',
+    totalChapters: 500,
+    completedChapters: 0,
+    avgScore: null,
+    writerFailures: 0,
+    jsonFailures: 0,
+    status: 'pending',
+    hasCover: false,
+    hasTrailer: false,
+    createdAt: '2025-05',
+  },
+  {
+    id: 'novels9',
+    name: 'novels9',
+    title: 'novels9',
+    dir: 'D:/AiProject/Node/projects/novels9',
+    totalChapters: 500,
+    completedChapters: 0,
+    avgScore: null,
+    writerFailures: 0,
+    jsonFailures: 0,
+    status: 'pending',
+    hasCover: false,
+    hasTrailer: false,
+    createdAt: '2025-05',
+  },
+  {
+    id: 'novels10',
+    name: 'novels10',
+    title: 'novels10',
+    dir: 'D:/AiProject/Node/projects/novels10',
+    totalChapters: 500,
+    completedChapters: 0,
+    avgScore: null,
+    writerFailures: 0,
+    jsonFailures: 0,
+    status: 'pending',
+    hasCover: false,
+    hasTrailer: false,
+    createdAt: '2025-05',
+  },
+  {
+    id: 'novels11',
+    name: 'novels11',
+    title: 'novels11',
+    dir: 'D:/AiProject/Node/projects/novels11',
+    totalChapters: 500,
+    completedChapters: 0,
+    avgScore: null,
+    writerFailures: 0,
+    jsonFailures: 0,
+    status: 'pending',
+    hasCover: false,
+    hasTrailer: false,
+    createdAt: '2025-05',
+  },
+  {
+    id: 'novels12',
+    name: 'novels12',
+    title: 'novels12',
+    dir: 'D:/AiProject/Node/projects/novels12',
+    totalChapters: 500,
+    completedChapters: 33,
+    avgScore: null,
+    writerFailures: 0,
+    jsonFailures: 0,
+    status: 'running',
+    hasCover: false,
+    hasTrailer: false,
+    createdAt: '2025-05',
+  },
 ]
 
 const DEFAULT_CONFIG = {
@@ -282,6 +357,54 @@ export const novelApi = {
       `[2025-05-18 10:10:20] [WARN] 遇到 2062 限流，等待 5s`,
       `[2025-05-18 10:10:26] [INFO] 限流恢复，继续生成`,
     ]
+  },
+
+  async getOutlines(projectId, page = 1, pageSize = 20) {
+    await delay(300)
+    const project = PROJECTS.find((p) => p.id === projectId)
+    const total = project ? project.totalChapters : 2000
+    const start = (page - 1) * pageSize + 1
+    const end = Math.min(start + pageSize - 1, total)
+    const outlines = []
+    for (let i = start; i <= end; i++) {
+      const hasOutline = i <= Math.max(1, project?.completedChapters || 0) || i <= 100
+      const score = hasOutline ? (Math.random() * 1.5 + 7.5).toFixed(2) : null
+      const verdict = hasOutline ? (parseFloat(score) >= 8.0 ? '通过' : '需修改') : null
+      outlines.push({
+        id: i,
+        title: hasOutline ? `第${i}章：风云再起` : `第${i}章（待生成）`,
+        summary: hasOutline
+          ? `本章承接前文，主角在绝境中寻得一线生机，关键人物登场，埋下后续伏笔。`
+          : '',
+        keyEvents: hasOutline
+          ? ['事件一：局势突变', '事件二：正面冲突', '事件三：逆转之机']
+          : [],
+        foreshadowing: hasOutline ? '后续某章揭晓的隐藏势力逐步浮出水面。' : '',
+        powerProgression: hasOutline ? '主角领悟新招式，战力略有提升。' : '',
+        emotionalArc: hasOutline ? '从压抑到爆发，情绪达到小高潮。' : '',
+        score,
+        verdict,
+        hasOutline,
+      })
+    }
+    return { outlines, total }
+  },
+
+  async getOutline(projectId, chapterId) {
+    await delay(200)
+    return {
+      id: chapterId,
+      title: `第${chapterId}章：风云再起`,
+      summary: `本章承接前文，主角在绝境中寻得一线生机，关键人物登场，埋下后续伏笔。`,
+      keyEvents: ['事件一：局势突变', '事件二：正面冲突', '事件三：逆转之机'],
+      foreshadowing: '后续某章揭晓的隐藏势力逐步浮出水面。',
+      powerProgression: '主角领悟新招式，战力略有提升。',
+      emotionalArc: '从压抑到爆发，情绪达到小高潮。',
+      hook: '章末留下强烈悬念，吸引继续阅读。',
+      score: (Math.random() * 1.5 + 7.5).toFixed(2),
+      verdict: '通过',
+      hasOutline: true,
+    }
   },
 }
 

@@ -12,6 +12,7 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 from pipeline import coordinator
+from pipeline import outline_gate
 from core.novel_config import resolve_project_dir
 
 
@@ -36,6 +37,7 @@ def main() -> int:
         return 1
 
     coordinator.init_project(project)
+    runtime = coordinator.runtime_context()
     end = args.end or int(coordinator.CONFIG["total_chapters"])
     start = max(1, args.start)
     push_interval = int(coordinator.CONFIG.get("coordinator", {}).get("push_interval_seconds", 120))
@@ -44,20 +46,20 @@ def main() -> int:
 
     coordinator.log(f"[OutlineLane] 启动: 第{start}-{end}章，只处理大纲")
     for chapter in range(start, end + 1):
-        ok = coordinator.process_outline_gate(chapter, push_on_failure=False)
+        ok = outline_gate.process_outline_gate(runtime, chapter, push_on_failure=False)
         if ok:
             continue
 
-        report = coordinator._load_outline_failure_report(chapter)
+        report = outline_gate.load_outline_failure_report(runtime, chapter)
         repaired = False
         for _ in range(max(0, args.passes)):
-            overlap_chapter = coordinator._repair_later_overlap(chapter, report)
+            overlap_chapter = outline_gate.repair_later_overlap(runtime, chapter, report)
             if overlap_chapter is None:
                 break
-            if coordinator.process_outline_gate(chapter, push_on_failure=False):
+            if outline_gate.process_outline_gate(runtime, chapter, push_on_failure=False):
                 repaired = True
                 break
-            report = coordinator._load_outline_failure_report(chapter)
+            report = outline_gate.load_outline_failure_report(runtime, chapter)
 
         if not repaired:
             coordinator.log(f"[OutlineLane] 第{chapter}章大纲未通过，停止 outline lane")

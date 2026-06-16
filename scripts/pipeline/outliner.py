@@ -267,7 +267,7 @@ def _validate_outline_batch(chapters: list, batch_start: int, batch_end: int) ->
 
 def _outline_quality_contract() -> str:
     min_score = float(CONFIG.get("outline_reviewer", {}).get("min_score", 8.5))
-    return f"""## 【9分神作大纲契约】（必须满足，否则视为不合格）
+    return f"""## 【高质量单章大纲契约】（必须满足，否则视为不合格）
 - 大纲审查目标分必须达到 {min_score:g} 分及以上；低于该分数视为不合格，需要重写。
 - 必须顺接前章结尾的人物状态、地点、时间和危机，不能跳场景、跳时间、跳动机。
 
@@ -289,7 +289,7 @@ def _outline_quality_contract() -> str:
 ### 【反套路·强制要求】
 - 不得与前后章节核心事件重复；若发现重复，必须重新设计本章独有冲突和爽点。
 - 禁止套路化设计：禁止"遇敌→分析→升级→打赢"的标准战斗流程，禁止"发现问题→查资料→解决"的标准解谜流程。
-- 每章必须包含至少一个"此前从未出现过的新元素"（新人物、新地点、新规则、新真相、新威胁、新情感关系）。
+- 每章必须产生有效的新进展：新信息、关系变化、风险升级、目标推进或旧伏笔回收至少一项；不强制新增人物或地点。
 
 ### 【基础要求】
 - summary 必须写具体剧情链路：起因、冲突、转折、结果、章末钩子，不得写模板话。
@@ -297,8 +297,9 @@ def _outline_quality_contract() -> str:
 - foreshadowing 必须包含本章埋下或回收的具体伏笔，不能只写抽象评价。
 - power_progression 必须说明主角能力、资源、关系、情报或目标的具体变化。
 - 人物动机必须可执行、可理解，不能为了剧情强行行动。
-- 每章必须有危机升级和读者爽点，且爽点来自主角判断、能力、资源或协作的实际发挥。
-- 爽点必须触及角色核心恐惧或核心欲望，不能停留在表层利害计算。"""
+- 每章必须有冲突升级和阅读回报，回报来自主角判断、能力、资源、关系或协作的实际发挥。
+- 回报应触及角色核心欲望、恐惧或当前阶段目标，不能只有表层事件堆叠。
+- 四项硬门槛必须在章级尺度成立：明确欲望、产生真实代价的承诺或选择、中段改变行动方案、章末正在发生的强钩子。"""
 
 
 def _feedback_attempt_count(review_feedback_data: dict, chapter_no: int) -> int:
@@ -322,19 +323,21 @@ def _feedback_hard_constraints(review_feedback_data: dict, batch_start: int, bat
         chapter_no = value.get("chapter")
         if not chapter_no or not (batch_start <= int(chapter_no) <= batch_end):
             continue
+        reviews = value.get("reviews") if isinstance(value.get("reviews"), list) else []
+        # Recent concrete continuity and repair instructions must outrank stale
+        # aggregate reasons accumulated across many failed attempts.
+        for review in reversed(reviews[-3:]):
+            if not isinstance(review, dict):
+                continue
+            for field in ("continuity_issues", "suggestions", "weaknesses"):
+                values = review.get(field, [])
+                if isinstance(values, list):
+                    constraints.extend(str(item).strip() for item in values if str(item).strip())
         analysis = value.get("failure_analysis") if isinstance(value.get("failure_analysis"), dict) else {}
         for field in ("adjustments", "likely_reasons"):
             values = analysis.get(field, [])
             if isinstance(values, list):
                 constraints.extend(str(item).strip() for item in values if str(item).strip())
-        reviews = value.get("reviews") if isinstance(value.get("reviews"), list) else []
-        for review in reviews[-2:]:
-            if not isinstance(review, dict):
-                continue
-            for field in ("suggestions", "weaknesses", "continuity_issues"):
-                values = review.get(field, [])
-                if isinstance(values, list):
-                    constraints.extend(str(item).strip() for item in values if str(item).strip())
     return list(dict.fromkeys(constraints))[:12]
 
 
@@ -359,6 +362,7 @@ def _compact_review_feedback(review_feedback_data: dict, batch_start: int, batch
             "latest_score": latest.get("overall_score"),
             "latest_weaknesses": list(latest.get("weaknesses", []))[:3],
             "latest_suggestions": list(latest.get("suggestions", []))[:3],
+            "latest_continuity_issues": list(latest.get("continuity_issues", []))[:3],
         }
     return compact
 
@@ -425,6 +429,12 @@ def _build_rescue_prompt(
 
 {_outline_quality_contract()}
 
+卡章救援规则：
+- 若同一问题已重复出现，不得沿用上一版的事件顺序、场景组织和反转方式，必须重构冲突链。
+- 前一章结尾状态是本章开场硬起点，后一章开场状态是本章结尾硬终点；时间、地点、人物伤势和道具状态必须闭合。
+- 不得用重复发生的灾难、重复倒计时或另一轮纯对话对峙冒充新转折。
+- 最新 continuity_issues 的优先级高于早期泛化建议；冲突时以最新意见和前后章事实为准。
+
 输出要求：
 - 只输出合法JSON，不要Markdown代码块，不要解释文字。
 - 只生成第{batch_start}章到第{batch_end}章，共{batch_end - batch_start + 1}个章节对象。
@@ -465,7 +475,8 @@ def generate_outline_range(
     candidate_file: Path = None,
 ):
     batch_size = 15
-    output_file = outline_file
+    if outline_file is not None:
+        print("[Outliner] --outline-file 已废弃并被忽略；大纲统一写入 chapters/outline/chapter_XXXX.json")
     failures = []
 
     world = _load_json(WORLD_FILE)
@@ -511,35 +522,22 @@ def generate_outline_range(
         start = chapter
         end = chapter
 
-    outline = {"chapters": []}
-    last_chapter = 0
-    if output_file and output_file.exists():
-        try:
-            outline = json.loads(output_file.read_text(encoding="utf-8"))
-            if outline.get("chapters"):
-                last_chapter = max(ch.get("chapter_number", 0) for ch in outline["chapters"])
-        except Exception:
-            outline = {"chapters": []}
-    elif output_file is None:
-        outline = {"chapters": list_outline_chapters(NOVELS_DIR)}
-        covered = {
-            item.get("chapter_number")
-            for item in outline["chapters"]
-            if start <= item.get("chapter_number", 0) <= end
-        }
-        if not fill_gaps and not chapter and len(covered) == end - start + 1:
-            print(f"[Outliner] 单章大纲范围{start}-{end}已覆盖，跳过")
-            return
-
-    if output_file and last_chapter >= end and not fill_gaps and not chapter and not candidate_file:
-        print(f"[Outliner] 大纲已生成到第{last_chapter}章，范围{start}-{end}已覆盖，跳过")
-        write_outline_chapters(NOVELS_DIR, outline)
+    outline = {"chapters": list_outline_chapters(NOVELS_DIR)}
+    covered = {
+        item.get("chapter_number")
+        for item in outline["chapters"]
+        if start <= item.get("chapter_number", 0) <= end
+    }
+    if not fill_gaps and not chapter and len(covered) == end - start + 1:
+        print(f"[Outliner] 单章大纲范围{start}-{end}已覆盖，跳过")
         return
 
     # 计算实际需要生成的章节范围
     if candidate_file and chapter:
         batch_ranges = [(chapter, chapter)]
-    elif fill_gaps or chapter:
+    elif chapter:
+        batch_ranges = [(chapter, chapter)]
+    elif fill_gaps:
         existing_chapters = {item.get("chapter_number") for item in outline.get("chapters", [])}
         missing = [ch for ch in range(start, end + 1) if ch not in existing_chapters]
         if not missing:
@@ -558,8 +556,7 @@ def generate_outline_range(
                 batch_e = ch
         batch_ranges.append((batch_s, batch_e))
     else:
-        actual_start = max(start, last_chapter + 1) if output_file else start
-        batch_ranges = [(s, min(s + batch_size - 1, end)) for s in range(actual_start, end + 1, batch_size)]
+        batch_ranges = [(s, min(s + batch_size - 1, end)) for s in range(start, end + 1, batch_size)]
 
     system = """你是一位顶级中文网络小说大纲设计师。
 你需要设计详细的大纲，每章包含标题、核心事件、涉及角色、场景、情感基调、伏笔、能力/事业进展。
@@ -715,10 +712,7 @@ origin/ 原始参考素材：
                 print(f"[Outliner] 候选大纲已保存 -> {candidate_file}")
                 continue
             outline["chapters"].extend(new_chapters)
-            if output_file:
-                output_file.parent.mkdir(parents=True, exist_ok=True)
-                output_file.write_text(json.dumps(outline, ensure_ascii=False, indent=2), encoding="utf-8")
-            skip_existing = fill_gaps or (chapter is not None)
+            skip_existing = fill_gaps and chapter is None
             write_outline_chapters(NOVELS_DIR, {"chapters": new_chapters}, skip_existing=skip_existing)
         except Exception as e:
             print(f"[Outliner] 第 {batch_start}-{batch_end} 章解析失败: {e}")
@@ -746,7 +740,7 @@ def main():
     parser.add_argument("--project", "-p", type=str, default=os.getenv("NOVEL_PROJECT_DIR", ""), help="小说项目目录")
     parser.add_argument("--start", type=int, default=1, help="起始章节")
     parser.add_argument("--end", type=int, default=0, help="结束章节")
-    parser.add_argument("--outline-file", type=str, default="", help="指定大纲索引输出文件路径（用于并行生成）")
+    parser.add_argument("--outline-file", type=str, default="", help="兼容参数；已废弃，大纲统一写入单章文件")
     parser.add_argument("--fill-gaps", action="store_true", help="只生成缺失的章节，跳过已存在的")
     parser.add_argument("--chapter", type=int, default=0, help="只生成指定单章的大纲")
     parser.add_argument("--review-feedback", type=str, default="", help="大纲审查意见JSON文件路径，用于指导改进")

@@ -138,7 +138,7 @@ def normalize_outline_text(value: Any) -> Any:
 
 
 def _writer_quality_contract() -> str:
-    min_score = float(CONFIG.get("reviewer", {}).get("min_score", 7.0))
+    min_score = float(CONFIG.get("reviewer", {}).get("min_score", 8.5))
     quality = CONFIG.get("quality", {})
     min_words = int(quality.get("min_chapter_words", 5000))
     max_words = int(quality.get("max_chapter_words", 12000))
@@ -342,7 +342,7 @@ def generate_chapter(
                 score = float(score)
             except (TypeError, ValueError):
                 score = 0.0
-            min_review_score = float(CONFIG.get("reviewer", {}).get("min_score", 7.0))
+            min_review_score = float(CONFIG.get("reviewer", {}).get("min_score", 8.5))
             if status != "completed" or verdict in {"需重写", "需修改"} or score < min_review_score:
                 is_rewrite = True
                 log(f"[Writer] 第{chapter_number}章检测到未通过审查报告（status:{status}，评分{score}，verdict:{verdict}），将基于建议重写")

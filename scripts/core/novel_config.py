@@ -26,7 +26,7 @@ DEFAULT_CONFIG = {
     "reviewer": {
         "max_tokens": 4096,
         "temperature": 0.3,
-        "min_score": 7.0,
+        "min_score": 8.5,
         "origin_max_chars": 4000,
     },
     "outline_reviewer": {
@@ -61,13 +61,27 @@ DEFAULT_CONFIG = {
         "parallel_agents": 2,
     },
     "coordinator": {
-        "batch_size": 40,
-        "num_workers": 2,
-        "review_workers": 2,
-        "draft_workers": 2,
-        "pause_between_batches": 3.0,
+        "draft_workers": 1,
+        "draft_continuity_window": 1,
         "push_interval_seconds": 120,
         "outline_lookahead_chapters": 10,
+        "outline_overlap_repair_passes": 1,
+        "outline_attempts_per_round": 3,
+        "outline_analysis_rounds": 3,
+        "draft_attempts_per_round": 3,
+        "draft_analysis_rounds": 3,
+    },
+    "outline_race": {
+        "enabled": False,
+        "candidates": 3,
+        "max_workers": 3,
+        "stop_on_first_pass": True,
+    },
+    "draft_race": {
+        "enabled": False,
+        "candidates": 3,
+        "max_workers": 3,
+        "stop_on_first_pass": True,
     },
     "repair": {
         "max_consecutive_failures": 5,
@@ -97,6 +111,7 @@ DEFAULT_CONFIG = {
 
 STANDARD_PROJECT_DIRS = (
     "chapters/outline",
+    "chapters/outline_review",
     "chapters/draft",
     "chapters/review",
     "chapters/final",

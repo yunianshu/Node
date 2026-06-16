@@ -88,6 +88,14 @@ def _mmx_status(mmx_path: str) -> tuple[bool, str]:
     return True, f"mmx={found}"
 
 
+def _float_config(config: dict, section: str, key: str, default: float) -> float:
+    value = config.get(section, {}).get(key, default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="检查小说项目迁移后是否可运行")
     parser.add_argument("--project", "-p", default=os.getenv("NOVEL_PROJECT_DIR", ""))
@@ -115,7 +123,16 @@ def main() -> int:
     else:
         warnings.append("config.json 不存在，将使用默认配置")
 
-    for rel in ("chapters/outline", "chapters/draft", "chapters/review", "chapters/final", "logs", "reports"):
+    outline_min_score = _float_config(config, "outline_reviewer", "min_score", 8.5)
+    draft_min_score = _float_config(config, "reviewer", "min_score", 8.5)
+    if draft_min_score < 8.5:
+        warnings.append(f"reviewer.min_score={draft_min_score:g} 低于当前推荐门槛 8.5")
+    if draft_min_score < outline_min_score:
+        warnings.append(
+            f"reviewer.min_score={draft_min_score:g} 低于 outline_reviewer.min_score={outline_min_score:g}，正文门槛可能偏松"
+        )
+
+    for rel in ("chapters/outline", "chapters/outline_review", "chapters/draft", "chapters/review", "chapters/final", "logs", "reports"):
         ok, detail = _check_writeable(project / rel)
         (print if ok else issues.append)(f"[OK] {rel} {detail}" if ok else f"{rel} {detail}")
 

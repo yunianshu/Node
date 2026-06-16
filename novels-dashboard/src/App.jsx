@@ -7,6 +7,7 @@ import Config from './pages/Config'
 import Quota from './pages/Quota'
 import Multimedia from './pages/Multimedia'
 import Logs from './pages/Logs'
+import Outlines from './pages/Outlines'
 
 function App() {
   return (
@@ -19,6 +20,7 @@ function App() {
         <Route path="/quota" element={<Quota />} />
         <Route path="/multimedia" element={<Multimedia />} />
         <Route path="/logs" element={<Logs />} />
+        <Route path="/outlines" element={<Outlines />} />
       </Routes>
     </Layout>
   )

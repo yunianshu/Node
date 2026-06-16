@@ -14,13 +14,11 @@ if str(TOOLS_ROOT) not in sys.path:
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
 from core.novel_config import load_config, load_origin_materials, resolve_project_dir
-from core.workflow_state import list_outline_chapters, write_outline_chapters
 
 NOVELS_DIR = None
 WORLD_FILE = None
@@ -330,122 +328,6 @@ def generate_media_prompts():
     print("[Planner] 媒体提示词已写入 world.json 和 media/ 提示词文件")
 
 
-def generate_outline_range(start: int, end: int, outline_file: Path = None):
-    batch_size = 15
-    output_file = outline_file
-
-    world = {}
-    characters = {}
-    if WORLD_FILE.exists():
-        with open(WORLD_FILE, "r", encoding="utf-8") as f:
-            world = json.load(f)
-    if CHARACTERS_FILE.exists():
-        with open(CHARACTERS_FILE, "r", encoding="utf-8") as f:
-            characters = json.load(f)
-
-    world_json = json.dumps(world, ensure_ascii=False, indent=2)
-    chars_json = json.dumps(characters, ensure_ascii=False, indent=2)
-
-    outline = {"chapters": []}
-    last_chapter = 0
-    if output_file and output_file.exists():
-        with open(output_file, "r", encoding="utf-8") as f:
-            outline = json.load(f)
-        if outline.get("chapters"):
-            last_chapter = max(ch.get("chapter_number", 0) for ch in outline["chapters"])
-    elif output_file is None:
-        outline = {"chapters": list_outline_chapters(NOVELS_DIR)}
-
-    if output_file and last_chapter >= end:
-        print(f"[Planner] 大纲已生成到第{last_chapter}章，范围{start}-{end}已覆盖，跳过")
-        return
-
-    actual_start = max(start, last_chapter + 1) if output_file else start
-
-    system = """你是一位顶级东方玄幻/武侠/修仙小说大纲设计师。
-你需要设计详细的大纲，每章包含标题、核心事件、涉及角色、场景、情感基调。
-严格按照 premise 中描述的故事设定和主角设定来设计大纲。
-输出必须是合法的JSON格式。"""
-
-    for batch_start in range(actual_start, end + 1, batch_size):
-        batch_end = min(batch_start + batch_size - 1, end)
-        print(f"[Planner] 正在生成第 {batch_start}-{batch_end} 章大纲...")
-
-        prev_context = ""
-        if outline.get("chapters"):
-            prev_chapters = outline["chapters"][-3:]
-            prev_context = "\n前一批最后几章摘要（用于衔接）：\n"
-            for ch in prev_chapters:
-                prev_context += f"第{ch.get('chapter_number')}章《{ch.get('title')}》：{ch.get('summary', '')[:100]}...\n"
-
-        prompt = f"""请根据以下世界观和角色设定，生成第{batch_start}章到第{batch_end}章的详细大纲。
-
-世界观设定：
-{world_json}
-
-角色设定：
-{chars_json}
-
-故事前提：{NOVEL_PREMISE}
-
-origin/ 原始参考素材：
-{ORIGIN_MATERIALS or "（无）"}
-
-{prev_context}
-
-请输出以下JSON结构：
-{{
-  "chapters": [
-    {{
-      "chapter_number": {batch_start},
-      "title": "章节标题",
-      "summary": "核心事件摘要（150-250字）",
-      "characters_involved": ["角色名1", "角色名2"],
-      "location": "场景地点",
-      "mood": "情感基调",
-      "key_events": ["事件1", "事件2"],
-      "foreshadowing": "埋下的伏笔",
-      "power_progression": "实力变化说明",
-      "word_count_target": 5000
-    }},
-    ...
-  ]
-}}
-
-要求：
-1. 每章必须有独特的核心事件，不能流水账
-2. 情节要有起伏，有高潮有低谷，有扮猪吃虎的爽点
-3. 主角的实力和技能要逐步成长，保持升级爽感
-4. 伏笔要前后呼应，与前一批大纲自然衔接
-5. 如果 origin/ 中存在素材，必须参考其中的设定、人物关系、历史事件和风格约束
-6. 要有"强敌轻视主角，结果被主角以积累的实力碾压"的爽文桥段
-7. 探索不同场景时要展现环境差异和世界多样性
-8. 必须输出合法JSON，总共{batch_end - batch_start + 1}个章节对象"""
-
-        content = call_mmx(system, prompt, max_tokens=8192, temperature=0.5)
-        if not content:
-            print(f"[Planner] 第 {batch_start}-{batch_end} 章大纲生成失败")
-            continue
-
-        try:
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0].strip()
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0].strip()
-            batch_outline = json.loads(content)
-            new_chapters = batch_outline.get("chapters", [])
-            outline["chapters"].extend(new_chapters)
-            print(f"[Planner] 第 {batch_start}-{batch_end} 章大纲已生成（{len(new_chapters)}章）")
-            if output_file:
-                with open(output_file, "w", encoding="utf-8") as f:
-                    json.dump(outline, f, ensure_ascii=False, indent=2)
-            write_outline_chapters(NOVELS_DIR, outline)
-        except Exception as e:
-            print(f"[Planner] 第 {batch_start}-{batch_end} 章解析失败: {e}")
-            with open(NOVELS_DIR / "logs" / f"outline_batch_{batch_start:04d}.raw", "w", encoding="utf-8") as f:
-                f.write(content)
-
-    print(f"[Planner] 大纲范围 {start}-{end} 已完成，共 {len(outline['chapters'])} 章")
 
 
 def main():
@@ -456,7 +338,7 @@ def main():
     parser.add_argument("--start", type=int, default=1, help="兼容参数，Planner不再生成大纲")
     parser.add_argument("--end", type=int, default=0, help="兼容参数，Planner不再生成大纲")
     parser.add_argument("--world-only", action="store_true", help="兼容参数，Planner默认只生成世界观和角色")
-    parser.add_argument("--outline-file", type=str, default="", help="兼容参数，大纲请使用 outliner.py")
+    parser.add_argument("--outline-file", type=str, default="", help="兼容参数；Planner 不生成大纲")
     args = parser.parse_args()
 
     try:
