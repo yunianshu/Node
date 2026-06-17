@@ -121,16 +121,16 @@ def make_issue(severity: str, category: str, chapters: list[int], detail: str, e
     }
 
 
-def local_full_scan(project: Path, total: int, min_score: float) -> dict:
+def local_full_scan(project: Path, total: int, min_score: float, start_ch: int = 1) -> dict:
     rules = load_quality_rules(project)
-    statuses = scan_chapter_status(project, 1, total, use_cache=False)
+    statuses = scan_chapter_status(project, start_ch, total, use_cache=False)
     issues: list[dict] = []
     chapter_rows: list[dict] = []
     hashes: dict[str, list[int]] = {}
     fingerprints: dict[int, set[str]] = {}
     final_texts: dict[int, str] = {}
 
-    for chapter in range(1, total + 1):
+    for chapter in range(start_ch, total + 1):
         paths = chapter_paths(project, chapter)
         missing = [name for name, path in paths.items() if not path.exists()]
         if missing:
@@ -183,7 +183,7 @@ def local_full_scan(project: Path, total: int, min_score: float) -> dict:
         if len(group) > 1:
             issues.append(make_issue("critical", "exact_duplicate_chapter", group, "多个章节正文完全相同"))
 
-    for chapter in range(1, total + 1):
+    for chapter in range(start_ch, total + 1):
         for other in range(chapter + 1, min(total, chapter + 5) + 1):
             similarity = jaccard(fingerprints.get(chapter, set()), fingerprints.get(other, set()))
             if similarity >= 0.72:
@@ -216,7 +216,7 @@ def local_full_scan(project: Path, total: int, min_score: float) -> dict:
         "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "total_chapters": total,
         "artifact_counts": {
-            name: sum(1 for chapter in range(1, total + 1) if chapter_paths(project, chapter)[name].exists())
+            name: sum(1 for chapter in range(start_ch, total + 1) if chapter_paths(project, chapter)[name].exists())
             for name in ("outline", "outline_review", "draft", "review", "final")
         },
         "final_ok_count": sum(1 for status in statuses.values() if status.final_ok),
@@ -792,20 +792,30 @@ def main() -> int:
     parser.add_argument("--project", "-p", default=os.getenv("NOVEL_PROJECT_DIR", ""))
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--local-only", action="store_true")
+    parser.add_argument("--start", type=int, default=0, help="起始章节（默认1，用于小批量验证）")
+    parser.add_argument("--end", type=int, default=0, help="结束章节（默认读config.total_chapters，用于小批量验证）")
     args = parser.parse_args()
 
     project = resolve_project_dir(args.project)
     config = load_config(project)
-    total = int(config.get("total_chapters", 0))
+    config_total = int(config.get("total_chapters", 0))
+    # 支持范围参数：未生成全本正文时，只审已有章节验证终审分数
+    start_ch = args.start if args.start > 0 else 1
+    total = args.end if args.end > 0 else config_total
     min_score = float(config.get("reviewer", {}).get("min_score", 8.5))
-    reports = project / "reports" / "book_review"
+    # 范围模式：用独立报告目录，避免覆盖全本终审结果
+    if start_ch != 1 or total != config_total:
+        reports = project / "reports" / f"book_review_{start_ch:04d}_{total:04d}"
+        log(project, f"范围终审模式: 第{start_ch}-{total}章 (全本{config_total}章)，报告写入独立目录")
+    else:
+        reports = project / "reports" / "book_review"
     segments_dir = reports / "segments"
     volumes_dir = reports / "volumes"
     reports.mkdir(parents=True, exist_ok=True)
 
-    log(project, f"开始整本终审: 1-{total}章")
+    log(project, f"开始整本终审: {start_ch}-{total}章")
     local_path = reports / "local_full_scan.json"
-    local_scan = local_full_scan(project, total, min_score)
+    local_scan = local_full_scan(project, total, min_score, start_ch=start_ch)
     atomic_json(local_path, local_scan)
     log(project, f"本地全量扫描完成: issues={len(local_scan['issues'])}")
 
@@ -813,7 +823,7 @@ def main() -> int:
         return 0
 
     workers = args.workers or int(config.get("book_reviewer", {}).get("workers", 5) or 5)
-    segment_ranges = [(start, min(total, start + 9)) for start in range(1, total + 1, 10)]
+    segment_ranges = [(start, min(total, start + 9)) for start in range(start_ch, total + 1, 10)]
     segments: dict[int, dict] = {}
     with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
         futures = {
@@ -836,7 +846,8 @@ def main() -> int:
             log(project, f"分段审查完成: {start}-{end} status={segments[start].get('status')}")
     segment_list = [segments[start] for start, _ in segment_ranges]
 
-    volume_ranges = [(start, min(total, start + 49)) for start in range(1, total + 1, 50)]
+    volume_size = 50
+    volume_ranges = [(start, min(total, start + volume_size - 1)) for start in range(start_ch, total + 1, volume_size)]
     volumes: dict[int, dict] = {}
     with ThreadPoolExecutor(max_workers=min(max(1, workers), 5)) as executor:
         futures = {}
@@ -866,6 +877,7 @@ def main() -> int:
     manifest = {
         "status": "completed" if final.get("status") == "completed" else "incomplete",
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "range": f"{start_ch}-{total}",
         "local_scan": str(local_path),
         "segments": len(segment_list),
         "segment_completed": sum(item.get("status") == "completed" for item in segment_list),
@@ -875,7 +887,7 @@ def main() -> int:
         "markdown_report": str(reports / "final_book_review.md"),
     }
     atomic_json(reports / "manifest.json", manifest)
-    log(project, f"整本终审完成: verdict={final.get('verdict')} score={final.get('score')}")
+    log(project, f"整本终审完成({start_ch}-{total}): verdict={final.get('verdict')} score={final.get('score')}")
     return 0 if manifest["status"] == "completed" else 1
 
 
