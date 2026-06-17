@@ -35,9 +35,15 @@ def run(cmd_args, timeout=400):
         stdout, stderr = proc.communicate(timeout=timeout)
         return proc.returncode, (stdout or "") + (stderr or "")
     except sp.TimeoutExpired:
-        # 强杀整个进程树（/T 杀子进程 /F 强制），解决 node 残留问题
+        # 强杀整个进程树（/T 杀子进程 /F 强制）
         try:
             sp.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                   capture_output=True, timeout=15)
+        except Exception:
+            pass
+        # 额外杀所有 node.exe（mmx 调用的 node 可能不在 writer 进程树内）
+        try:
+            sp.run(["taskkill", "/F", "/IM", "node.exe"],
                    capture_output=True, timeout=15)
         except Exception:
             pass
@@ -132,7 +138,7 @@ def main():
                 print(f"[{ch_tag}] writer 生成中...")
                 t0 = time.time()
                 rc, out = run([py_exe, "scripts/pipeline/writer.py",
-                               "--project", str(project), "--chapter", str(chapter)], timeout=180)
+                               "--project", str(project), "--chapter", str(chapter)], timeout=100)
                 elapsed = time.time() - t0
                 print(f"[{ch_tag}] writer 完成 rc={rc} 耗时{elapsed:.0f}s")
                 if rc != 0 or not draft.exists():
@@ -143,7 +149,7 @@ def main():
             print(f"[{ch_tag}] reviewer 审查中...")
             t0 = time.time()
             rc, out = run([py_exe, "scripts/pipeline/reviewer.py",
-                           "--project", str(project), "--chapter", str(chapter)], timeout=120)
+                           "--project", str(project), "--chapter", str(chapter)], timeout=70)
             elapsed = time.time() - t0
             print(f"[{ch_tag}] reviewer 完成 rc={rc} 耗时{elapsed:.0f}s")
 
