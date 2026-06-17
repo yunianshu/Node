@@ -70,14 +70,14 @@ Planner
 Chapter N loop:
   Outline lookahead（默认10章）
      ↓ 先确保第 N 到 N+9 章大纲均已生成并通过审查
-  Outliner
+  Outliner / Outline Race
      ↓ chapters/outline/chapter_XXXX.json
   Outline Reviewer（大纲审查）
      ↓ 不通过：下一次 Outliner 必须立即带审查意见重生成同一章大纲；通过：进入 Writer
-  Writer
+  Writer / Draft Race（正文多候选赛马，默认3候选并行）
      ↓ chapters/draft/chapter_XXXX.txt
-  Reviewer
-     ↓ 不通过：带审查意见重新生成同一章初稿；通过：写入 final
+  Reviewer（对每个候选/精修稿评分，取最高）
+     ↓ 不通过：带审查意见重新生成/精修同一章初稿；通过：写入 final
   Final
      ↓ chapters/final/chapter_XXXX.txt
 Push/Reports
@@ -93,6 +93,7 @@ Push/Reports
 - **审查反馈必须压缩后再传给生成端**。多轮失败时只保留最高分、最近一轮 verdict/score、前 6 条核心失败原因、前 6 条必要修正和少量最新建议；不要把完整历史 reviews、长 failure_analysis 或大段 origin 全量塞入 Outliner/Writer。单章大纲输出也要控制长度：`key_events` 建议 5-7 条、每条不超过 90 字，优先保证 JSON 闭合和必填字段完整。
 - **Outline Reviewer** 紧跟 Outliner。大纲每轮最多生成/审查 3 次；每一次大纲审查未通过、Outliner 生成失败、JSON 解析失败或结构字段不完整后，Coordinator 都必须立即写入 `logs/outline_feedback_chXXXX_roundN.json` 并在下一次 Outliner 调用中传入 `--review-feedback`，不能等到下一轮才带反馈。3 次仍不通过时进入下一轮原因调整；最多 3 轮；仍不通过则停止全流程并推送企业微信错误。
 - 当 `outline_race.enabled=true` 时，大纲质量门必须使用候选并行赛马：同一章并发启动多个 Outliner 候选，每个候选写入 `logs/outline_candidates/chXXXX/roundR_attemptA/candidate_NN.json`，对应 Outline Reviewer 写入同目录候选审查文件；任一候选达到 `outline_reviewer.min_score` 后，Coordinator 立即发布该候选到正式 `chapters/outline/chapter_XXXX.json` 与 `chapters/outline_review/chapter_XXXX_review.json`，并停止同章其他候选进程。所有候选均失败时，汇总最佳分数与失败原因写入下一轮 `--review-feedback`。候选流程不得让多个 Outliner/Reviewer 直接抢写正式大纲文件。
+- **当 `draft_race.enabled=true`（默认开启）时，正文阶段启用多候选赛马**。Coordinator 对每章并发启动 `draft_race.candidates` 个 Writer 候选（默认 3），每个候选写入 `logs/draft_candidates/chXXXX/roundR_attemptA/candidate_NN.txt`，对应 Reviewer 写入同目录候选审查文件。任一候选达到 `reviewer.min_score` 且通过本地质量门，Coordinator 立即发布该候选到正式 `chapters/draft/chapter_XXXX.txt` 与 `chapters/review/chapter_XXXX_review.json`，并停止同章其他候选进程。所有候选均失败时，汇总最佳分数与失败原因进入下一轮或触发 Polisher 精修。候选流程不得让多个 Writer/Reviewer 直接抢写正式初稿文件。
 - 如果大纲审查意见明确指出“与后章重叠/重复/冲突”，默认按“后章有问题”处理：Coordinator 先删除并重写后章大纲，再回头重审当前章，避免把边界错算到前章。
 - **Writer/Reviewer** 紧跟已过审大纲执行。`scripts/maintenance/draft_lane.py` 可用 `--workers` 并发生成初稿，但每章启动前必须确认本章大纲已通过；并发必须受 `--continuity-window` 约束，避免后文无限越过前文。Writer 必须读取前后章节大纲、前一章结尾和审查反馈来处理章节承接；Reviewer 写共享进度文件时应避免并发写冲突。初稿重写次数按 `coordinator.draft_attempts_per_round × coordinator.draft_analysis_rounds` 执行；不通过时 Writer 必须带着上一轮 Reviewer 审查意见重写同一章。耗尽配置次数仍不通过时，Coordinator/draft lane 汇总原因并停止全流程或当前 lane，推送企业微信错误。
 - 初稿审查通过后，Coordinator 将合格初稿写入 `chapters/final/chapter_XXXX.txt`。普通流程不再依赖全局 rewrite 队列作为主路径。
@@ -177,6 +178,12 @@ python "scripts/maintenance/wechat_notify.py" --project "projects/<book_id>"
     "draft_analysis_rounds": 3
   },
   "outline_race": {
+    "enabled": true,
+    "candidates": 3,
+    "max_workers": 3,
+    "stop_on_first_pass": true
+  },
+  "draft_race": {
     "enabled": true,
     "candidates": 3,
     "max_workers": 3,

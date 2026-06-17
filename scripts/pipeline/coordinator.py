@@ -29,6 +29,7 @@ from core.push_notifier import (
     push_error as _push_error,
 )
 from core.workflow_state import (
+    aggregate_review_scores,
     highest_contiguous,
     outline_review_dir,
     report_path,
@@ -789,12 +790,18 @@ def generate_summary_report():
     review_scores = [status.review_score for status in statuses.values() if status.final_ok and status.review_score is not None]
     rewrite_count = sum(1 for status in statuses.values() if status.review_exists and not status.review_ok)
 
+    # 单章评分常被软封顶在 8.5 附近，算术平均会被低分章拖低；改用分位数口径，
+    # 让中位数与过审率反映真实质量分布，避免整本分被单一均分锚定。
+    min_score = float(CONFIG.get("reviewer", {}).get("min_score", 8.5))
+    score_metrics = aggregate_review_scores(review_scores, min_score=min_score)
+
     report = {
         "total_chapters": len(completed),
         "target_chapters": CONFIG["total_chapters"],
         "total_words": total_words,
         "average_words_per_chapter": total_words // len(completed) if completed else 0,
-        "average_score": sum(review_scores) / len(review_scores) if review_scores else 0,
+        "average_score": score_metrics["average"],
+        "score_metrics": score_metrics,
         "rewrite_count": rewrite_count,
         "completed_chapters": completed
     }
@@ -805,7 +812,7 @@ def generate_summary_report():
 
     log(f"[Coordinator] 总结报告: 已完成 {report['total_chapters']}/{CONFIG['total_chapters']} 章")
     log(f"[Coordinator] 总字数: {report['total_words']:,} 字")
-    log(f"[Coordinator] 平均评分: {report['average_score']:.2f}")
+    log(f"[Coordinator] 评分: 均分 {score_metrics['average']:.2f} / 中位 {score_metrics['median']:.2f} / 过审率 {score_metrics['pass_rate'] * 100:.1f}%")
     log(f"[Coordinator] 需重写: {rewrite_count} 章")
     return report
 
@@ -935,7 +942,8 @@ def main():
         review=actual_review,
         final=actual_final,
         total_words=report["total_words"],
-        avg_score=report["average_score"],
+        avg_score=report["score_metrics"]["median"],
+        pass_rate=report["score_metrics"]["pass_rate"],
         rewrite_count=report["rewrite_count"],
     )
 

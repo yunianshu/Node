@@ -213,7 +213,10 @@ def review_outline(
     "suspense_density": "悬念密度（0-10。tension_points是否有至少3个有效张力节点？分布是否合理？）",
     "information_freshness": "信息新鲜度（0-10。是否有至少一个此前从未出现的新元素？有无重复已知信息？）",
     "anti_cliche": "反套路程度（0-10。是否存在标准战斗/解谜模板？是否有意外和不可预测性？）",
-    "writeability": "整体可写性（0-10。Writer能否据此写出9分神作级正文？）"
+    "writeability": "整体可写性（0-10。Writer能否据此写出9分神作级正文？）",
+    "structure_function": "结构功能合理性（0-10。story_beat是否名实相符？是否呼应本章在全卷/全书中的结构位置？如标注为midpoint是否有真正的赌注升级与被动转主动？）",
+    "goal_stakes": "目标赌注清晰度（0-10。chapter_goal是否是本章可推进的具体目标？失败后果是否触及核心利益？还是空泛的全书级口号？）",
+    "payoff_chain": "爽点链完整性（0-10。payoff_design是否有完整的期待→压制→反转→碾压链条？爽点是否来自实力真实发挥而非巧合？）"
   }},
   "design_gates": {{
     "core_desire": {{"passed": true, "evidence": "主角本章具体想得到或保护什么，60字以内"}},
@@ -225,7 +228,25 @@ def review_outline(
   "weaknesses": ["不足1，80字以内。如果给分低于9分，必须在这里明确写出距离9分的具体差距"],
   "suggestions": ["具体修改建议1，80字以内"],
   "continuity_issues": ["与前后章衔接问题，80字以内"],
-  "summary": "总体评价，80字以内。如果评分低于9分，用一句话回答：本章大纲最致命的短板是什么？"
+  "summary": "总体评价，80字以内。如果评分低于9分，用一句话回答：本章大纲最致命的短板是什么？",
+  "edits": [
+    {{
+      "field": "summary",
+      "action": "replace",
+      "value": "修改后的具体剧情摘要"
+    }},
+    {{
+      "field": "key_events",
+      "action": "replace_index",
+      "index": 0,
+      "value": "修改后的关键事件"
+    }},
+    {{
+      "field": "chapter_hook",
+      "action": "replace",
+      "value": "修改后的章末钩子"
+    }}
+  ]
 }}
 
 【9分神作大纲审查清单——逐条自检】
@@ -238,10 +259,13 @@ def review_outline(
 6. 是否存在套路化设计（标准战斗流程、标准解谜流程、配角当解说员）？
 7. 本章回报是否触及角色核心欲望、恐惧或明确阶段目标，而非只有表层事件堆叠？
 8. 如果Writer严格按这个大纲写，能否产出一章让人读完立刻想打开下一章的内容？
+9. story_beat是否名实相符？标注的结构功能（如catalyst/midpoint/all_is_lost/finale）是否在剧情中真正兑现？与全卷节奏曲线是否衔接？
+10. chapter_goal是否是本章可推进的具体目标（非全书口号）？失败后果是否触及核心利益？
+11. payoff_design是否包含完整的爽点链（期待→压制→反转→碾压）？若该字段缺失或空泛，需在weaknesses指出。
 
 要求：
 1. 评分要客观可复现。9分代表单章设计突出；达到{min_score}分且四项设计门通过，代表足以进入全书层级审查。
-2. 重点审查：悬念密度、钩子强度、情绪曲线、信息新鲜度、反套路程度。这五个维度比字段完整性更重要。
+2. 重点审查：悬念密度、钩子强度、情绪曲线、信息新鲜度、反套路程度、结构功能合理性、目标赌注、爽点链。这些维度比字段完整性更重要。
 3. 剧情是否有真正的冲突和转折，而非流水账
 4. 爽点设计是否到位：是否有期待感、压制、反转、碾压等要素，且是否触及角色内核
 5. 人物动机是否合理，是否与角色设定一致
@@ -251,10 +275,14 @@ def review_outline(
 9. 信息是否足够详细，Writer能否据此写出{outline.get('word_count_target', 5000)}字高质量正文
 10. 如果origin/中存在素材，必须检查大纲是否参考并遵守原始素材；与素材冲突需列入weaknesses或continuity_issues
 11. 如低于{min_score}分必须标记为需重写
-12. 必须输出合法JSON，不要Markdown，不要长篇解释"""
+12. 必须输出合法JSON，不要Markdown，不要长篇解释
+13. **必须输出 edits 数组**：如果 verdict 不是"通过"，必须给出至少一条字段级 edit（field/action/value），让 Outliner 能直接修改 JSON 而不是整章重生成。action 可选 replace/append/replace_index/delete_index。小问题优先改 chapter_hook、key_events、summary 等字段。"""
 
     log(f"[OutlineReviewer] 正在审查第{chapter_number}章大纲...")
+    start_time = time.time()
     content = call_mmx(system, prompt, max_tokens=4096, temperature=0.3)
+    elapsed = time.time() - start_time
+    log(f"[OutlineReviewer] 第{chapter_number}章大纲审查 API 调用耗时 {elapsed:.1f}s")
 
     if not content:
         log(f"[OutlineReviewer] 第{chapter_number}章大纲审查失败")
@@ -348,7 +376,9 @@ def review_outline(
 
     overall = review_data.get("overall_score", "N/A")
     verdict = review_data.get("verdict", "N/A")
-    log(f"[OutlineReviewer] 第{chapter_number}章大纲审查完成，评分: {overall}，verdict: {verdict}")
+    edits = review_data.get("edits", [])
+    edit_count = len(edits) if isinstance(edits, list) else 0
+    log(f"[OutlineReviewer] 第{chapter_number}章大纲审查完成，评分: {overall}，verdict: {verdict}， edits: {edit_count}")
     return review_data
 
 

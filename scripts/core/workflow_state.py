@@ -563,3 +563,56 @@ def atomic_write_json(path: Path, data) -> None:
 def write_status_file(base_dir: Path, statuses: Iterable[ChapterStatus]) -> None:
     data = {f"{s.chapter:04d}": asdict(s) for s in statuses}
     atomic_write_json(report_path(base_dir, "chapter_status.json"), data)
+
+
+def _percentile(sorted_scores: list[float], q: float) -> float:
+    """对已排序的分数列表计算分位数 q（0-1），使用线性插值法。"""
+    if not sorted_scores:
+        return 0.0
+    if len(sorted_scores) == 1:
+        return float(sorted_scores[0])
+    pos = q * (len(sorted_scores) - 1)
+    lower = int(pos)
+    upper = min(lower + 1, len(sorted_scores) - 1)
+    frac = pos - lower
+    return float(sorted_scores[lower] * (1 - frac) + sorted_scores[upper] * frac)
+
+
+def aggregate_review_scores(scores: Iterable[float], min_score: float = 8.5) -> dict:
+    """对一组单章评分做分位数口径聚合。
+
+    单章评分常被 prompt 软封顶在 8.5 附近，算术平均会被少数低分章节拖低，
+    进而锚定整本终审。这里返回中位数与分位数，让高质量章节的占比得以体现。
+
+    Args:
+        scores: 单章 overall_score 列表（已过滤掉 None）。
+        min_score: 通过门槛，用于计算 pass_rate。默认 8.5，与质量门一致。
+
+    Returns:
+        含 count/average/median/p75/p25/pass_rate/min/max 的 dict。
+        空输入返回全 0 的安全结构，调用方无需特判。
+    """
+    valid = [float(s) for s in scores if isinstance(s, (int, float))]
+    if not valid:
+        return {
+            "count": 0,
+            "average": 0.0,
+            "median": 0.0,
+            "p75": 0.0,
+            "p25": 0.0,
+            "pass_rate": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+        }
+    ordered = sorted(valid)
+    count = len(ordered)
+    return {
+        "count": count,
+        "average": round(sum(ordered) / count, 4),
+        "median": round(_percentile(ordered, 0.5), 4),
+        "p75": round(_percentile(ordered, 0.75), 4),
+        "p25": round(_percentile(ordered, 0.25), 4),
+        "pass_rate": round(sum(1 for s in ordered if s >= min_score) / count, 4),
+        "min": float(ordered[0]),
+        "max": float(ordered[-1]),
+    }

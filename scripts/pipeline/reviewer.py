@@ -325,7 +325,23 @@ def review_chapter(
   "weaknesses": ["不足1，80字以内。如果给分低于9分，必须在这里明确写出'距离9分的具体差距'"],
   "suggestions": ["具体修改建议1，80字以内"],
   "continuity_issues": ["与前文不一致之处，80字以内"],
-  "summary": "总体评价，80字以内。如果评分低于9分，用一句话回答：'本章最致命的短板是什么？'"
+  "summary": "总体评价，80字以内。如果评分低于9分，用一句话回答：'本章最致命的短板是什么？'",
+  "edits": [
+    {{
+      "type": "replace",
+      "old": "正文中需要被替换的原文片段（30-200字，必须精确可定位）",
+      "new": "替换后的文本"
+    }},
+    {{
+      "type": "insert",
+      "after": "原文锚点片段（插入位置）",
+      "text": "要插入的新内容"
+    }},
+    {{
+      "type": "delete",
+      "old": "要删除的原文片段"
+    }}
+  ]
 }}
 
 【9分神作审查清单——逐条自检】
@@ -348,10 +364,14 @@ def review_chapter(
 6. 如果 origin/ 中存在素材，必须检查正文是否参考并遵守原始素材；与素材冲突需列入 weaknesses 或 continuity_issues
 7. 如低于{review_min_score}分必须标记为"需重写"
 8. 字数不足{warn_min}或超过{warn_max}要标记字数问题
-9. 必须输出合法JSON，不要Markdown，不要长篇解释"""
+9. 必须输出合法JSON，不要Markdown，不要长篇解释
+10. **必须输出 edits 数组**：如果 verdict 不是"通过"，必须给出至少一条具体可定位的 edit ops（replace/insert/delete），用于定点修改而不是全文重写。edit 的 old/after 字段必须引用原文真实片段，长度 30-200 字。"""
 
     log(f"[Reviewer] 正在审查第{chapter_number}章...")
+    start_time = time.time()
     content = call_mmx(system, prompt, max_tokens=4096, temperature=0.3)
+    elapsed = time.time() - start_time
+    log(f"[Reviewer] 第{chapter_number}章审查 API 调用耗时 {elapsed:.1f}s")
 
     if not content:
         log(f"[Reviewer] 第{chapter_number}章审查失败")
@@ -390,7 +410,9 @@ def review_chapter(
 
     overall = review_data.get("overall_score", "N/A")
     verdict = review_data.get("verdict", "N/A")
-    log(f"[Reviewer] 第{chapter_number}章审查完成，评分: {overall}， verdict: {verdict}")
+    edits = review_data.get("edits", [])
+    edit_count = len(edits) if isinstance(edits, list) else 0
+    log(f"[Reviewer] 第{chapter_number}章审查完成，评分: {overall}， verdict: {verdict}， edits: {edit_count}")
     return review_data
 
 

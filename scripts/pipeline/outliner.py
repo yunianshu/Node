@@ -19,7 +19,8 @@ from core.mmx_client import MmxError, call_mmx as call_mmx_client
 from core.novel_config import load_config, load_origin_materials, resolve_project_dir
 from core.outline_constraints import format_outline_constraints
 from core.outline_memory import build_outline_memory, format_outline_memory
-from core.workflow_state import list_outline_chapters, write_outline_chapters
+from core.workflow_state import list_outline_chapters, write_outline_chapters, outline_dir
+from core.edit_diff import EditApplyError, apply_json_field_edit
 
 NOVELS_DIR = None
 WORLD_FILE = None
@@ -164,7 +165,24 @@ REQUIRED_CHAPTER_FIELDS = (
     "chapter_hook",
     "emotional_arc",
     "tension_points",
+    # 救猫咪结构 + 网文增强维度（结构功能/目标赌注/爽点链）
+    "story_beat",
+    "chapter_goal",
+    "payoff_design",
+    # 推荐维度（对抗/时间/主线）
+    "main_antagonist",
+    "time_progression",
+    "main_arc_link",
 )
+
+# Save the Cat 15 拍 + 网文扩展节拍。story_beat 必须取以下值之一。
+# 依据 https://reedsy.com/blog/guide/story-structure/save-the-cat-beat-sheet/
+VALID_STORY_BEATS = {
+    "opening_image", "theme_stated", "setup", "catalyst", "debate",
+    "break_into_two", "b_story", "fun_and_games", "midpoint",
+    "bad_guys_close_in", "all_is_lost", "dark_night", "break_into_three",
+    "finale", "final_image", "rising_action", "transition",
+}
 
 PLACEHOLDER_TEXTS = {
     "章节标题",
@@ -182,6 +200,14 @@ PLACEHOLDER_TEXTS = {
     "章末钩子",
     "情绪曲线",
     "张力节点",
+    # 新字段占位文本，防模型照抄
+    "结构功能",
+    "章节目标",
+    "爽点设计",
+    "主要对抗",
+    "时间推进",
+    "主线关联",
+    "故事节拍",
 }
 
 
@@ -232,6 +258,27 @@ def _validate_chapter_outline(chapter: dict, expected_number: int | None = None)
         if _has_placeholder(value):
             issues.append(f"{field}仍是占位文本")
 
+    # story_beat 枚举硬校验（防模型乱填结构功能标签）
+    story_beat = str(chapter.get("story_beat", "")).strip()
+    if story_beat not in VALID_STORY_BEATS:
+        issues.append(f"story_beat 必须是有效节拍值之一（如 catalyst/midpoint/all_is_lost/finale 等），当前为：{story_beat}")
+
+    # 核心增强字段：目标赌注 + 爽点链，要求≥15字（与 summary 校验风格一致）
+    for field in ("chapter_goal", "payoff_design"):
+        value = str(chapter.get(field, "")).strip()
+        if len(value) < 15:
+            issues.append(f"{field}不少于15字（chapter_goal 写清主角想要什么+失败后果；payoff_design 写清期待→压制→反转→碾压式爽点链）")
+        if _has_placeholder(value):
+            issues.append(f"{field}仍是占位文本")
+
+    # 推荐字段：仅校验非空（对抗/时间/主线）
+    for field in ("main_antagonist", "time_progression", "main_arc_link"):
+        value = str(chapter.get(field, "")).strip()
+        if len(value) < 2:
+            issues.append(f"{field}不能为空")
+        if _has_placeholder(value):
+            issues.append(f"{field}仍是占位文本")
+
     tension_points = chapter.get("tension_points")
     if not isinstance(tension_points, list) or len([item for item in tension_points if str(item).strip()]) < 3:
         issues.append("tension_points必须至少包含3个张力节点")
@@ -270,6 +317,7 @@ def _outline_quality_contract() -> str:
     return f"""## 【高质量单章大纲契约】（必须满足，否则视为不合格）
 - 大纲审查目标分必须达到 {min_score:g} 分及以上；低于该分数视为不合格，需要重写。
 - 必须顺接前章结尾的人物状态、地点、时间和危机，不能跳场景、跳时间、跳动机。
+- 输出前必须逐条自检：钩子是否强力？情绪是否起伏？张力节点是否≥3个？是否反套路？人物动机是否合理？
 
 ### 【章末钩子·强制要求】
 - chapter_hook 字段必须明确写出本章最后200字要落地的强力钩子，且必须是以下三种之一：
@@ -299,7 +347,22 @@ def _outline_quality_contract() -> str:
 - 人物动机必须可执行、可理解，不能为了剧情强行行动。
 - 每章必须有冲突升级和阅读回报，回报来自主角判断、能力、资源、关系或协作的实际发挥。
 - 回报应触及角色核心欲望、恐惧或当前阶段目标，不能只有表层事件堆叠。
-- 四项硬门槛必须在章级尺度成立：明确欲望、产生真实代价的承诺或选择、中段改变行动方案、章末正在发生的强钩子。"""
+- 四项硬门槛必须在章级尺度成立：明确欲望、产生真实代价的承诺或选择、中段改变行动方案、章末正在发生的强钩子。
+
+### 【结构功能·强制要求】（story_beat）
+- story_beat 必须从节拍枚举中选取，且必须呼应本章在全卷/全书中的结构位置。
+- 关键节拍判据：catalyst（催化事件）打破日常、midpoint（中点）让赌注升级且主角从被动转主动、all_is_lost（谷底）制造最低点、finale（高潮）兑现主线承诺。
+- 禁止给中段连续多章都标 transition/rising_action 而无任何 catalyst/midpoint 式转折——那是"注水腰"的信号。
+
+### 【章节目标与赌注·强制要求】（chapter_goal）
+- chapter_goal 必须写清：①主角本章具体想要什么（可执行的目标）；②失败的后果是什么（赌注）。
+- 目标必须是"本章可推进、可部分达成或可受挫"的，不能是全书级宏大目标（如"成为最强"）。
+- 赌注必须触及角色核心利益（生存/关系/目标/秘密），不能只是无关痛痒的得失。
+
+### 【爽点链·强制要求】（payoff_design）
+- payoff_design 必须描述完整的爽点链条：期待（铺垫读者预期）→压制（主角受挫或被低估）→反转（局势逆转）→碾压（主角用积累的实力兑现）。
+- 爽点必须来自主角的判断、能力、资源或协作的真实发挥，禁止靠巧合或天降外挂硬赢。
+- 爽点应触及角色核心欲望或恐惧，而非只有表层战力数值变化。"""
 
 
 def _feedback_attempt_count(review_feedback_data: dict, chapter_no: int) -> int:
@@ -365,6 +428,25 @@ def _compact_review_feedback(review_feedback_data: dict, batch_start: int, batch
             "latest_continuity_issues": list(latest.get("continuity_issues", []))[:3],
         }
     return compact
+
+
+def _get_direct_outline_edits(review_feedback_data: dict, chapter_no: int) -> list[dict]:
+    """从 review_feedback 中提取指定章节的字段级 edits。"""
+    for key, value in review_feedback_data.items():
+        if not isinstance(value, dict):
+            continue
+        if int(value.get("chapter", 0)) != chapter_no:
+            continue
+        latest_reviews = value.get("reviews") if isinstance(value.get("reviews"), list) else []
+        if not latest_reviews:
+            continue
+        latest = latest_reviews[-1]
+        if not isinstance(latest, dict):
+            continue
+        edits = latest.get("edits")
+        if isinstance(edits, list) and edits:
+            return edits
+    return []
 
 
 def _context_lines(outline: dict, batch_start: int, batch_end: int, rescue: bool = False) -> str:
@@ -438,8 +520,10 @@ def _build_rescue_prompt(
 输出要求：
 - 只输出合法JSON，不要Markdown代码块，不要解释文字。
 - 只生成第{batch_start}章到第{batch_end}章，共{batch_end - batch_start + 1}个章节对象。
-- 字段必须完整：chapter_number/title/summary/characters_involved/location/mood/key_events/foreshadowing/power_progression/word_count_target/chapter_hook/emotional_arc/tension_points。
+- 字段必须完整：chapter_number/title/summary/characters_involved/location/mood/key_events/foreshadowing/power_progression/word_count_target/chapter_hook/emotional_arc/tension_points/story_beat/chapter_goal/payoff_design/main_antagonist/time_progression/main_arc_link。
+- story_beat 必须取枚举值：opening_image/theme_stated/setup/catalyst/debate/break_into_two/b_story/fun_and_games/midpoint/bad_guys_close_in/all_is_lost/dark_night/break_into_three/finale/final_image/rising_action/transition。
 - summary 控制在150-220字，key_events 只写5-6条，每条不超过70字。
+- chapter_goal 写清主角想要什么+失败后果；payoff_design 写清期待→压制→反转→碾压式爽点链。
 - 不允许尾随逗号，不允许注释，不允许省略号，不允许占位文本。
 
 JSON结构：
@@ -458,7 +542,13 @@ JSON结构：
       "word_count_target": 5000,
       "chapter_hook": "最后200字落地的危机升级、信息反转或情感爆点",
       "emotional_arc": "压抑→紧张→短暂希望→反转",
-      "tension_points": ["前段张力节点", "中段张力节点", "后段张力节点"]
+      "tension_points": ["前段张力节点", "中段张力节点", "后段张力节点"],
+      "story_beat": "从枚举值选取，须呼应本章结构位置（如 catalyst/midpoint/all_is_lost/finale）",
+      "chapter_goal": "主角本章具体想要什么+失败的后果（赌注），15字以上",
+      "payoff_design": "期待→压制→反转→碾压式爽点链，15字以上",
+      "main_antagonist": "本章主要对抗力量（人或势力或困境）",
+      "time_progression": "本章相对前章的时间推进（如次日清晨/三天后/同一夜）",
+      "main_arc_link": "本章如何推进全书主线（如揭示主线新线索/达成阶段目标）"
     }}
   ]
 }}"""
@@ -565,6 +655,30 @@ def generate_outline_range(
 输出必须是合法的JSON格式。"""
 
     for batch_start, batch_end in batch_ranges:
+        # === 方案B：单章字段级增量修改优先 ===
+        if (
+            chapter is not None
+            and batch_start == batch_end == chapter
+            and review_feedback_data
+        ):
+            direct_edits = _get_direct_outline_edits(review_feedback_data, chapter)
+            if direct_edits:
+                existing_file = outline_dir(NOVELS_DIR) / f"chapter_{chapter:04d}.json"
+                if existing_file.exists():
+                    try:
+                        chapter_data = _load_json(existing_file)
+                        for edit in direct_edits:
+                            apply_json_field_edit(chapter_data, edit)
+                        issues = _validate_chapter_outline(chapter_data, expected_number=chapter)
+                        if not issues:
+                            write_outline_chapters(NOVELS_DIR, {"chapters": [chapter_data]}, skip_existing=False)
+                            print(f"[Outliner] 第{chapter}章通过字段级 edits 直接修复")
+                            continue
+                        else:
+                            print(f"[Outliner] 字段级 edits 修复后校验失败: {'; '.join(issues[:3])}，回退到模型生成")
+                    except (EditApplyError, Exception) as e:
+                        print(f"[Outliner] 字段级 edits apply 失败: {e}，回退到模型生成")
+
         print(f"[Outliner] 正在生成第 {batch_start}-{batch_end} 章大纲...")
         memory_cfg = CONFIG.get("outline_memory", {})
         long_memory = format_outline_memory(
@@ -616,17 +730,21 @@ def generate_outline_range(
                 ledger_constraints,
             )
         else:
-            prompt = f"""请根据以下世界观和角色设定，生成第{batch_start}章到第{batch_end}章的详细大纲。
+            prompt = f"""你正在为一部追求9分神作的中文网文设计单章大纲。下面是本次要生成的章节范围、世界观、角色设定和参考素材。
 
-世界观设定：
+## ⚠️ 硬门槛（必须优先满足，否则视为不合格）
+{_outline_quality_contract()}
+
+## 世界观设定
 {world_json}
 
-角色设定：
+## 角色设定
 {chars_json}
 
-故事前提：{prompt_premise}
+## 故事前提
+{prompt_premise}
 
-origin/ 原始参考素材：
+## origin/ 原始参考素材
 {prompt_origin}
 
 ## 前序大纲全局压缩记忆
@@ -639,9 +757,9 @@ origin/ 原始参考素材：
 
 {prev_context}
 {review_section}
-{_outline_quality_contract()}
 
-请输出以下JSON结构。所有字段都是必填；不得输出“章节标题”“200字详细摘要”“事件1”等占位文本：
+请输出以下JSON结构。所有字段都是必填；不得输出“章节标题”“200字详细摘要”“事件1”等占位文本。
+story_beat 必须取枚举值之一：opening_image/theme_stated/setup/catalyst/debate/break_into_two/b_story/fun_and_games/midpoint/bad_guys_close_in/all_is_lost/dark_night/break_into_three/finale/final_image/rising_action/transition：
 {{
   "chapters": [
     {{
@@ -657,30 +775,43 @@ origin/ 原始参考素材：
       "word_count_target": 5000,
       "chapter_hook": "最后200字落地的危机升级、信息反转或情感爆点",
       "emotional_arc": "压抑→紧张→短暂希望→反转",
-      "tension_points": ["前段张力节点", "中段张力节点", "后段张力节点"]
+      "tension_points": ["前段张力节点", "中段张力节点", "后段张力节点"],
+      "story_beat": "枚举值，须呼应本章在全卷结构中的位置（如卷首catalyst、卷中midpoint、卷末finale）",
+      "chapter_goal": "主角本章具体想要什么+失败的后果（赌注），15字以上",
+      "payoff_design": "期待→压制→反转→碾压式爽点链，15字以上",
+      "main_antagonist": "本章主要对抗力量（具体人或势力或困境）",
+      "time_progression": "本章相对前章的时间推进（如次日清晨/三天后/同一夜）",
+      "main_arc_link": "本章如何推进全书主线（如揭示主线新线索/达成阶段目标）"
     }}
   ]
 }}
 
 要求：
 1. 每章必须有独特的核心事件，不能流水账；key_events 必须5-7条，不能为空，单条不超过90字
-2. 情节要有起伏，有高潮有低谷，有扮猪吃虎的爽点
-3. 主角的实力和技能要逐步成长，保持升级爽感
-4. 伏笔要前后呼应，与前一批大纲自然衔接
-5. 要有强敌轻视主角，结果被主角以积累的实力碾压的爽文桥段
-6. 探索不同场景时要展现环境差异和世界多样性
-7. 如果 origin/ 中存在素材，必须参考其中的设定、人物关系、历史事件和风格约束，不能与其冲突
-8. summary 必须是具体剧情摘要，不能写“200字详细摘要”等占位内容
-9. foreshadowing 和 power_progression 必须有具体内容，不能缺失或留空
-10. 必须输出合法JSON，总共{batch_end - batch_start + 1}个章节对象
-11. 单章大纲整体保持紧凑，避免长段解释；必须优先保证JSON闭合和所有必填字段完整"""
+2. story_beat 必须与本章实际剧情结构相符，且要考虑全卷/全书节奏曲线——催化事件(catalyst)、中点(midpoint)、谷底(all_is_lost)、高潮(finale)等关键节拍要落在合理位置，禁止中段连续多章 transition 造成注水腰
+3. chapter_goal 必须是本章可推进的具体目标，不能是全书级宏大目标；必须写清失败后果（赌注）
+4. payoff_design 必须设计完整爽点链：期待→压制→反转→碾压，爽点来自主角实力真实发挥而非巧合
+5. 情节要有起伏，有高潮有低谷，有扮猪吃虎的爽点
+6. 主角的实力和技能要逐步成长，保持升级爽感
+7. 伏笔要前后呼应，与前一批大纲自然衔接
+8. 要有强敌轻视主角，结果被主角以积累的实力碾压的爽文桥段（写入 main_antagonist 和 payoff_design）
+9. 探索不同场景时要展现环境差异和世界多样性
+10. 如果 origin/ 中存在素材，必须参考其中的设定、人物关系、历史事件和风格约束，不能与其冲突
+11. summary 必须是具体剧情摘要，不能写“200字详细摘要”等占位内容
+12. foreshadowing 和 power_progression 必须有具体内容，不能缺失或留空
+13. 必须输出合法JSON，总共{batch_end - batch_start + 1}个章节对象
+14. 单章大纲整体保持紧凑，避免长段解释；必须优先保证JSON闭合和所有必填字段完整"""
 
+        import time as _time
+        start_time = _time.time()
         content = call_mmx(
             system,
             prompt,
             max_tokens=4096 if rescue_mode else 8192,
             temperature=0.25 if rescue_mode else 0.5,
         )
+        elapsed = _time.time() - start_time
+        print(f"[Outliner] 第 {batch_start}-{batch_end} 章大纲生成 API 调用耗时 {elapsed:.1f}s")
         if not content:
             print(f"[Outliner] 第 {batch_start}-{batch_end} 章大纲生成失败")
             failures.append((batch_start, batch_end, "empty_response"))

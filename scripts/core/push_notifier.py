@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import urllib.request
 from pathlib import Path
@@ -17,10 +18,15 @@ _STAGE_STATUS_ICON = {
 
 
 def _get_webhook(config: dict) -> str:
+    url = os.getenv("NOVEL_WEBHOOK_URL", "").strip()
+    if url:
+        return url
     url = config.get("webhook_url", "")
+    if url:
+        url = str(url).strip()
     if not url:
         url = config.get("coordinator", {}).get("wechat_webhook", "")
-    return url
+    return str(url).strip() if url else ""
 
 
 def _send(webhook_url: str, content: str) -> bool:
@@ -54,10 +60,14 @@ def build_progress_message(
     total_chapters: int = 2000,
     active_writers: int = 0,
     avg_score: float | None = None,
+    pass_rate: float | None = None,
     status_note: str = "",
     eta_text: str = "",
 ) -> str:
-    """构建统一的定期进度报告文本。"""
+    """构建统一的定期进度报告文本。
+
+    avg_score 语义为"中位评分"（调用方传中位数，抗异常更稳）；pass_rate 为过审率（0-1）。
+    """
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     outline_display = outline_approved if outline_approved is not None else outline_reviewed if outline_reviewed is not None else outline
     lines = [
@@ -74,7 +84,10 @@ def build_progress_message(
     if eta_text:
         lines.append(f"⏱ 预计剩余: {eta_text}")
     if avg_score is not None:
-        lines.append(f"⭐ 平均评分: {avg_score:.2f}")
+        score_line = f"⭐ 中位评分: {avg_score:.2f}"
+        if pass_rate is not None:
+            score_line += f"（过审率 {pass_rate * 100:.1f}%）"
+        lines.append(score_line)
     if status_note:
         lines.append(f"📍 当前: {status_note[:180]}")
     if active_writers > 0:
@@ -97,6 +110,7 @@ def push_progress(
     total_chapters: int = 2000,
     active_writers: int = 0,
     avg_score: float | None = None,
+    pass_rate: float | None = None,
     status_note: str = "",
     eta_text: str = "",
 ) -> bool:
@@ -113,6 +127,7 @@ def push_progress(
         total_chapters=total_chapters,
         active_writers=active_writers,
         avg_score=avg_score,
+        pass_rate=pass_rate,
         status_note=status_note,
         eta_text=eta_text,
     )
@@ -208,14 +223,21 @@ def push_task_complete(
     review: int | None = None,
     final: int | None = None,
     avg_score: float = 0.0,
+    pass_rate: float | None = None,
     rewrite_count: int = 0,
 ) -> bool:
-    """推送整个小说生成任务完成报告。"""
+    """推送整个小说生成任务完成报告。
+
+    avg_score 语义为"中位评分"（调用方传中位数）；pass_rate 为过审率（0-1）。
+    """
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     # 默认值：调用方没传则假设都完成（向后兼容）
     d = total_chapters if draft is None else draft
     r = total_chapters if review is None else review
     f = total_chapters if final is None else final
+    score_line = f"⭐ 中位评分: {avg_score:.2f}"
+    if pass_rate is not None:
+        score_line += f"（过审率 {pass_rate * 100:.1f}%）"
     lines = [
         f"🎉 《{title}》生成任务全部完成! ({ts})",
         _SEPARATOR,
@@ -224,7 +246,7 @@ def push_task_complete(
         f"📝 字数: {total_words:,}",
         f"🔍 审查: {r}/{total_chapters} 章",
         f"📤 终稿: {f}/{total_chapters} 章",
-        f"⭐ 平均评分: {avg_score:.2f}",
+        score_line,
     ]
     if rewrite_count > 0:
         lines.append(f"🔄 重写优化: {rewrite_count} 章")

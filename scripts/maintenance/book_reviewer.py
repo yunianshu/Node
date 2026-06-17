@@ -22,7 +22,7 @@ if str(TOOLS_ROOT) not in sys.path:
 from core.mmx_client import MmxError, call_mmx
 from core.json_repair import fix_inner_quotes, fix_truncated_json
 from core.novel_config import load_config, resolve_project_dir
-from core.workflow_state import analyze_chapter_text, load_quality_rules, scan_chapter_status
+from core.workflow_state import aggregate_review_scores, analyze_chapter_text, load_quality_rules, scan_chapter_status
 
 
 LOG_LOCK = threading.Lock()
@@ -208,6 +208,9 @@ def local_full_scan(project: Path, total: int, min_score: float) -> dict:
     scores = [float(row["review_score"]) for row in chapter_rows if isinstance(row.get("review_score"), (int, float))]
     words = [int(row["words"]) for row in chapter_rows]
     severity_counts = {key: sum(1 for issue in issues if issue["severity"] == key) for key in ("critical", "major", "minor")}
+    # 单章评分常被软封顶在 8.5 附近，算术平均会被低分章拖低并锚定终审；
+    # 这里同时输出中位数与分位数，让终审 AI 能看到真实质量分布。
+    score_metrics = aggregate_review_scores(scores, min_score=min_score)
     return {
         "status": "completed",
         "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -222,9 +225,16 @@ def local_full_scan(project: Path, total: int, min_score: float) -> dict:
         "average_words": round(sum(words) / len(words), 2) if words else 0,
         "min_words": min(words) if words else 0,
         "max_words": max(words) if words else 0,
-        "average_review_score": round(sum(scores) / len(scores), 4) if scores else 0,
-        "min_review_score": min(scores) if scores else None,
-        "max_review_score": max(scores) if scores else None,
+        # 向后兼容的旧字段（算术平均/极值）
+        "average_review_score": score_metrics["average"],
+        "min_review_score": score_metrics["min"],
+        "max_review_score": score_metrics["max"],
+        # 分位数口径新字段（抗异常，反映真实分布）
+        "median_review_score": score_metrics["median"],
+        "p75_review_score": score_metrics["p75"],
+        "p25_review_score": score_metrics["p25"],
+        "review_pass_rate": score_metrics["pass_rate"],
+        "review_score_count": score_metrics["count"],
         "severity_counts": severity_counts,
         "issues": issues,
         "chapters": chapter_rows,
@@ -257,6 +267,206 @@ def chapter_review_context(project: Path, chapter: int) -> dict:
         "review_summary": str(review.get("summary", ""))[:300],
         "opening": text[:650],
         "ending": text[-650:],
+        # 救猫咪结构维度（旧大纲可能缺失，空字符串兜底）
+        "story_beat": str(outline.get("story_beat", "")),
+        "chapter_goal": str(outline.get("chapter_goal", ""))[:200],
+        "main_antagonist": str(outline.get("main_antagonist", ""))[:100],
+    }
+
+
+def select_key_chapters(project: Path, total: int, volumes: list[dict], max_full: int = 10) -> dict:
+    """选出终审需要喂【全文】的关键章节，其余只给摘要。
+
+    真正的整本评审必须让 AI 读到关键节点的原文，而不是只看统计数字。选取规则按优先级：
+    1. 开篇（第 1、2 章）——建立世界观、主角动机、核心悬念
+    2. 结局（倒数第 1、2 章）——验证主线闭环、伏笔回收、结局满意度
+    3. 卷级报告标记的 critical/major 章节——结构硬伤集中点
+    4. 全书大纲中埋设伏笔的章节（均匀采样）——验证伏笔是否回收
+    5. 1/4、1/2、3/4 进度位置——检测注水腰（sagging middle）与节奏曲线
+
+    Args:
+        project: 项目目录。
+        total: 总章数。
+        volumes: 卷级审查报告列表（来自 volume_review）。
+        max_full: 喂全文的章节数上限，控制 prompt 篇幅。
+
+    Returns:
+        {chapter_number: {"full": True, "role": "..."}}，仅包含选中的章节。
+    """
+    selected: dict[int, dict] = {}
+    pending: list[tuple[int, str, int]] = []  # (chapter, role, priority)，priority 越小越优先
+
+    def add(chapter: int, role: str, priority: int) -> None:
+        if 1 <= chapter <= total and chapter not in selected and chapter not in {c for c, _, _ in pending}:
+            pending.append((chapter, role, priority))
+
+    # 优先级 1：开篇与结局
+    add(1, "开篇（建立世界观与核心悬念）", 1)
+    add(2, "开篇（主角动机与初始处境）", 1)
+    add(total, "结局（主线闭环验证）", 1)
+    add(total - 1, "结局（收束前的高潮）", 1)
+
+    # 优先级 2：卷级报告中的 critical/major 章节
+    flagged: set[int] = set()
+    for vol in volumes or []:
+        for issue in vol.get("issues", []) if isinstance(vol.get("issues"), list) else []:
+            if str(issue.get("severity", "")) in {"critical", "major"}:
+                for ch in issue.get("chapters", []) if isinstance(issue.get("chapters"), list) else []:
+                    if isinstance(ch, int):
+                        flagged.add(ch)
+    for ch in sorted(flagged):
+        add(ch, "卷级审查标记的结构问题章", 2)
+
+    # 优先级 3：进度位置（注水腰检测）
+    for ratio, label in ((0.25, "前1/4进度点"), (0.5, "中点（注水腰检测）"), (0.75, "后1/4进度点")):
+        add(max(1, round(total * ratio)), label, 3)
+
+    # 优先级 4：埋设伏笔的章节（均匀采样，避免过多）
+    foreshadow_chapters: list[int] = []
+    for chapter in range(1, total + 1):
+        outline = load_json(chapter_paths(project, chapter)["outline"])
+        if str(outline.get("foreshadowing", "")).strip():
+            foreshadow_chapters.append(chapter)
+    if foreshadow_chapters:
+        sample_step = max(1, len(foreshadow_chapters) // 5)  # 最多取约5个伏笔章
+        sampled = foreshadow_chapters[::sample_step][:5]
+        for ch in sampled:
+            add(ch, "伏笔埋设章（验证是否回收）", 4)
+
+    # 按优先级截断到 max_full
+    pending.sort(key=lambda item: (item[2], item[0]))
+    for chapter, role, _ in pending[:max_full]:
+        selected[chapter] = {"full": True, "role": role}
+    return selected
+
+
+def _sample_outlines_for_final(project: Path, total: int, max_chars: int = 20000) -> list[dict]:
+    """采样全书逐章大纲摘要，控制总篇幅不超 max_chars。
+
+    小书（≤120章）逐章全取；大书按固定步长均匀采样，保证终审 AI 能看到全书剧情骨架，
+    同时把 prompt 控制在可接受范围内（给关键章节原文留出空间）。
+    单条 summary/foreshadowing 截短，避免少数超长摘要挤占篇幅。
+    """
+    target_count = min(120, total)  # 目标约 120 条以内
+    step = max(1, total // target_count)
+    compact: list[dict] = []
+    accumulated = 0
+    for chapter in range(1, total + 1):
+        if (chapter - 1) % step != 0 and chapter != total:
+            continue
+        outline = load_json(chapter_paths(project, chapter)["outline"])
+        if not outline:
+            continue
+        summary = str(outline.get("summary", ""))[:120]
+        foreshadowing = str(outline.get("foreshadowing", ""))[:80]
+        story_beat = str(outline.get("story_beat", "")).strip()
+        entry = {
+            "ch": chapter,
+            "t": str(outline.get("title", ""))[:24],
+            "s": summary,
+        }
+        if story_beat:
+            entry["b"] = story_beat  # 结构功能标签，供终审分析全书节奏曲线
+        if foreshadowing:
+            entry["f"] = foreshadowing
+        entry_text = summary + foreshadowing + story_beat + entry["t"]
+        if accumulated + len(entry_text) > max_chars:
+            break
+        compact.append(entry)
+        accumulated += len(entry_text)
+    return compact
+
+
+def build_whole_book_context(project: Path, total: int, volumes: list[dict], local_scan: dict) -> dict:
+    """构建终审所需的"全书内容"上下文，让 AI 真正读到小说而不是只看统计数字。
+
+    这是本次重构的核心：把 world.json 的主线/三幕结构、关键章节原文、全书大纲采样、
+    伏笔清单整合在一起，供终审 AI 做基于阅读体验的整本评分。
+    """
+    world = load_json(project / "world.json")
+
+    # 全书主线（world.json 的 overall_arc / three_act_structure 此前完全没用）
+    world_arc = {
+        "title": world.get("title", ""),
+        "overall_arc": str(world.get("overall_arc", ""))[:2000],
+        "themes": world.get("themes", [])[:8] if isinstance(world.get("themes"), list) else [],
+    }
+    three_act = world.get("three_act_structure")
+    if isinstance(three_act, dict):
+        world_arc["three_act_structure"] = {
+            key: str(value)[:800] for key, value in three_act.items()
+        }
+    power_system = world.get("power_system", {})
+    if isinstance(power_system, dict):
+        levels = power_system.get("levels")
+        if isinstance(levels, list):
+            world_arc["power_system_levels"] = [str(lv)[:60] for lv in levels[:15]]
+
+    # 关键章节原文
+    key_chapters_map = select_key_chapters(project, total, volumes)
+    key_chapters_fulltext: list[dict] = []
+    for chapter in sorted(key_chapters_map):
+        info = key_chapters_map[chapter]
+        final_file = chapter_paths(project, chapter)["final"]
+        if not final_file.exists():
+            continue
+        text = final_file.read_text(encoding="utf-8", errors="ignore")
+        key_chapters_fulltext.append({
+            "chapter": chapter,
+            "role": info["role"],
+            "title": load_json(chapter_paths(project, chapter)["outline"]).get("title", ""),
+            "opening": text[:1500],
+            "ending": text[-800:] if len(text) > 1500 else "",
+        })
+
+    # 全书大纲采样（控制篇幅）
+    all_outlines_compact = _sample_outlines_for_final(project, total)
+
+    # 伏笔清单（从每章 foreshadowing 字段聚合，用于让 AI 判断回收情况）。
+    # 全量聚合在大书上可达上千条、上百k字，超出 prompt 容量；这里先统计总数，
+    # 再均匀采样出代表性的伏笔条目喂给 AI（数量已在 final_review prompt 中二次截断到 60）。
+    foreshadowing_inventory: list[dict] = []
+    foreshadowing_total = 0
+    sample_step = max(1, total // 120)  # 与大纲采样同步，目标 ≤120 条
+    for chapter in range(1, total + 1):
+        outline = load_json(chapter_paths(project, chapter)["outline"])
+        setup = str(outline.get("foreshadowing", "")).strip()
+        if not setup:
+            continue
+        foreshadowing_total += 1
+        if (chapter - 1) % sample_step != 0:
+            continue
+        foreshadowing_inventory.append({
+            "planted_at": chapter,
+            "setup": setup[:200],
+        })
+
+    # 统计指标作为辅助参考（不再是主依据）
+    score_distribution = {
+        key: local_scan.get(key)
+        for key in (
+            "total_chapters", "final_ok_count", "review_ok_count", "total_words",
+            "average_review_score", "median_review_score", "review_pass_rate", "severity_counts",
+        )
+    }
+
+    return {
+        "world_arc": world_arc,
+        "key_chapters_fulltext": key_chapters_fulltext,
+        "all_outlines_compact": all_outlines_compact,
+        "foreshadowing_inventory": foreshadowing_inventory,
+        "foreshadowing_total": foreshadowing_total,
+        "volume_findings": [
+            {
+                "range": f"{v.get('start')}-{v.get('end')}",
+                "score": v.get("score"),
+                "verdict": v.get("verdict"),
+                "summary": str(v.get("summary", ""))[:200],
+            }
+            for v in volumes if isinstance(v, dict)
+        ],
+        "score_distribution": score_distribution,
+        "key_chapter_count": len(key_chapters_fulltext),
     }
 
 
@@ -366,49 +576,92 @@ issues最多10条，只保留影响整卷结构的问题；所有字符串保持
 
 
 def final_review(project: Path, config: dict, local_scan: dict, volumes: list[dict], output: Path) -> dict:
-    world = load_json(project / "world.json")
-    local_category_counts: dict[str, int] = {}
-    local_examples: list[dict] = []
-    for issue in local_scan.get("issues", []):
-        category = str(issue.get("category", "unknown"))
-        local_category_counts[category] = local_category_counts.get(category, 0) + 1
-        if len(local_examples) < 12:
-            local_examples.append(issue)
-    compact_local = {
-        key: local_scan.get(key)
-        for key in (
-            "total_chapters", "artifact_counts", "final_ok_count", "review_ok_count", "total_words",
-            "average_words", "min_words", "max_words", "average_review_score", "min_review_score",
-            "max_review_score", "severity_counts",
-        )
-    }
-    compact_local["issue_category_counts"] = local_category_counts
-    compact_local["issue_examples"] = local_examples
-    system = """你是长篇中文网络小说的终审总编。根据本地全量扫描和10个卷级报告做整本终审。
-必须忠于证据，不得虚构已读内容。输出合法JSON，不使用Markdown。"""
-    prompt = f"""书籍设定：
-{json.dumps({"title": world.get("title"), "subtitle": world.get("subtitle"), "world_description": world.get("world_description"), "power_system": world.get("power_system")}, ensure_ascii=False)}
+    total = int(local_scan.get("total_chapters", 0)) or int(config.get("total_chapters", 0))
+    # 构建真正的"全书内容"上下文：主线、关键章节原文、大纲采样、伏笔清单。
+    # 这是本次重构的核心——让终审 AI 读到小说，而不是只看统计数字。
+    context = build_whole_book_context(project, total, volumes, local_scan)
 
-本地全量扫描：
-{json.dumps(compact_local, ensure_ascii=False)}
+    system = """你是长篇中文网络小说的终审总编。你刚刚通读了全书的关键章节原文、全书大纲摘要和伏笔清单。
+你的评分必须基于【整本阅读体验】，绝不等于逐章评分的平均值——单章审查口径严格，逐章均分被低分章拉低，
+不能代表整本质量。你要回答的核心问题是：一位读者从头读到尾，这本书整体上是否值得出版/推荐？
 
-卷级报告：
-{json.dumps(volumes, ensure_ascii=False)}
+整本评审必须重点核查这些【只在整本层面才会暴露】的问题：
+- 主线是否闭环：开篇抛出的核心目标/悬念，到结局是否真正达成或合理转化？
+- 伏笔是否回收：前文埋下的线，后面有没有兑现？（参考伏笔清单）
+- 是否存在"注水腰"：中段是否拖沓、重复、原地踏步？（参考剧情骨架的 b 字段结构功能分布——
+  若中段连续多章是 transition/rising_action 而无 catalyst/midpoint/all_is_lost 式转折，即为注水腰）
+- 结局是否兑现：是水到渠成还是强行收束/烂尾？
+- 人物弧线是否完整：主角从开篇到结局是否有真实的成长/转变？
+- 节奏曲线是否合理：催化事件(catalyst)是否在开头出现？中点(midpoint)赌注是否升级？
+  谷底(all_is_lost)是否在3/4处？高潮(finale)是否兑现主线承诺？（参考剧情骨架 b 字段分布）
 
-判断整本是否达到发布标准，检查开篇到终局是否闭环、人物/世界观/能力体系是否一致、主要伏笔是否回收。
+输出合法JSON，不使用Markdown。所有评分必须引用具体章节号、伏笔或事件作为依据。"""
+    prompt = f"""## 全书设定与主线
+{json.dumps(context["world_arc"], ensure_ascii=False)}
+
+## 关键章节原文（共 {context["key_chapter_count"]} 章，含开篇/结局/伏笔埋设/结构问题章）
+{json.dumps(context["key_chapters_fulltext"], ensure_ascii=False)}
+
+## 全书剧情骨架（逐章大纲摘要采样，字段：ch=章号/t=标题/s=摘要/f=伏笔/b=结构功能节拍）
+{json.dumps(context["all_outlines_compact"], ensure_ascii=False)}
+
+## 全书伏笔清单（全书共 {context["foreshadowing_total"]} 条，此处为均匀采样，请判断哪些已回收、哪些悬空）
+{json.dumps(context["foreshadowing_inventory"][:60], ensure_ascii=False)}
+
+## 卷级审查发现（结构参考，非评分主依据）
+{json.dumps(context["volume_findings"], ensure_ascii=False)}
+
+## 本地质量扫描（仅供参考，不可作为评分主依据；逐章均分受单章口径压制，会偏低）
+{json.dumps(context["score_distribution"], ensure_ascii=False)}
+
+## 【评分要求】
+请从以下 8 个【整本专属维度】逐项打分（0-10），并给出依据（必须引用章节/伏笔/事件）：
+1. main_arc_closure 主线闭环（权重20%）：开篇核心目标→结局是否真正达成或合理转化？
+2. foreshadowing_payoff 伏笔回收（权重15%）：伏笔清单中回收比例与质量？是否有重大悬空？
+3. character_arc 人物弧线（权重15%）：主角从开篇到结局是否有真实的成长/转变？
+4. pacing_curve 节奏曲线（权重15%）：高潮分布是否合理？是否存在注水腰/烂尾？
+5. world_consistency 世界观自洽（权重10%）：力量体系/规则/设定前后是否矛盾？
+6. ending_satisfaction 结局满意度（权重10%）：是否兑现读者期待？有无强行收束？
+7. emotional_resonance 情感共鸣（权重10%）：整本情感张力？是否有记忆点？
+8. overall_readability 整体可读性（权重5%）：通读体验？是否有大量水文？
+
+最终 score 是 8 维度的【加权综合分】（不是简单平均），请自行按权重计算。
+【重要】score 不要参考 score_distribution 中的逐章均分——那是单章审查口径，不是整本质量。
+
 只输出：
 {{
-  "status":"completed",
-  "score":0到10,
-  "verdict":"通过发布/修订后发布/不建议发布",
-  "executive_summary":"不超过400字",
-  "strengths":["整本优势"],
-  "unresolved_threads":["未回收伏笔或支线"],
-  "issues":[{{"severity":"critical/major/minor","chapters":[章节号],"category":"类别","detail":"问题","evidence":"证据","suggestion":"修订建议"}}],
-  "publication_recommendation":"具体发布建议"
+  "status": "completed",
+  "score": 0到10,
+  "dimension_scores": {{
+    "main_arc_closure": {{"score": 0到10, "rationale": "依据，引用章节/事件"}},
+    "foreshadowing_payoff": {{"score": 0到10, "rationale": "依据，引用伏笔"}},
+    "character_arc": {{"score": 0到10, "rationale": "依据"}},
+    "pacing_curve": {{"score": 0到10, "rationale": "依据，指出注水腰位置"}},
+    "world_consistency": {{"score": 0到10, "rationale": "依据"}},
+    "ending_satisfaction": {{"score": 0到10, "rationale": "依据"}},
+    "emotional_resonance": {{"score": 0到10, "rationale": "依据"}},
+    "overall_readability": {{"score": 0到10, "rationale": "依据"}}
+  }},
+  "verdict": "通过发布/修订后发布/不建议发布",
+  "executive_summary": "不超过400字，必须明确说明：主线是否闭环、伏笔回收情况、是否存在注水腰",
+  "foreshadowing_analysis": {{
+    "planted": "埋设总数",
+    "resolved": "判断已回收数",
+    "unresolved": ["未回收的重要伏笔"],
+    "payoff_quality": "回收质量评价"
+  }},
+  "character_arc_analysis": "主角从X到Y的成长/转变分析",
+  "strengths": ["整本优势"],
+  "unresolved_threads": ["未回收伏笔或支线"],
+  "issues": [{{"severity": "critical/major/minor", "chapters": [章节号], "category": "类别", "detail": "问题", "evidence": "证据", "suggestion": "修订建议"}}],
+  "publication_recommendation": "具体发布建议"
 }}
-issues最多15条，只保留最重要且有卷级证据的问题；不要把格式问题擅自升级为critical。"""
+issues最多15条，只保留最重要且有全书证据的问题；不要把格式问题擅自升级为critical。"""
+
     result = ai_call(project, config, system, prompt, "book_final_review")
+    # 兜底：若 AI 未返回 dimension_scores，补一个空结构，保证下游 schema 稳定
+    if isinstance(result, dict) and "score" in result and not result.get("dimension_scores"):
+        result["dimension_scores"] = {}
     atomic_json(output, result)
     return result
 
@@ -434,28 +687,76 @@ def write_markdown_report(project: Path, local_scan: dict, segments: list[dict],
         f"- 生成时间：{time.strftime('%Y-%m-%d %H:%M:%S')}",
         f"- 审查范围：第1-{local_scan.get('total_chapters')}章",
         f"- 终审结论：**{final.get('verdict', '未知')}**",
-        f"- 整本评分：**{final.get('score', 'N/A')} / 10**",
+        f"- 整本评分：**{final.get('score', 'N/A')} / 10**（基于整本阅读体验的加权综合分，非逐章平均）",
         f"- 总字数：{local_scan.get('total_words', 0):,}",
-        f"- 逐章平均分：{local_scan.get('average_review_score', 0)}",
+        f"- 逐章均分：{local_scan.get('average_review_score', 0)}（单章口径，仅供参考，不代表整本质量）",
+        f"- 逐章中位分：{local_scan.get('median_review_score', 0)} · 过审率：{local_scan.get('review_pass_rate', 0) * 100:.1f}%",
         "",
         "## 执行摘要",
         "",
         str(final.get("executive_summary", "终审未返回有效摘要。")),
         "",
+    ]
+
+    # 整本专属维度评分表（8 维度）
+    dimension_scores = final.get("dimension_scores")
+    if isinstance(dimension_scores, dict) and dimension_scores:
+        dimension_labels = {
+            "main_arc_closure": "主线闭环（20%）",
+            "foreshadowing_payoff": "伏笔回收（15%）",
+            "character_arc": "人物弧线（15%）",
+            "pacing_curve": "节奏曲线（15%）",
+            "world_consistency": "世界观自洽（10%）",
+            "ending_satisfaction": "结局满意度（10%）",
+            "emotional_resonance": "情感共鸣（10%）",
+            "overall_readability": "整体可读性（5%）",
+        }
+        lines.extend(["## 整本专属维度评分", "", "| 维度 | 分数 | 依据 |", "|---|---:|---|"])
+        for key, label in dimension_labels.items():
+            entry = dimension_scores.get(key)
+            if isinstance(entry, dict):
+                score = entry.get("score", "N/A")
+                rationale = str(entry.get("rationale", "")).replace("|", "｜").replace("\n", " ")[:200]
+                lines.append(f"| {label} | {score} | {rationale} |")
+        lines.append("")
+
+    # 伏笔回收分析
+    foreshadow = final.get("foreshadowing_analysis")
+    if isinstance(foreshadow, dict) and foreshadow:
+        lines.extend([
+            "## 伏笔回收分析",
+            "",
+            f"- 埋设：{foreshadow.get('planted', 'N/A')} 条",
+            f"- 已回收：{foreshadow.get('resolved', 'N/A')} 条",
+            f"- 回收质量：{foreshadow.get('payoff_quality', 'N/A')}",
+        ])
+        unresolved = foreshadow.get("unresolved", [])
+        if isinstance(unresolved, list) and unresolved:
+            lines.append("- 未回收：")
+            for item in unresolved:
+                lines.append(f"  - {item}")
+        lines.append("")
+
+    # 人物弧线分析
+    arc_analysis = final.get("character_arc_analysis")
+    if arc_analysis:
+        lines.extend(["## 人物弧线分析", "", str(arc_analysis), ""])
+
+    lines.extend([
         "## 完整性与本地质量门",
         "",
         f"- 产物数量：{json.dumps(local_scan.get('artifact_counts', {}), ensure_ascii=False)}",
         f"- Final 本地通过：{local_scan.get('final_ok_count')}/{local_scan.get('total_chapters')}",
         f"- 逐章审查通过：{local_scan.get('review_ok_count')}/{local_scan.get('total_chapters')}",
         f"- 单章字数：最少 {local_scan.get('min_words')}，最多 {local_scan.get('max_words')}，平均 {local_scan.get('average_words')}",
-        f"- 逐章评分：最低 {local_scan.get('min_review_score')}，最高 {local_scan.get('max_review_score')}",
+        f"- 逐章评分：最低 {local_scan.get('min_review_score')}，最高 {local_scan.get('max_review_score')}，中位 {local_scan.get('median_review_score', 0)}",
         f"- 本地问题统计：{json.dumps(local_scan.get('severity_counts', {}), ensure_ascii=False)}",
         "",
         "## 卷级结果",
         "",
         "| 范围 | 评分 | 结论 | 摘要 |",
         "|---|---:|---|---|",
-    ]
+    ])
     for item in volumes:
         lines.append(f"| {item.get('start')}-{item.get('end')} | {item.get('score', 'N/A')} | {item.get('verdict', '')} | {str(item.get('summary', '')).replace('|', '｜')} |")
 

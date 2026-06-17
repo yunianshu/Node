@@ -16,7 +16,7 @@ if str(TOOLS_ROOT) not in sys.path:
 
 from core.novel_config import load_config, resolve_project_dir
 from core.push_notifier import push_progress
-from core.workflow_state import outline_completed_count, scan_chapter_status
+from core.workflow_state import aggregate_review_scores, outline_completed_count, scan_chapter_status
 
 
 def process_exists(pid_text: str) -> bool:
@@ -150,7 +150,11 @@ def push_once(project: Path, config: dict) -> bool:
     final = sum(1 for s in statuses.values() if s.final_ok)
     total_words = sum(s.draft_words for s in statuses.values() if s.draft_exists)
     scores = [s.review_score for s in statuses.values() if s.final_ok and s.review_score is not None]
-    avg_score = sum(scores) / len(scores) if scores else None
+    # 与 coordinator / book_reviewer 统一口径：中位数 + 过审率，抗异常更稳。
+    min_score = float(config.get("reviewer", {}).get("min_score", 8.5))
+    score_metrics = aggregate_review_scores(scores, min_score=min_score)
+    avg_score = score_metrics["median"] if scores else None
+    pass_rate = score_metrics["pass_rate"] if scores else None
     status_note = current_status_note(statuses)
     eta_text = estimate_remaining_time(project, total, final)
     return push_progress(
@@ -166,6 +170,7 @@ def push_once(project: Path, config: dict) -> bool:
         total_chapters=total,
         active_writers=active_lane_count(project),
         avg_score=avg_score,
+        pass_rate=pass_rate,
         status_note=status_note,
         eta_text=eta_text,
     )

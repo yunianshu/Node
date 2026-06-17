@@ -78,7 +78,7 @@ DEFAULT_CONFIG = {
         "stop_on_first_pass": True,
     },
     "draft_race": {
-        "enabled": False,
+        "enabled": True,
         "candidates": 3,
         "max_workers": 3,
         "stop_on_first_pass": True,

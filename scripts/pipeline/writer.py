@@ -25,6 +25,14 @@ from core.mmx_client import MmxError, call_mmx as call_mmx_client
 from core.novel_config import configure_stdio, load_config, load_origin_materials, resolve_project_dir
 from core.workflow_state import load_outline_chapter, review_dir
 from core.workflow_state import FORBIDDEN_PHRASES, VALID_ENDINGS, is_valid_chapter_text, read_text_length
+from core.edit_diff import (
+    EditApplyError,
+    apply_text_edits,
+    build_edit_prompt,
+    check_preserved_ratio,
+    parse_edit_ops,
+    similarity,
+)
 
 configure_stdio()
 
@@ -318,6 +326,73 @@ def _auto_compress(content: str, chapter_number: int, max_words: int, target_min
     return content
 
 
+def _apply_incremental_edits(
+    chapter_number: int,
+    old_text: str,
+    review_data: dict,
+    min_words: int,
+    max_words: int,
+) -> str | None:
+    """尝试用模型输出 diff ops 并 apply 到旧文本。失败返回 None，由调用方回退全文重写。"""
+    system, prompt = build_edit_prompt(old_text, review_data, chapter_number, min_words, max_words)
+    log(f"[Writer] 第{chapter_number}章尝试增量编辑...")
+    start_time = time.time()
+    try:
+        raw = call_mmx(system, prompt, max_tokens=8192, temperature=0.3)
+    except Exception as e:
+        log(f"[Writer] 增量编辑调用失败: {e}")
+        return None
+    elapsed = time.time() - start_time
+    log(f"[Writer] 增量编辑 API 调用耗时 {elapsed:.1f}s")
+    if not raw:
+        log("[Writer] 增量编辑返回空")
+        return None
+
+    try:
+        edits = parse_edit_ops(raw)
+    except EditApplyError as e:
+        log(f"[Writer] 增量编辑解析失败: {e}")
+        return None
+
+    if not edits:
+        log("[Writer] 模型未输出有效 edits，回退到全文重写")
+        return None
+
+    log(f"[Writer] 获得 {len(edits)} 条 edit ops: {[e.get('type') for e in edits]}")
+    try:
+        new_text, applied_log = apply_text_edits(old_text, edits)
+    except EditApplyError as e:
+        log(f"[Writer] 增量编辑 apply 失败: {e}")
+        return None
+
+    preserved_ratio = similarity(old_text, new_text)
+    log(f"[Writer] 增量编辑后文本相似度: {preserved_ratio:.2%}")
+
+    # 如果 edits 很多且文本变化过大，说明模型没有遵守局部修改，回退
+    if preserved_ratio < 0.45 and len(edits) <= 2:
+        log("[Writer] 增量编辑后文本变化过大，疑似全文重写，回退")
+        return None
+
+    # 字数校验
+    word_count = len(new_text)
+    if word_count < min_words:
+        log(f"[Writer] 增量编辑后字数不足 ({word_count} < {min_words})，回退")
+        return None
+    if word_count > max_words:
+        log(f"[Writer] 增量编辑后字数超出 ({word_count} > {max_words})，尝试压缩")
+        # 简单截断到最大字数附近（这里只做一个安全网，压缩逻辑后续可接入 _auto_compress）
+        new_text = new_text[:max_words]
+        # 找到最后一个完整句子
+        for end in (".", "!", "?", "。", "！", "？", "；"):
+            idx = new_text.rfind(end)
+            if idx > max_words * 0.85:
+                new_text = new_text[: idx + 1]
+                break
+
+    log(f"[Writer] 第{chapter_number}章增量编辑成功，{len(old_text)} -> {len(new_text)} 字")
+    return new_text
+
+
 def generate_chapter(
     chapter_number: int,
     retry: int = 0,
@@ -360,6 +435,10 @@ def generate_chapter(
 
     world = load_json(WORLD_FILE)
     characters = load_json(CHARACTERS_FILE)
+
+    quality = CONFIG.get("quality", {})
+    min_words = int(quality.get("min_chapter_words", 5000))
+    max_words = int(quality.get("max_chapter_words", 12000))
 
     chapter_outline = normalize_outline_text(load_outline_chapter(NOVELS_DIR, chapter_number))
 
@@ -414,10 +493,43 @@ def generate_chapter(
             review_section += raw_response[:3000] + "\n"
 
         old_file = CHAPTERS_DIR / f"chapter_{chapter_number:04d}.txt"
+        old_content = ""
         if old_file.exists():
             with open(old_file, "r", encoding="utf-8") as f:
                 old_content = f.read()
             review_section += f"\n### 原文参考（前800字）\n{old_content[:800]}\n...\n"
+
+        # === 方案B：增量编辑优先 ===
+        # 如果 reviewer 给出了 edits，先尝试定点修改；失败再回退全文重写
+        edits = review_data.get("edits") if isinstance(review_data, dict) else None
+        if old_content and edits:
+            incremental_text = _apply_incremental_edits(
+                chapter_number, old_content, review_data, min_words, max_words
+            )
+            if incremental_text is not None:
+                # 清理禁用短语并保存
+                for phrase in FORBIDDEN_PHRASES:
+                    incremental_text = incremental_text.replace(phrase, "")
+                # 处理截断
+                if incremental_text and not incremental_text.endswith(VALID_ENDINGS):
+                    paragraphs = incremental_text.split("\n\n")
+                    if len(paragraphs) > 1 and not paragraphs[-1].strip().endswith(VALID_ENDINGS):
+                        incremental_text = "\n\n".join(paragraphs[:-1]).strip()
+                    if incremental_text and not incremental_text.endswith(VALID_ENDINGS):
+                        last_valid = max(
+                            (incremental_text.rfind(end) for end in VALID_ENDINGS if end in incremental_text),
+                            default=-1,
+                        )
+                        if last_valid > len(incremental_text) * 0.9:
+                            incremental_text = incremental_text[: last_valid + 1].strip()
+
+                word_count = len(incremental_text)
+                CHAPTERS_DIR.mkdir(parents=True, exist_ok=True)
+                with open(chapter_file, "w", encoding="utf-8") as f:
+                    f.write(incremental_text)
+                log(f"[Writer] 第{chapter_number}章通过增量编辑保存（{word_count}字）")
+                return "success"
+            log(f"[Writer] 第{chapter_number}章增量编辑失败，回退到全文重写")
 
     # 提取主角名和故事设定
     # 优先从 characters.json 的 protagonist.name 读取，其次从 premise.txt 提取
@@ -464,9 +576,6 @@ def generate_chapter(
     genre = _infer_genre(world)
     power_system = world.get("power_system", {})
     power_name = power_system.get("name", "")
-    quality = CONFIG.get("quality", {})
-    min_words = int(quality.get("min_chapter_words", 5000))
-    max_words = int(quality.get("max_chapter_words", 12000))
     target_min = max(min_words + 500, 5500)
 
     # 从大纲提取关键事件和章末钩子，强制 writer 按节点执行
@@ -480,6 +589,34 @@ def generate_chapter(
     if isinstance(tension_points, str):
         tension_points = [tension_points]
     tension_text = "\n".join(f"- {str(tp)}" for tp in tension_points if str(tp).strip())
+
+    # 救猫咪结构 + 网文增强维度：目标赌注/爽点链/结构功能/对抗力量。
+    # 旧大纲可能缺这些字段，用空字符串兜底，正文 prompt 中对空值做条件渲染。
+    chapter_goal = str(chapter_outline.get("chapter_goal", "")).strip()
+    payoff_design = str(chapter_outline.get("payoff_design", "")).strip()
+    story_beat = str(chapter_outline.get("story_beat", "")).strip()
+    main_antagonist = str(chapter_outline.get("main_antagonist", "")).strip()
+
+    # 结构功能执行指令：把大纲的结构维度翻译成 Writer 必须落实的写作要求。
+    # 旧大纲缺这些字段时整段省略，不影响正文生成（向后兼容）。
+    beat_guidance = {
+        "catalyst": "本章是催化事件：必须打破主角的日常，制造一个不可忽视的起点危机。",
+        "midpoint": "本章是中点：必须让赌注升级，主角从被动应对转为主动出击，常伴随重大信息揭示。",
+        "all_is_lost": "本章是谷底：主角必须跌入最低点，关键损失/背叛/失败发生，制造全章压抑。",
+        "finale": "本章是高潮：主角用此前积累的认知与实力兑现主线承诺，解决核心冲突。",
+        "dark_night": "本章是灵魂暗夜：主角在谷底反思，必须展现真实内心挣扎，为顿悟铺垫。",
+    }
+    beat_hint = beat_guidance.get(story_beat, "")
+    structure_parts = []
+    if beat_hint:
+        structure_parts.append(f"- 【结构定位·{story_beat}】{beat_hint}")
+    if chapter_goal:
+        structure_parts.append(f"- 【章节目标与赌注】{chapter_goal}（必须在正文中落实目标的推进或受挫，让读者感受到赌注的分量）")
+    if payoff_design:
+        structure_parts.append(f"- 【爽点链】{payoff_design}（必须按「期待→压制→反转→碾压」的节奏落地，爽点来自主角实力真实发挥）")
+    if main_antagonist:
+        structure_parts.append(f"- 【主要对抗】{main_antagonist}（必须塑造对抗力量的具体威胁，让读者感受到压力，而非抽象的「敌人」）")
+    structure_directive = "\n".join(structure_parts) if structure_parts else "（本章大纲未提供结构功能/目标赌注/爽点链字段，按既有大纲执行即可）"
 
     if is_rewrite:
         system = f"""你是一位追求9分神作的顶尖中文网络小说作家，同时也是一位冷酷的资深编辑。
@@ -541,6 +678,8 @@ def generate_chapter(
 ## 本章【章末钩子——最后200字必须落在这里】
 {chapter_hook}
 
+## 本章【结构功能 / 目标赌注 / 爽点链 / 对抗力量】
+{structure_directive}
 ## 前一章摘要（用于衔接）
 {prev_summary}
 
@@ -589,7 +728,10 @@ def generate_chapter(
 请开始写作："""
 
     log(f"[Writer] 正在生成第{chapter_number}章...")
+    start_time = time.time()
     content = call_mmx(system, prompt, max_tokens=8192, temperature=0.7)
+    elapsed = time.time() - start_time
+    log(f"[Writer] 第{chapter_number}章生成 API 调用耗时 {elapsed:.1f}s")
 
     if not content:
         log(f"[Writer] 第{chapter_number}章收到空响应")
