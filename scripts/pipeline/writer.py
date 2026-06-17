@@ -55,7 +55,7 @@ def init_project(project_dir: str | Path) -> None:
     LOG_FILE = NOVELS_DIR / "logs" / "writer.log"
     CONFIG = load_config(NOVELS_DIR)
     # 限制 origin 素材长度，避免 prompt 过长导致 API 超时（reviewer/outline_reviewer 都有此限制）
-    origin_max = int(CONFIG.get("writer", {}).get("origin_max_chars", 2500) or 2500)
+    origin_max = int(CONFIG.get("writer", {}).get("origin_max_chars", 1200) or 1200)
     ORIGIN_MATERIALS = load_origin_materials(NOVELS_DIR, max_chars=origin_max)
 
 
@@ -573,7 +573,8 @@ def generate_chapter(
 关键势力/角色：
 {key_chars_text}"""
 
-    examples_section = _load_9star_examples(chapter_number)
+    # 9分范本参考：精简 prompt 时跳过（原 _load_9star_examples 会加~1800字，导致 API 空响应）
+    examples_section = ""
 
     genre = _infer_genre(world)
     power_system = world.get("power_system", {})
