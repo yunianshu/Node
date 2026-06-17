@@ -54,7 +54,9 @@ def init_project(project_dir: str | Path) -> None:
     CHARACTERS_FILE = NOVELS_DIR / "characters.json"
     LOG_FILE = NOVELS_DIR / "logs" / "writer.log"
     CONFIG = load_config(NOVELS_DIR)
-    ORIGIN_MATERIALS = load_origin_materials(NOVELS_DIR)
+    # 限制 origin 素材长度，避免 prompt 过长导致 API 超时（reviewer/outline_reviewer 都有此限制）
+    origin_max = int(CONFIG.get("writer", {}).get("origin_max_chars", 2500) or 2500)
+    ORIGIN_MATERIALS = load_origin_materials(NOVELS_DIR, max_chars=origin_max)
 
 
 def log(msg: str):

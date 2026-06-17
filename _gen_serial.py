@@ -23,14 +23,29 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 
 def run(cmd_args, timeout=400):
-    """运行子进程，返回 (returncode, stdout)。"""
+    """运行子进程，超时强杀整个进程树（含 mmx/node 子进程），返回 (returncode, stdout)。
+
+    subprocess.run 的 timeout 在 Windows 上不会杀死子进程的子进程（mmx 调 node），
+    导致 API 挂起时 node 进程残留、脚本永久阻塞。改用 Popen + taskkill /T 强杀进程树。
+    """
+    import subprocess as sp
+    proc = sp.Popen(cmd_args, stdout=sp.PIPE, stderr=sp.PIPE,
+                    text=True, encoding="utf-8", errors="replace", cwd=str(ROOT))
     try:
-        r = subprocess.run(cmd_args, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=timeout,
-                           cwd=str(ROOT))
-        return r.returncode, r.stdout + r.stderr
-    except subprocess.TimeoutExpired:
-        return -1, "TIMEOUT"
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return proc.returncode, (stdout or "") + (stderr or "")
+    except sp.TimeoutExpired:
+        # 强杀整个进程树（/T 杀子进程 /F 强制），解决 node 残留问题
+        try:
+            sp.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                   capture_output=True, timeout=15)
+        except Exception:
+            pass
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return -1, "TIMEOUT_KILLED"
 
 
 def get_review_score(project, chapter):
@@ -60,6 +75,14 @@ def main():
     min_score = float(cfg.get("reviewer", {}).get("min_score", 8.5))
     total_chapters = int(cfg.get("total_chapters", 500))
     py_exe = sys.executable
+
+    # 启动时清理残留的 node 进程（mmx 调用卡死后会残留，累积会拖慢系统）
+    try:
+        subprocess.run(["taskkill", "/F", "/IM", "node.exe"],
+                       capture_output=True, timeout=15)
+        print("[启动] 已清理残留 node 进程")
+    except Exception:
+        pass
 
     # 自动起点：从最后一个已存在的final+1开始
     if args.start <= 0:
@@ -109,7 +132,7 @@ def main():
                 print(f"[{ch_tag}] writer 生成中...")
                 t0 = time.time()
                 rc, out = run([py_exe, "scripts/pipeline/writer.py",
-                               "--project", str(project), "--chapter", str(chapter)], timeout=420)
+                               "--project", str(project), "--chapter", str(chapter)], timeout=180)
                 elapsed = time.time() - t0
                 print(f"[{ch_tag}] writer 完成 rc={rc} 耗时{elapsed:.0f}s")
                 if rc != 0 or not draft.exists():
@@ -120,7 +143,7 @@ def main():
             print(f"[{ch_tag}] reviewer 审查中...")
             t0 = time.time()
             rc, out = run([py_exe, "scripts/pipeline/reviewer.py",
-                           "--project", str(project), "--chapter", str(chapter)], timeout=240)
+                           "--project", str(project), "--chapter", str(chapter)], timeout=120)
             elapsed = time.time() - t0
             print(f"[{ch_tag}] reviewer 完成 rc={rc} 耗时{elapsed:.0f}s")
 
