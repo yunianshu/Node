@@ -19,6 +19,14 @@ from core.mmx_client import MmxError, call_mmx as call_mmx_client
 from core.novel_config import load_config, load_origin_materials, resolve_project_dir
 from core.outline_constraints import format_outline_constraints
 from core.outline_memory import build_outline_memory, format_outline_memory
+from core.foreshadowing_ledger import (
+    dangling_threads as ledger_dangling,
+    load_ledger,
+    parse_foreshadowing_field,
+    register_thread,
+    resolve_thread,
+    save_ledger,
+)
 from core.workflow_state import list_outline_chapters, write_outline_chapters, outline_dir
 from core.edit_diff import EditApplyError, apply_json_field_edit
 
@@ -65,6 +73,58 @@ def call_mmx(system_prompt: str, user_prompt: str, max_tokens: int = 8192, tempe
     except MmxError as e:
         print(f"[ERROR] mmx调用失败: {e}", file=sys.stderr)
         return ""
+
+
+def _ledger_resolve_directive(batch_start: int) -> str:
+    """生成第 batch_start 章应回收的伏笔清单（注入 prompt）。无则返回空串。"""
+    if not NOVELS_DIR:
+        return ""
+    try:
+        ledger = load_ledger(NOVELS_DIR)
+        due = ledger_dangling(ledger, as_of_chapter=batch_start)
+    except Exception:
+        return ""
+    if not due:
+        return ""
+    lines = ["## 【本章必须回收的伏笔】（强制要求，未回收视为不合格）"]
+    for t in due[:8]:
+        lines.append(
+            f"- {t.get('id')}（第{t.get('planted_at')}章埋下，类别{t.get('category')}，"
+            f"优先级{t.get('priority')}）：{t.get('setup', '')}"
+        )
+    lines.append("本章 foreshadowing 字段必须用 [收]FXXX 回收说明 格式回收至少一条。"
+                 "埋设新伏笔用 [埋]描述（FXXX）格式。")
+    return "\n".join(lines)
+
+
+def _update_ledger_from_new_chapters(chapters: list) -> None:
+    """写大纲后解析新章节 foreshadowing 字段，增量更新伏笔台账。"""
+    if not NOVELS_DIR or not chapters:
+        return
+    try:
+        ledger = load_ledger(NOVELS_DIR)
+    except Exception:
+        return
+    tc = int(CONFIG.get("total_chapters", 0)) if CONFIG else 0
+    if tc:
+        ledger["total_chapters"] = tc
+    changed = False
+    for ch in chapters:
+        num = int(ch.get("chapter_number", 0) or 0) if isinstance(ch, dict) else 0
+        if num <= 0:
+            continue
+        parsed = parse_foreshadowing_field(ch.get("foreshadowing", ""))
+        for tid, setup in parsed["planted"]:
+            if tid and any(t.get("id") == tid for t in ledger["threads"]):
+                continue
+            register_thread(ledger, planted_at=num, setup=setup or f"第{num}章伏笔",
+                            total_chapters=tc, thread_id=tid or None)
+            changed = True
+        for tid, note in parsed["resolved"]:
+            if tid and resolve_thread(ledger, tid, resolved_at=num, resolution=note):
+                changed = True
+    if changed:
+        save_ledger(NOVELS_DIR, ledger)
 
 
 def _load_json(path: Path) -> dict:
@@ -564,7 +624,7 @@ def generate_outline_range(
     rescue: bool = False,
     candidate_file: Path = None,
 ):
-    batch_size = 15
+    batch_size = 5
     if outline_file is not None:
         print("[Outliner] --outline-file 已废弃并被忽略；大纲统一写入 chapters/outline/chapter_XXXX.json")
     failures = []
@@ -593,9 +653,15 @@ def generate_outline_range(
         "growth_path": protagonist.get("growth_path", []),
         "signature_ability": protagonist.get("signature_ability", ""),
     }
+    # companions 可能是 list 或 dict（planner生成的嵌套对象），统一提取前3个
+    raw_companions = characters.get("companions", [])
+    if isinstance(raw_companions, dict):
+        raw_companions = list(raw_companions.values())
+    if not isinstance(raw_companions, list):
+        raw_companions = []
     chars_summary["companions"] = [
-        {"name": c.get("name"), "identity": c.get("identity"), "role": c.get("role")}
-        for c in characters.get("companions", [])[:3]
+        {"name": c.get("name") if isinstance(c, dict) else str(c), "identity": c.get("identity", "") if isinstance(c, dict) else "", "role": c.get("role", "") if isinstance(c, dict) else ""}
+        for c in raw_companions[:3]
     ]
     chars_json = json.dumps(chars_summary, ensure_ascii=False, indent=2)
 
@@ -730,6 +796,7 @@ def generate_outline_range(
                 ledger_constraints,
             )
         else:
+            ledger_resolve_directive = _ledger_resolve_directive(batch_start)
             prompt = f"""你正在为一部追求9分神作的中文网文设计单章大纲。下面是本次要生成的章节范围、世界观、角色设定和参考素材。
 
 ## ⚠️ 硬门槛（必须优先满足，否则视为不合格）
@@ -785,6 +852,9 @@ story_beat 必须取枚举值之一：opening_image/theme_stated/setup/catalyst/
     }}
   ]
 }}
+{ledger_resolve_directive}
+## 【配角弧线规划】（强制要求）
+为每个本章涉及的有名配角落实弧线推进：若该配角正处于转折/高潮/收束节点，本章 key_events 必须包含其弧线推进事件，禁止配角出场后连续多章消失或沦为背景板。
 
 要求：
 1. 每章必须有独特的核心事件，不能流水账；key_events 必须5-7条，不能为空，单条不超过90字
@@ -845,6 +915,11 @@ story_beat 必须取枚举值之一：opening_image/theme_stated/setup/catalyst/
             outline["chapters"].extend(new_chapters)
             skip_existing = fill_gaps and chapter is None
             write_outline_chapters(NOVELS_DIR, {"chapters": new_chapters}, skip_existing=skip_existing)
+            # 台账更新钩子：解析新生成章节的 foreshadowing 字段
+            try:
+                _update_ledger_from_new_chapters(new_chapters)
+            except Exception as _le:
+                print(f"[Outliner] 台账更新失败（不影响大纲）: {_le}")
         except Exception as e:
             print(f"[Outliner] 第 {batch_start}-{batch_end} 章解析失败: {e}")
             failures.append((batch_start, batch_end, str(e)))
