@@ -55,6 +55,7 @@ MAINTENANCE_SCRIPTS = {
     "wechat_pusher_lane.py": TOOLS_ROOT / "maintenance" / "wechat_pusher_lane.py",
     "gate_watchdog.py": TOOLS_ROOT / "maintenance" / "gate_watchdog.py",
     "outline_book_reviewer.py": TOOLS_ROOT / "maintenance" / "outline_book_reviewer.py",
+    "foreshadowing_audit.py": TOOLS_ROOT / "maintenance" / "foreshadowing_audit.py",
 }
 
 def resolve_script_path(script_name: str) -> Path:
@@ -779,6 +780,26 @@ def repair_outline_book_review(round_no: int) -> bool:
 def prepare_all_outlines_and_book_review(end: int, force_review: bool = False) -> bool:
     return outline_gate_module.prepare_all_outlines_and_book_review(_runtime(), end, force_review=force_review)
 
+
+def run_foreshadowing_audit(*, apply_patches: bool = True) -> bool:
+    """A2 伏笔闭环门禁：writer 前检查 dangling 伏笔，必要时自动补丁回收。
+
+    仅在全量大纲就绪后（outline-first 路径）执行。critical_dangling 超阈值则阻断 writer。
+    返回 True 表示通过（可继续 writer），False 表示阻断。
+    """
+    script = MAINTENANCE_SCRIPTS["foreshadowing_audit.py"]
+    cmd = [sys.executable, str(script), "--project", str(NOVELS_DIR),
+           "--block-threshold", "0"]
+    if apply_patches:
+        cmd.append("--apply-patches")
+    child_log = LOGS_DIR / "foreshadowing_audit_child.log"
+    rc = run_streaming_process(cmd, child_log)
+    if rc != 0:
+        log(f"[Coordinator] 伏笔闭环门禁未通过 (rc={rc})，阻断 writer 阶段")
+        return False
+    log("[Coordinator] 伏笔闭环门禁通过，进入正文阶段")
+    return True
+
 def generate_summary_report():
     log("=" * 60)
     log("[Coordinator] 生成总结报告")
@@ -915,6 +936,10 @@ def main():
             return
         outline_lookahead = 1
         log("[Coordinator] 全量大纲已过审，正文阶段仅做当前章大纲校验")
+        # A2 伏笔闭环门禁：全量大纲就绪后，writer 前强制回收 dangling 伏笔
+        if not run_foreshadowing_audit(apply_patches=True):
+            log("[Coordinator] 伏笔闭环门禁未通过，正文阶段未启动")
+            return
     log(f"[Coordinator] 单章质量门范围: 第{args.start}-{end_chapter}章；大纲提前窗口: {outline_lookahead}章")
     ok = run_serial_quality_workflow(args.start, end_chapter, outline_lookahead)
     if not ok:
