@@ -138,7 +138,7 @@ def main():
                 print(f"[{ch_tag}] writer 生成中...")
                 t0 = time.time()
                 rc, out = run([py_exe, "scripts/pipeline/writer.py",
-                               "--project", str(project), "--chapter", str(chapter)], timeout=100)
+                               "--project", str(project), "--chapter", str(chapter)], timeout=300)
                 elapsed = time.time() - t0
                 print(f"[{ch_tag}] writer 完成 rc={rc} 耗时{elapsed:.0f}s")
                 if rc != 0 or not draft.exists():
@@ -149,7 +149,7 @@ def main():
             print(f"[{ch_tag}] reviewer 审查中...")
             t0 = time.time()
             rc, out = run([py_exe, "scripts/pipeline/reviewer.py",
-                           "--project", str(project), "--chapter", str(chapter)], timeout=70)
+                           "--project", str(project), "--chapter", str(chapter)], timeout=150)
             elapsed = time.time() - t0
             print(f"[{ch_tag}] reviewer 完成 rc={rc} 耗时{elapsed:.0f}s")
 

@@ -196,13 +196,19 @@ def call_mmx(
             if raw and log_dir:
                 write_raw_response(log_dir, raw_name, raw)
             if result.returncode == 0:
-                if tmp_path is not None:
-                    try:
-                        tmp_path.unlink()
-                    except Exception:
-                        pass
-                return extract_content(raw)
-            last_error = result.stderr.strip() or raw or f"returncode={result.returncode}"
+                content = extract_content(raw)
+                if content and content.strip():
+                    # 正常返回非空内容
+                    if tmp_path is not None:
+                        try:
+                            tmp_path.unlink()
+                        except Exception:
+                            pass
+                    return content
+                # MiniMax 返回空内容（凌晨维护）→ 视为失败，进入重试/回退
+                last_error = "MiniMax 返回空内容（可能凌晨维护）"
+            else:
+                last_error = result.stderr.strip() or raw or f"returncode={result.returncode}"
 
         if attempt < retries:
             time.sleep(retry_delay * (attempt + 1))
@@ -212,4 +218,18 @@ def call_mmx(
             tmp_path.unlink()
         except Exception:
             pass
-    raise MmxError(last_error or "MiniMax 调用失败")
+
+    # MiniMax 失败时自动回退到 Claude CLI（凌晨维护期间可用）
+    try:
+        from core.claude_client import call_claude, ClaudeError
+        return call_claude(
+            system_prompt, user_prompt,
+            max_tokens=max_tokens, temperature=temperature,
+            retries=min(retries, 2), retry_delay=retry_delay,
+            timeout=min(timeout or 120, 120),
+            log_dir=log_dir, raw_name=raw_name,
+        )
+    except Exception:
+        pass
+
+    raise MmxError(last_error or "MiniMax 和 Claude 均不可用")
