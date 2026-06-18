@@ -490,6 +490,15 @@ def generate_chapter(
                 content = f.read()
             prev_ending = content[-500:] if len(content) > 500 else content
 
+    # 人物状态追踪：注入上一章结束时的角色状态快照，消除跨章矛盾
+    character_state_directive = ""
+    try:
+        from core.character_state import format_state_for_prompt, latest_state_before
+        prev_states = latest_state_before(NOVELS_DIR, chapter_number)
+        character_state_directive = format_state_for_prompt(prev_states)
+    except Exception as _cse:
+        log(f"[Writer] 角色状态加载异常（忽略）: {_cse}")
+
     review_section = ""
     if is_rewrite and review_data:
         suggestions = review_data.get("suggestions", [])
@@ -737,7 +746,7 @@ def generate_chapter(
 
 ## 前一章结尾（用于衔接）
 {prev_ending[:300]}
-
+{character_state_directive}
 ## 后一章摘要（为后续铺垫）
 {next_summary}{review_section}
 

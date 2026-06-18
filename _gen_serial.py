@@ -265,6 +265,7 @@ def process_chapter(project, py_exe, chapter, cfg, candidates, workers, max_roun
         # 同步正式 draft/review（供后续章节衔接与终审）
         if best_text:
             draft_file.write_text(best_text, encoding="utf-8")
+        extract_state_if_needed(project, cfg, chapter, best_text or "")
         print(f"[{ch_tag}] PASS ({best_score})", flush=True)
         return "PASS", best_score
     if best_score >= min_score - 0.3:
@@ -274,10 +275,31 @@ def process_chapter(project, py_exe, chapter, cfg, candidates, workers, max_roun
             shutil.copy2(draft_file, final_file)
         if best_text:
             draft_file.write_text(best_text, encoding="utf-8")
+        extract_state_if_needed(project, cfg, chapter, best_text or "")
         print(f"[{ch_tag}] PASS_LENIENT ({best_score})", flush=True)
         return "PASS_LENIENT", best_score
     print(f"[{ch_tag}] FAIL ({best_score})", flush=True)
     return "FAIL", best_score
+
+
+def extract_state_if_needed(project, cfg, chapter, text):
+    """promote final 后抽取角色状态快照，供下一章 writer 注入（跨章一致性保障）。"""
+    if not text.strip():
+        return
+    try:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from core.character_state import extract_character_states, state_file
+        if state_file(project, chapter).exists():
+            return  # 已抽取过
+        chars_meta = {}
+        cf = project / "characters.json"
+        if cf.exists():
+            chars_meta = json.loads(cf.read_text(encoding="utf-8"))
+        result = extract_character_states(project, cfg, chapter, text, chars_meta)
+        n = len(result.get("characters", {}))
+        print(f"  [ch{chapter:04d}] 角色状态抽取: {n} 个角色", flush=True)
+    except Exception as exc:
+        print(f"  [ch{chapter:04d}] 角色状态抽取失败（不影响生成）: {exc}", flush=True)
 
 
 def main():
