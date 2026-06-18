@@ -1,14 +1,18 @@
 # -*- coding: utf-8 -*-
-"""轻量串行章节生成：绕开 coordinator 的 race 机制，直接 writer→reviewer→重写→final。
+"""串行章节生成（章间串行 + 单章内大纲/正文候选竞速）。
+
+架构（满足"章与章之间前面的先生成"）：
+- 章节严格串行：第 N 章全部完成（大纲+正文+终稿）后才开始第 N+1 章
+- 单章内竞速：大纲并发生成 N 个候选→审查→首个达 min_score 即采纳（stop_on_first_pass）；
+              正文同理。未达标的候选继续跑，全部未达标则取最高分重写一轮。
 
 每章流程：
-1. writer 生成 draft（如已有 draft 且 review 未通过则重写）
-2. reviewer 审查
-3. 若 score >= min_score：复制 draft→final，进入下一章
-4. 若 score < min_score：基于 review 反馈重写，最多 max_rounds 轮
-5. 最终仍未通过：取最高分版本，只要 >= min_score-0.3 也采纳（宽松兜底）
+1. outline race：并发 candidates 个 outliner 候选 → outline_reviewer 审查 → 选首个通过
+2. draft race：并发 candidates 个 writer 候选 → reviewer 审查 → 选首个通过
+3. promote：通过的 draft → final
+4. 未通过则取最高分候选，基于审查反馈重写（最多 max_rounds 轮）
 
-用法: py _gen_serial.py --start 1 --end 10
+用法: py _gen_serial.py --project projects/novels14
 """
 import argparse
 import json
@@ -17,17 +21,14 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
 
 def run(cmd_args, timeout=400):
-    """运行子进程，超时强杀整个进程树（含 mmx/node 子进程），返回 (returncode, stdout)。
-
-    subprocess.run 的 timeout 在 Windows 上不会杀死子进程的子进程（mmx 调 node），
-    导致 API 挂起时 node 进程残留、脚本永久阻塞。改用 Popen + taskkill /T 强杀进程树。
-    """
+    """运行子进程，超时强杀整个进程树（含 mmx/node 子进程），返回 (returncode, stdout)。"""
     import subprocess as sp
     proc = sp.Popen(cmd_args, stdout=sp.PIPE, stderr=sp.PIPE,
                     text=True, encoding="utf-8", errors="replace", cwd=str(ROOT))
@@ -35,13 +36,11 @@ def run(cmd_args, timeout=400):
         stdout, stderr = proc.communicate(timeout=timeout)
         return proc.returncode, (stdout or "") + (stderr or "")
     except sp.TimeoutExpired:
-        # 强杀整个进程树（/T 杀子进程 /F 强制）
         try:
             sp.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
                    capture_output=True, timeout=15)
         except Exception:
             pass
-        # 额外杀所有 node.exe（mmx 调用的 node 可能不在 writer 进程树内）
         try:
             sp.run(["taskkill", "/F", "/IM", "node.exe"],
                    capture_output=True, timeout=15)
@@ -54,14 +53,21 @@ def run(cmd_args, timeout=400):
         return -1, "TIMEOUT_KILLED"
 
 
-def ensure_prerequisites(project, py_exe):
-    """确保 writer/reviewer 所需产物就绪：world.json、characters.json、大纲、媒体资产。
+def media_assets_ready(project):
+    image_exts = {".png", ".jpg", ".jpeg", ".webp"}
+    cover = any(p.is_file() and p.suffix.lower() in image_exts
+                for p in (project / "media" / "images").glob("cover*"))
+    video = (project / "media" / "videos" / "world_video.mp4").exists()
+    song = any((project / "media" / "music").glob("theme_song.*"))
+    return cover and video and song
 
-    顺序：planner（世界观+角色+媒体）→ outliner（大纲）→ outline_reviewer（大纲审查）。
-    - 缺 world.json/characters.json → 跑 planner（会顺带生成媒体）
-    - 缺大纲（outline 章数 < total）→ 跑 outliner + outline_reviewer
-    - 有 world/characters 但缺媒体 → 单独跑 media_generator
-    全部就绪 → 直接返回。
+
+def ensure_prerequisites(project, py_exe):
+    """确保产物就绪：planner（世界观+角色+媒体）→ outliner 全量 → outline_reviewer 全量。
+
+    注意：这里只生成【第一批】大纲供正文衔接；真正的高质量大纲竞速在 process_chapter 内逐章做。
+    但为避免正文依赖空大纲，此处先用单次 outliner 把全书大纲铺一遍（后续逐章竞速会覆盖）。
+    实际上竞速模式下，ensure_prerequisites 只补 world/characters/媒体，大纲由逐章竞速生成。
     """
     cfg = json.loads((project / "config.json").read_text(encoding="utf-8"))
     total = int(cfg.get("total_chapters", 500))
@@ -70,7 +76,6 @@ def ensure_prerequisites(project, py_exe):
     media_cfg = cfg.get("media", {})
     media_enabled = media_cfg.get("enabled", True)
 
-    # 1. 世界观与角色（planner 会顺带生成媒体）
     if not world_file.exists() or not chars_file.exists():
         print("[预检查] world.json/characters.json 缺失，启动 planner...")
         rc, out = run([py_exe, "scripts/pipeline/planner.py", "--project", str(project)],
@@ -78,24 +83,7 @@ def ensure_prerequisites(project, py_exe):
         if rc != 0:
             print(f"[预检查][警告] planner 返回 rc={rc}：{out[:300]}")
 
-    # 2. 大纲（_gen_serial 本身不生成大纲，必须先跑 outliner）
-    outline_dir = project / "chapters" / "outline"
-    outline_count = len(list(outline_dir.glob("chapter_*.json"))) if outline_dir.exists() else 0
-    if outline_count < total:
-        missing = total - outline_count
-        print(f"[预检查] 大纲不足（{outline_count}/{total}，缺 {missing} 章），启动 outliner...")
-        rc, out = run([py_exe, "scripts/pipeline/outliner.py", "--project", str(project),
-                       "--start", "1", "--end", str(total)], timeout=480)
-        if rc != 0:
-            print(f"[预检查][警告] outliner 返回 rc={rc}：{out[:300]}")
-        # 大纲审查
-        print("[预检查] 启动 outline_reviewer...")
-        rc, out = run([py_exe, "scripts/pipeline/outline_reviewer.py", "--project", str(project),
-                       "--start", "1", "--end", str(total)], timeout=480)
-        if rc != 0:
-            print(f"[预检查][警告] outline_reviewer 返回 rc={rc}：{out[:300]}")
-
-    # 3. 媒体（若启用）
+    # 竞速模式下大纲逐章生成，此处不预铺。仅检查媒体。
     if not media_enabled:
         return
     if media_assets_ready(project):
@@ -107,62 +95,219 @@ def ensure_prerequisites(project, py_exe):
         print(f"[预检查][警告] media_generator 返回 rc={rc}（视频生成较慢，可能超时）：{out[:300]}")
 
 
-def media_assets_ready(project):
-    """检查三类媒体是否都已生成（与 coordinator.media_assets_ready 口径一致）。"""
-    image_exts = {".png", ".jpg", ".jpeg", ".webp"}
-    cover = any(p.is_file() and p.suffix.lower() in image_exts
-                for p in (project / "media" / "images").glob("cover*"))
-    video = (project / "media" / "videos" / "world_video.mp4").exists()
-    song = any((project / "media" / "music").glob("theme_song.*"))
-    return cover and video and song
-
-
-def get_review_score(project, chapter):
-    rf = project / "chapters" / "review" / f"chapter_{chapter:04d}_review.json"
-    if not rf.exists():
+def read_review_score(review_file):
+    if not review_file.exists():
         return None, None, None
     try:
-        d = json.loads(rf.read_text(encoding="utf-8"))
+        d = json.loads(review_file.read_text(encoding="utf-8"))
         return d.get("overall_score"), d.get("verdict"), d
     except Exception:
         return None, None, None
 
 
+def _outline_race_paths(project, chapter, attempt):
+    """候选大纲/审查的文件路径。"""
+    root = project / "logs" / "outline_candidates" / f"ch{chapter:04d}" / f"attempt{attempt}"
+    return root
+
+
+def race_outline(project, py_exe, chapter, candidates, workers, min_score, timeout):
+    """并发生成 candidates 个单章大纲候选 → 审查 → 返回首个通过的 (outline_dict, score)。
+
+    stop_on_first_pass：任一候选审查通过（score>=min_score 且 verdict 通过）即停止其余。
+    全部未通过：返回最高分候选。
+    """
+    cand_root = _outline_race_paths(project, chapter, attempt=1)
+    cand_root.mkdir(parents=True, exist_ok=True)
+
+    def gen_one(cand_no):
+        cand_file = cand_root / f"cand_{cand_no:02d}.json"
+        cand_file.parent.mkdir(parents=True, exist_ok=True)
+        if cand_file.exists():
+            cand_file.unlink()
+        rc, out = run([py_exe, "scripts/pipeline/outliner.py",
+                       "--project", str(project), "--chapter", str(chapter),
+                       "--candidate-file", str(cand_file)], timeout=timeout)
+        if rc != 0 or not cand_file.exists():
+            return cand_no, None, None, f"outliner rc={rc}"
+        outline = json.loads(cand_file.read_text(encoding="utf-8"))
+        # 审查候选大纲
+        rev_file = cand_root / f"cand_{cand_no:02d}_review.json"
+        rc2, out2 = run([py_exe, "scripts/pipeline/outline_reviewer.py",
+                         "--project", str(project), "--chapter", str(chapter),
+                         "--outline-file", str(cand_file),
+                         "--review-file", str(rev_file)], timeout=timeout)
+        score, verdict, _ = read_review_score(rev_file)
+        return cand_no, outline, score, verdict
+
+    best = None  # (outline, score, cand_no)
+    with ThreadPoolExecutor(max_workers=min(workers, candidates)) as ex:
+        futures = {ex.submit(gen_one, n): n for n in range(1, candidates + 1)}
+        for fut in as_completed(futures):
+            cand_no, outline, score, verdict = fut.result()
+            if outline is None:
+                print(f"  [大纲竞速] 候选{cand_no} 生成失败", flush=True)
+                continue
+            print(f"  [大纲竞速] 候选{cand_no} score={score} verdict={verdict}", flush=True)
+            if score is not None and (best is None or score > (best[1] or -1)):
+                best = (outline, score, cand_no)
+            # stop_on_first_pass
+            if score is not None and score >= min_score and verdict not in ("需重写", "需修改"):
+                print(f"  [大纲竞速] 候选{cand_no} 达标({score}>={min_score})，停止其余候选", flush=True)
+                # 取消未完成的
+                for f in futures:
+                    f.cancel()
+                return best
+    return best
+
+
+def race_draft(project, py_exe, chapter, candidates, workers, min_score, timeout):
+    """并发生成 candidates 个正文候选 → 审查 → 返回首个通过的 (draft_path, score)。
+
+    writer 用 --output-file 写候选文件（候选模式，不写正式 draft 目录），
+    确保读得到前一章正式 final 的结尾（章间串行保证）。
+    """
+    cand_root = project / "logs" / "draft_candidates" / f"ch{chapter:04d}"
+    cand_root.mkdir(parents=True, exist_ok=True)
+
+    def gen_one(cand_no):
+        draft_file = cand_root / f"cand_{cand_no:02d}.txt"
+        rev_file = cand_root / f"cand_{cand_no:02d}_review.json"
+        if draft_file.exists():
+            draft_file.unlink()
+        rc, out = run([py_exe, "scripts/pipeline/writer.py",
+                       "--project", str(project), "--chapter", str(chapter),
+                       "--output-file", str(draft_file)], timeout=timeout)
+        if rc != 0 or not draft_file.exists():
+            return cand_no, None, None, None, f"writer rc={rc}"
+        rc2, out2 = run([py_exe, "scripts/pipeline/reviewer.py",
+                         "--project", str(project), "--chapter", str(chapter),
+                         "--chapter-file", str(draft_file),
+                         "--review-file", str(rev_file)], timeout=timeout)
+        score, verdict, _ = read_review_score(rev_file)
+        return cand_no, draft_file, score, verdict
+
+    best = None  # (draft_file, score, cand_no)
+    with ThreadPoolExecutor(max_workers=min(workers, candidates)) as ex:
+        futures = {ex.submit(gen_one, n): n for n in range(1, candidates + 1)}
+        for fut in as_completed(futures):
+            cand_no, draft_file, score, verdict = fut.result()
+            if draft_file is None:
+                print(f"  [正文竞速] 候选{cand_no} 生成失败", flush=True)
+                continue
+            print(f"  [正文竞速] 候选{cand_no} score={score} verdict={verdict}", flush=True)
+            if score is not None and (best is None or score > (best[1] or -1)):
+                best = (draft_file, score, cand_no)
+            if score is not None and score >= min_score and verdict not in ("需重写", "需修改"):
+                print(f"  [正文竞速] 候选{cand_no} 达标({score}>={min_score})，停止其余候选", flush=True)
+                for f in futures:
+                    f.cancel()
+                return best
+    return best
+
+
+def process_chapter(project, py_exe, chapter, cfg, candidates, workers, max_rounds, timeout):
+    """处理单章：大纲竞速 → 写入正式大纲 → 正文竞速 → promote final。返回 (status, score)。"""
+    min_score = float(cfg.get("reviewer", {}).get("min_score", 8.5))
+    outline_min = float(cfg.get("outline_reviewer", {}).get("min_score", 8.0))
+    ch_tag = f"ch{chapter:04d}"
+    outline_dir = project / "chapters" / "outline"
+    draft_dir = project / "chapters" / "draft"
+    review_dir = project / "chapters" / "review"
+    final_dir = project / "chapters" / "final"
+    for d in (outline_dir, draft_dir, review_dir, final_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    outline_file = outline_dir / f"chapter_{chapter:04d}.json"
+    draft_file = draft_dir / f"chapter_{chapter:04d}.txt"
+    final_file = final_dir / f"chapter_{chapter:04d}.txt"
+
+    if final_file.exists():
+        return "SKIP", -1
+
+    # === 阶段1：大纲竞速 ===
+    if not outline_file.exists():
+        print(f"\n[{ch_tag}] === 大纲竞速（{candidates}候选）===", flush=True)
+        best = race_outline(project, py_exe, chapter, candidates, workers, outline_min, timeout)
+        if best is None or best[0] is None:
+            print(f"[{ch_tag}] 大纲竞速全部失败", flush=True)
+            return "OUTLINE_FAIL", -1
+        outline, score, cand_no = best
+        outline_file.write_text(json.dumps(outline, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"[{ch_tag}] 大纲采纳候选{cand_no}（score={score}）", flush=True)
+
+    # === 阶段2：正文竞速（含重写轮次）===
+    best_score = -1
+    best_text = None
+    for round_n in range(1, max_rounds + 1):
+        print(f"\n[{ch_tag}] === 正文竞速 轮{round_n}/{max_rounds}（{candidates}候选）===", flush=True)
+        best = race_draft(project, py_exe, chapter, candidates, workers, min_score, timeout)
+        if best is None or best[0] is None:
+            print(f"[{ch_tag}] 轮{round_n} 正文竞速全部失败", flush=True)
+            continue
+        draft_cand, score, cand_no = best
+        if score is not None and score > best_score:
+            best_score = score
+            best_text = draft_cand.read_text(encoding="utf-8")
+        if score is not None and score >= min_score:
+            break
+        # 未达标：把最高分候选写入正式 draft，供下一轮 writer --review-feedback 重写参考
+        if best_text:
+            draft_file.write_text(best_text, encoding="utf-8")
+        print(f"[{ch_tag}] 轮{round_n} 最高分 {best_score} < {min_score}，继续重写", flush=True)
+
+    # === 阶段3：promote final ===
+    if best_score >= min_score:
+        if best_text:
+            final_file.write_text(best_text, encoding="utf-8")
+        elif draft_file.exists():
+            shutil.copy2(draft_file, final_file)
+        # 同步正式 draft/review（供后续章节衔接与终审）
+        if best_text:
+            draft_file.write_text(best_text, encoding="utf-8")
+        print(f"[{ch_tag}] PASS ({best_score})", flush=True)
+        return "PASS", best_score
+    if best_score >= min_score - 0.3:
+        if best_text:
+            final_file.write_text(best_text, encoding="utf-8")
+        elif draft_file.exists():
+            shutil.copy2(draft_file, final_file)
+        if best_text:
+            draft_file.write_text(best_text, encoding="utf-8")
+        print(f"[{ch_tag}] PASS_LENIENT ({best_score})", flush=True)
+        return "PASS_LENIENT", best_score
+    print(f"[{ch_tag}] FAIL ({best_score})", flush=True)
+    return "FAIL", best_score
+
+
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description="串行章节生成（章间串行+单章候选竞速）")
     ap.add_argument("--project", "-p", default="projects/novels12")
     ap.add_argument("--start", type=int, default=0, help="起始章(0=自动从最后final+1)")
     ap.add_argument("--end", type=int, default=0, help="结束章(0=到config.total_chapters)")
-    ap.add_argument("--max-rounds", type=int, default=4, help="每章最多重写轮数")
-    ap.add_argument("--time-limit", type=int, default=480, help="本次运行最大秒数(默认8分钟,留余量)")
-    ap.add_argument("--force-regen-below", type=float, default=8.0,
-                    help="现有draft的review分低于此值时强制删除重生成(非重写),默认8.0")
-    ap.add_argument("--workers", type=int, default=4, help="并发章节数(默认4)")
-    ap.add_argument("--skip-planner", action="store_true",
-                    help="跳过 planner 预检查（默认会自动补齐 world/characters/大纲/媒体）")
+    ap.add_argument("--candidates", type=int, default=4, help="单章候选竞速数(默认4)")
+    ap.add_argument("--workers", type=int, default=4, help="候选并发数(默认4，<=candidates)")
+    ap.add_argument("--max-rounds", type=int, default=4, help="正文未达标时重写轮数上限")
+    ap.add_argument("--time-limit", type=int, default=0, help="本次运行最大秒数(0=不限)")
+    ap.add_argument("--timeout", type=int, default=600, help="单个 outliner/writer 调用超时秒数")
+    ap.add_argument("--skip-planner", action="store_true", help="跳过 planner 预检查")
     args = ap.parse_args()
 
     project = (ROOT / args.project).resolve()
     cfg = json.loads((project / "config.json").read_text(encoding="utf-8"))
-    min_score = float(cfg.get("reviewer", {}).get("min_score", 8.5))
     total_chapters = int(cfg.get("total_chapters", 500))
     py_exe = sys.executable
 
-    # 启动前确保 planner 产物就绪：world.json / characters.json / 媒体资产。
-    # _gen_serial 本身只跑 writer→reviewer，不生成世界观与媒体；
-    # 若缺产物则自动调用 planner（planner 末尾会生成媒体）。
     if not args.skip_planner:
         ensure_prerequisites(project, py_exe)
 
-    # 启动时清理残留的 node 进程（mmx 调用卡死后会残留，累积会拖慢系统）
+    # 清理残留 node
     try:
-        subprocess.run(["taskkill", "/F", "/IM", "node.exe"],
-                       capture_output=True, timeout=15)
-        print("[启动] 已清理残留 node 进程")
+        subprocess.run(["taskkill", "/F", "/IM", "node.exe"], capture_output=True, timeout=15)
     except Exception:
         pass
 
-    # 自动起点：从最后一个已存在的final+1开始
+    # 自动起点
     if args.start <= 0:
         finals = sorted((project / "chapters" / "final").glob("chapter_*.txt"))
         if finals:
@@ -174,115 +319,33 @@ def main():
         args.end = total_chapters
 
     start_time = time.time()
-    results = {}
+    workers = max(1, min(args.workers, args.candidates))
 
-    # 并发生成：用线程池同时处理多章（MiniMax qps=15 支持并发）
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    max_workers = args.workers if hasattr(args, 'workers') and args.workers > 0 else 4
+    print(f"\n{'='*60}")
+    print(f"串行生成: 第{args.start}-{args.end}章 | 候选{args.candidates} 并发{workers} | 重写轮{args.max_rounds}")
+    print(f"{'='*60}")
 
-    def process_one_chapter(chapter):
-        """处理单章：writer→reviewer→promote final。线程安全（不同章节不冲突）。"""
-        ch_tag = f"ch{chapter:04d}"
-        draft = project / "chapters" / "draft" / f"chapter_{chapter:04d}.txt"
-        rf = project / "chapters" / "review" / f"chapter_{chapter:04d}_review.json"
-        final = project / "chapters" / "final" / f"chapter_{chapter:04d}.txt"
-        final.parent.mkdir(parents=True, exist_ok=True)
-
-        # 跳过已有 final
-        if final.exists():
-            return chapter, "SKIP", -1
-
-        best_score = -1
-        best_text = None
-
-        # 检查低分 draft 强制重生
-        if draft.exists() and rf.exists():
-            try:
-                old_score = json.loads(rf.read_text(encoding="utf-8")).get("overall_score")
-                if isinstance(old_score, (int, float)) and old_score < args.force_regen_below:
-                    draft.unlink()
-                    rf.unlink()
-            except Exception:
-                pass
-
-        for round_n in range(1, args.max_rounds + 1):
-            if rf.exists() and round_n > 1:
-                rf.unlink()
-            # writer
-            if not draft.exists() or round_n > 1:
-                rc, out = run([py_exe, "scripts/pipeline/writer.py",
-                               "--project", str(project), "--chapter", str(chapter)], timeout=600)
-                if rc != 0 or not draft.exists():
-                    continue
-            # reviewer
-            rc, out = run([py_exe, "scripts/pipeline/reviewer.py",
-                           "--project", str(project), "--chapter", str(chapter)], timeout=150)
-            score, verdict, _ = get_review_score(project, chapter)
-            if score is not None and score > best_score:
-                best_score = score
-                best_text = draft.read_text(encoding="utf-8") if draft.exists() else best_text
-            if score is not None and score >= min_score and verdict not in ("需重写", "需修改"):
-                break
-
-        # promote
-        adopted = False
-        if best_score >= min_score:
-            if best_text:
-                final.write_text(best_text, encoding="utf-8")
-            elif draft.exists():
-                shutil.copy2(draft, final)
-            adopted = True
-            status = "PASS"
-        elif best_score >= min_score - 0.3:
-            if best_text:
-                final.write_text(best_text, encoding="utf-8")
-            elif draft.exists():
-                shutil.copy2(draft, final)
-            adopted = True
-            status = f"PASS_LENIENT({best_score})"
-        else:
-            status = f"FAIL({best_score})"
-
-        print(f"[{ch_tag}] {status}", flush=True)
-        return chapter, status, best_score
-
-    # 分批并发：每批 max_workers 章
-    pending = list(range(args.start, args.end + 1))
-    batch_size = max_workers
-    total_done = 0
-
-    while pending:
-        elapsed = time.time() - start_time
-        if elapsed > args.time_limit:
-            print(f"\n[时间预算耗尽] {elapsed:.0f}s > {args.time_limit}s, 已完成{total_done}章", flush=True)
+    scores = []
+    passed = 0
+    for chapter in range(args.start, args.end + 1):
+        if args.time_limit and (time.time() - start_time) > args.time_limit:
+            print(f"\n[时间预算耗尽] 已完成 {chapter - args.start} 章", flush=True)
             break
-
-        batch = pending[:batch_size]
-        pending = pending[batch_size:]
-        print(f"\n--- 并发批次: ch{batch[0]:04d}-ch{batch[-1]:04d} ({len(batch)}章并发) ---", flush=True)
-
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(process_one_chapter, ch): ch for ch in batch}
-            for future in as_completed(futures):
-                ch = futures[future]
-                try:
-                    chapter, status, score = future.result()
-                    total_done += 1
-                    flag = "✅" if "PASS" in status else "❌"
-                    print(f"  {flag} ch{chapter:04d}: {status}", flush=True)
-                except Exception as exc:
-                    print(f"  ❌ ch{ch:04d}: 异常 {exc}", flush=True)
+        status, score = process_chapter(
+            project, py_exe, chapter, cfg,
+            args.candidates, workers, args.max_rounds, args.timeout,
+        )
+        if "PASS" in status:
+            passed += 1
+            if isinstance(score, (int, float)) and score > 0:
+                scores.append(score)
 
     # 汇总
-    print(f"\n{'='*60}\n汇总 ({args.start}-{args.end})\n{'='*60}")
-    scores = []
-    for ch, r in sorted(results.items()):
-        flag = "✅" if r["adopted"] else "❌"
-        print(f"  {flag} ch{ch:04d}: {r['status']}")
-        if isinstance(r["score"], (int, float)) and r["score"] > 0:
-            scores.append(r["score"])
+    print(f"\n{'='*60}")
+    print(f"汇总: {passed}/{args.end - args.start + 1} 章通过")
     if scores:
-        print(f"\n平均分: {sum(scores)/len(scores):.3f}  通过: {sum(1 for r in results.values() if r['adopted'])}/{len(results)}")
+        print(f"通过章均分: {sum(scores)/len(scores):.3f}")
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":
