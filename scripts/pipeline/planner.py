@@ -328,6 +328,27 @@ def generate_media_prompts():
     print("[Planner] 媒体提示词已写入 world.json 和 media/ 提示词文件")
 
 
+def generate_media_assets() -> bool:
+    """复用 media_generator 生成封面/视频/主题歌。
+
+    config.media.enabled 默认 True；为 False 时跳过。返回是否成功（或已跳过）。
+    单独 import 以避免循环依赖：media_generator 不依赖 planner。
+    """
+    if not CONFIG or not CONFIG.get("media", {}).get("enabled", True):
+        print("[Planner] media.enabled=false，跳过媒体资产生成")
+        return True
+    try:
+        from pipeline import media_generator as mg
+    except Exception as exc:
+        print(f"[Planner] 无法加载 media_generator: {exc}")
+        return False
+    # 复用 planner 已初始化的项目上下文
+    mg.init_project(NOVELS_DIR)
+    try:
+        return mg.generate_media()
+    except Exception as exc:
+        print(f"[Planner] 媒体资产生成异常: {exc}")
+        return False
 
 
 def main():
@@ -359,6 +380,12 @@ def main():
     generate_world()
     generate_characters()
     generate_media_prompts()
+
+    # 媒体资产生成：提示词就绪后立即生成封面/视频/主题歌。
+    # 放在 planner 末尾，使无论用 coordinator 还是 _gen_serial.py 等任意编排，
+    # 只要跑过 planner，媒体都会生成（config.media.enabled=false 时跳过）。
+    if not generate_media_assets():
+        print("[Planner] 媒体资产生成未完成（详见 logs/media_generator.log）")
 
     print("[Planner] 全部完成")
 
