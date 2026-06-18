@@ -22,6 +22,7 @@ from pathlib import Path
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
 from core.novel_config import configure_stdio, load_config, load_origin_materials, resolve_project_dir
+from core.ai_flavor_detector import detect_ai_flavor
 # 微信推送已禁用，改由 coordinator 统一推送进度
 # from core.push_notifier import push_stage_complete
 from core.workflow_state import (
@@ -221,6 +222,8 @@ def review_chapter(
     with open(chapter_file, "r", encoding="utf-8") as f:
         chapter_content = f.read()
     local_analysis = analyze_chapter_text(chapter_content)
+    ai_flavor = detect_ai_flavor(chapter_content, project=NOVELS_DIR)
+    local_analysis["ai_flavor_detection"] = ai_flavor
 
     chapter_outline = load_outline_chapter(NOVELS_DIR, chapter_number)
 
@@ -314,7 +317,8 @@ def review_chapter(
     "suspense_density": "悬念密度（0-10。每800-1200字是否有新信息/冲突升级/意外转折？）",
     "information_freshness": "信息新鲜度（0-10。是否带来至少一个此前从未出现过的新元素？有无重复已知信息？）",
     "anti_cliche": "反套路程度（0-10。是否存在标准升级流/打怪流/解谜流模板？是否有意外和不可预测性？）",
-    "read_desire": "读下去的欲望（0-10。假设你是第一次读的读者，读完这章后有多想立刻打开下一章？）"
+    "read_desire": "读下去的欲望（0-10。假设你是第一次读的读者，读完这章后有多想立刻打开下一章？）",
+    "ai_flavor": "去AI味程度（0-10。越高越自然。参考 local_analysis.ai_flavor_detection 的本地证据）"
   }},
   "word_count_check": {{
     "actual": {len(chapter_content)},
@@ -365,7 +369,8 @@ def review_chapter(
 7. 如低于{review_min_score}分必须标记为"需重写"
 8. 字数不足{warn_min}或超过{warn_max}要标记字数问题
 9. 必须输出合法JSON，不要Markdown，不要长篇解释
-10. **必须输出 edits 数组**：如果 verdict 不是"通过"，必须给出至少一条具体可定位的 edit ops（replace/insert/delete），用于定点修改而不是全文重写。edit 的 old/after 字段必须引用原文真实片段，长度 30-200 字。"""
+10. **必须输出 edits 数组**：如果 verdict 不是"通过"，必须给出至少一条具体可定位的 edit ops（replace/insert/delete），用于定点修改而不是全文重写。edit 的 old/after 字段必须引用原文真实片段，长度 30-200 字。
+11. 若 local_analysis.ai_flavor_detection.ai_flavor_score < 7，verdict 不得为"通过"，必须在 edits 中给出针对排比抒情/总结收尾/形容词堆砌的定点重写。"""
 
     log(f"[Reviewer] 正在审查第{chapter_number}章...")
     start_time = time.time()

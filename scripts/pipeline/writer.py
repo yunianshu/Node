@@ -33,6 +33,7 @@ from core.edit_diff import (
     parse_edit_ops,
     similarity,
 )
+from core.ai_flavor_detector import detect_ai_flavor
 
 configure_stdio()
 
@@ -190,6 +191,36 @@ def _writer_quality_contract() -> str:
 - 人物动机和说话方式必须符合既有设定，不能OOC。
 - 爽点必须来自主角判断、能力、资源或协作的实际发挥，不能靠巧合硬赢。
 - 不得水文、重复段落、空泛心理独白、元叙述或输出“本章完”等非正文信息。"""
+
+
+def _deai_rewrite_directives(detection: dict) -> str:
+    """根据 C1 检测结果生成针对性去AI味指令。无问题返回空串。"""
+    issues = detection.get("issues", []) if isinstance(detection, dict) else []
+    if not issues:
+        return ""
+    parts = ["## 【去AI味专项重写】（本次重写的首要目标，优先于其他修改）"]
+    by_type = {}
+    for it in issues:
+        by_type.setdefault(it.get("type"), it)
+    for t, it in by_type.items():
+        loc = it.get("paragraph", "")
+        loc_str = f"（定位：{loc}）" if loc and loc != "未定位" else ""
+        if t == "parallel_sentiment":
+            parts.append(f"- 打破排比工整{loc_str}：把'不仅…而且…更…'改为长短句交替，"
+                         "用一个具体动作或物象替代抒情（'他把杯子转了三圈' > '他心中涌起波澜'）")
+        elif t == "summary_ending":
+            parts.append("- 章末禁止总结性收尾：最后一句必须是未解决的问题、突然的威胁或未说出口的话，"
+                         "禁止'故事才刚刚开始'式元叙述")
+        elif t == "adjective_pileup":
+            parts.append("- 删除'璀璨/磅礴/恐怖'等空泛形容词，每个形容词替换为具体感官细节"
+                         "（'空气冷得像含着铁片' > '空气无比冰冷'）")
+        elif t == "low_variance":
+            parts.append("- 段落长度必须有变化：穿插1-2句短段落制造停顿，再用长段落铺陈")
+        elif t == "telling_not_showing":
+            parts.append("- 用动作和物象替代'他感到/他意识到'式直接告知情绪")
+        elif t == "meta_narration":
+            parts.append("- 删除一切生成痕迹/元叙述词")
+    return "\n".join(parts)
 
 
 def _load_9star_examples(chapter_number: int, min_score: float = 9.0, max_examples: int = 2) -> str:
@@ -525,6 +556,19 @@ def generate_chapter(
                         if last_valid > len(incremental_text) * 0.9:
                             incremental_text = incremental_text[: last_valid + 1].strip()
 
+                # 去AI味复检：若重写后 ai_flavor 反而下降且原文不算太差，回退保留原文
+                if old_content:
+                    try:
+                        old_detect = detect_ai_flavor(old_content, project=NOVELS_DIR)
+                        new_detect = detect_ai_flavor(incremental_text, project=NOVELS_DIR)
+                        if (new_detect["ai_flavor_score"] < old_detect["ai_flavor_score"]
+                                and old_detect["ai_flavor_score"] >= 6.0):
+                            log(f"[Writer] 第{chapter_number}章去AI味复检：重写后 "
+                                f"{new_detect['ai_flavor_score']} < 原文 {old_detect['ai_flavor_score']}，回退保留原文")
+                            incremental_text = old_content
+                    except Exception as _de:
+                        log(f"[Writer] 去AI味复检异常（忽略）: {_de}")
+
                 word_count = len(incremental_text)
                 CHAPTERS_DIR.mkdir(parents=True, exist_ok=True)
                 with open(chapter_file, "w", encoding="utf-8") as f:
@@ -643,6 +687,11 @@ def generate_chapter(
 - 如果 reviewer 说"章末钩子弱"，只修改最后200字，保留前文。
 - 如果 reviewer 说"技术细节过多"，删除技术解释，替换为人物反应。
 - 如果 reviewer 说"中段缺乏小高潮"，在中段插入一个短小的冲突或转折场景，不要打乱整体结构。"""
+        + "\n\n"
+        + _deai_rewrite_directives(
+            (review_data.get("local_analysis", {}) or {}).get("ai_flavor_detection", {})
+            if isinstance(review_data, dict) else {}
+        )
     else:
         system = f"""你是一位追求9分神作的顶尖中文网络小说作家，擅长创作{genre}。
 你的标准不是"写出一章合格的内容"，而是"写出一章让人欲罢不能的神作"。
