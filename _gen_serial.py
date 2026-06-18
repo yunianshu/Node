@@ -55,26 +55,47 @@ def run(cmd_args, timeout=400):
 
 
 def ensure_prerequisites(project, py_exe):
-    """确保 writer/reviewer 所需产物就绪：world.json、characters.json、媒体资产。
+    """确保 writer/reviewer 所需产物就绪：world.json、characters.json、大纲、媒体资产。
 
-    缺 world.json/characters.json → 跑 planner（会顺带生成媒体）。
-    有 world/characters 但缺媒体 → 单独跑 media_generator。
+    顺序：planner（世界观+角色+媒体）→ outliner（大纲）→ outline_reviewer（大纲审查）。
+    - 缺 world.json/characters.json → 跑 planner（会顺带生成媒体）
+    - 缺大纲（outline 章数 < total）→ 跑 outliner + outline_reviewer
+    - 有 world/characters 但缺媒体 → 单独跑 media_generator
     全部就绪 → 直接返回。
     """
+    cfg = json.loads((project / "config.json").read_text(encoding="utf-8"))
+    total = int(cfg.get("total_chapters", 500))
     world_file = project / "world.json"
     chars_file = project / "characters.json"
-    media_cfg = json.loads((project / "config.json").read_text(encoding="utf-8")).get("media", {})
+    media_cfg = cfg.get("media", {})
     media_enabled = media_cfg.get("enabled", True)
 
+    # 1. 世界观与角色（planner 会顺带生成媒体）
     if not world_file.exists() or not chars_file.exists():
         print("[预检查] world.json/characters.json 缺失，启动 planner...")
         rc, out = run([py_exe, "scripts/pipeline/planner.py", "--project", str(project)],
                       timeout=900)
         if rc != 0:
             print(f"[预检查][警告] planner 返回 rc={rc}：{out[:300]}")
-        return
 
-    # world/characters 已存在，仅检查媒体（若启用）
+    # 2. 大纲（_gen_serial 本身不生成大纲，必须先跑 outliner）
+    outline_dir = project / "chapters" / "outline"
+    outline_count = len(list(outline_dir.glob("chapter_*.json"))) if outline_dir.exists() else 0
+    if outline_count < total:
+        missing = total - outline_count
+        print(f"[预检查] 大纲不足（{outline_count}/{total}，缺 {missing} 章），启动 outliner...")
+        rc, out = run([py_exe, "scripts/pipeline/outliner.py", "--project", str(project),
+                       "--start", "1", "--end", str(total)], timeout=480)
+        if rc != 0:
+            print(f"[预检查][警告] outliner 返回 rc={rc}：{out[:300]}")
+        # 大纲审查
+        print("[预检查] 启动 outline_reviewer...")
+        rc, out = run([py_exe, "scripts/pipeline/outline_reviewer.py", "--project", str(project),
+                       "--start", "1", "--end", str(total)], timeout=480)
+        if rc != 0:
+            print(f"[预检查][警告] outline_reviewer 返回 rc={rc}：{out[:300]}")
+
+    # 3. 媒体（若启用）
     if not media_enabled:
         return
     if media_assets_ready(project):
