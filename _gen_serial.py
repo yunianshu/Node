@@ -54,6 +54,48 @@ def run(cmd_args, timeout=400):
         return -1, "TIMEOUT_KILLED"
 
 
+def ensure_prerequisites(project, py_exe):
+    """确保 writer/reviewer 所需产物就绪：world.json、characters.json、媒体资产。
+
+    缺 world.json/characters.json → 跑 planner（会顺带生成媒体）。
+    有 world/characters 但缺媒体 → 单独跑 media_generator。
+    全部就绪 → 直接返回。
+    """
+    world_file = project / "world.json"
+    chars_file = project / "characters.json"
+    media_cfg = json.loads((project / "config.json").read_text(encoding="utf-8")).get("media", {})
+    media_enabled = media_cfg.get("enabled", True)
+
+    if not world_file.exists() or not chars_file.exists():
+        print("[预检查] world.json/characters.json 缺失，启动 planner...")
+        rc, out = run([py_exe, "scripts/pipeline/planner.py", "--project", str(project)],
+                      timeout=900)
+        if rc != 0:
+            print(f"[预检查][警告] planner 返回 rc={rc}：{out[:300]}")
+        return
+
+    # world/characters 已存在，仅检查媒体（若启用）
+    if not media_enabled:
+        return
+    if media_assets_ready(project):
+        return
+    print("[预检查] 媒体资产缺失，启动 media_generator...")
+    rc, out = run([py_exe, "scripts/pipeline/media_generator.py", "--project", str(project)],
+                  timeout=3600)
+    if rc != 0:
+        print(f"[预检查][警告] media_generator 返回 rc={rc}（视频生成较慢，可能超时）：{out[:300]}")
+
+
+def media_assets_ready(project):
+    """检查三类媒体是否都已生成（与 coordinator.media_assets_ready 口径一致）。"""
+    image_exts = {".png", ".jpg", ".jpeg", ".webp"}
+    cover = any(p.is_file() and p.suffix.lower() in image_exts
+                for p in (project / "media" / "images").glob("cover*"))
+    video = (project / "media" / "videos" / "world_video.mp4").exists()
+    song = any((project / "media" / "music").glob("theme_song.*"))
+    return cover and video and song
+
+
 def get_review_score(project, chapter):
     rf = project / "chapters" / "review" / f"chapter_{chapter:04d}_review.json"
     if not rf.exists():
@@ -74,6 +116,9 @@ def main():
     ap.add_argument("--time-limit", type=int, default=480, help="本次运行最大秒数(默认8分钟,留余量)")
     ap.add_argument("--force-regen-below", type=float, default=8.0,
                     help="现有draft的review分低于此值时强制删除重生成(非重写),默认8.0")
+    ap.add_argument("--workers", type=int, default=4, help="并发章节数(默认4)")
+    ap.add_argument("--skip-planner", action="store_true",
+                    help="跳过 planner 预检查（默认会自动补齐 world/characters/大纲/媒体）")
     args = ap.parse_args()
 
     project = (ROOT / args.project).resolve()
@@ -81,6 +126,12 @@ def main():
     min_score = float(cfg.get("reviewer", {}).get("min_score", 8.5))
     total_chapters = int(cfg.get("total_chapters", 500))
     py_exe = sys.executable
+
+    # 启动前确保 planner 产物就绪：world.json / characters.json / 媒体资产。
+    # _gen_serial 本身只跑 writer→reviewer，不生成世界观与媒体；
+    # 若缺产物则自动调用 planner（planner 末尾会生成媒体）。
+    if not args.skip_planner:
+        ensure_prerequisites(project, py_exe)
 
     # 启动时清理残留的 node 进程（mmx 调用卡死后会残留，累积会拖慢系统）
     try:
@@ -103,73 +154,56 @@ def main():
 
     start_time = time.time()
     results = {}
-    for chapter in range(args.start, args.end + 1):
-        # 时间预算检查：剩余不足6分钟(一章约需)则退出，留下次接力
-        elapsed = time.time() - start_time
-        if elapsed > args.time_limit:
-            print(f"\n[时间预算耗尽] 已运行{elapsed:.0f}s > {args.time_limit}s,停在ch{chapter-1:04d},下次自动接力")
-            break
+
+    # 并发生成：用线程池同时处理多章（MiniMax qps=15 支持并发）
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    max_workers = args.workers if hasattr(args, 'workers') and args.workers > 0 else 4
+
+    def process_one_chapter(chapter):
+        """处理单章：writer→reviewer→promote final。线程安全（不同章节不冲突）。"""
         ch_tag = f"ch{chapter:04d}"
-        print(f"\n{'='*60}\n处理 {ch_tag} (目标 >= {min_score}) 已运行{elapsed:.0f}s\n{'='*60}")
+        draft = project / "chapters" / "draft" / f"chapter_{chapter:04d}.txt"
+        rf = project / "chapters" / "review" / f"chapter_{chapter:04d}_review.json"
+        final = project / "chapters" / "final" / f"chapter_{chapter:04d}.txt"
+        final.parent.mkdir(parents=True, exist_ok=True)
+
+        # 跳过已有 final
+        if final.exists():
+            return chapter, "SKIP", -1
+
         best_score = -1
         best_text = None
 
-        # 检查现有 draft 的 review 分：若太低则删除强制重生（旧_best质量差）
-        draft = project / "chapters" / "draft" / f"chapter_{chapter:04d}.txt"
-        rf = project / "chapters" / "review" / f"chapter_{chapter:04d}_review.json"
+        # 检查低分 draft 强制重生
         if draft.exists() and rf.exists():
             try:
                 old_score = json.loads(rf.read_text(encoding="utf-8")).get("overall_score")
                 if isinstance(old_score, (int, float)) and old_score < args.force_regen_below:
-                    print(f"[{ch_tag}] 现有draft仅{old_score}分 < {args.force_regen_below},删除强制重生")
                     draft.unlink()
                     rf.unlink()
             except Exception:
                 pass
 
         for round_n in range(1, args.max_rounds + 1):
-            print(f"\n--- {ch_tag} 第{round_n}/{args.max_rounds}轮 ---")
-            # 删除旧 review 强制重新审查（重写后必须重审）
             if rf.exists() and round_n > 1:
                 rf.unlink()
-
-            # 1. writer（生成或重写）
+            # writer
             if not draft.exists() or round_n > 1:
-                print(f"[{ch_tag}] writer 生成中...")
-                t0 = time.time()
                 rc, out = run([py_exe, "scripts/pipeline/writer.py",
-                               "--project", str(project), "--chapter", str(chapter)], timeout=300)
-                elapsed = time.time() - t0
-                print(f"[{ch_tag}] writer 完成 rc={rc} 耗时{elapsed:.0f}s")
+                               "--project", str(project), "--chapter", str(chapter)], timeout=600)
                 if rc != 0 or not draft.exists():
-                    print(f"[{ch_tag}] writer 失败，跳过本轮: {out[-200:]}")
                     continue
-
-            # 2. reviewer
-            print(f"[{ch_tag}] reviewer 审查中...")
-            t0 = time.time()
+            # reviewer
             rc, out = run([py_exe, "scripts/pipeline/reviewer.py",
                            "--project", str(project), "--chapter", str(chapter)], timeout=150)
-            elapsed = time.time() - t0
-            print(f"[{ch_tag}] reviewer 完成 rc={rc} 耗时{elapsed:.0f}s")
-
             score, verdict, _ = get_review_score(project, chapter)
-            wc = len(draft.read_text(encoding="utf-8")) if draft.exists() else 0
-            print(f"[{ch_tag}] score={score} verdict={verdict} words={wc}")
-
             if score is not None and score > best_score:
                 best_score = score
                 best_text = draft.read_text(encoding="utf-8") if draft.exists() else best_text
-
-            # 3. 通过判断
             if score is not None and score >= min_score and verdict not in ("需重写", "需修改"):
-                print(f"[{ch_tag}] ✅ 通过 ({score} >= {min_score})")
                 break
-            print(f"[{ch_tag}] 未通过 ({score} < {min_score})，下轮重写")
 
-        # 4. 采纳：通过或最高分兜底
-        final = project / "chapters" / "final" / f"chapter_{chapter:04d}.txt"
-        final.parent.mkdir(parents=True, exist_ok=True)
+        # promote
         adopted = False
         if best_score >= min_score:
             if best_text:
@@ -179,20 +213,44 @@ def main():
             adopted = True
             status = "PASS"
         elif best_score >= min_score - 0.3:
-            # 宽松兜底：差0.3内也采纳（质量门微调空间）
             if best_text:
                 final.write_text(best_text, encoding="utf-8")
             elif draft.exists():
                 shutil.copy2(draft, final)
             adopted = True
             status = f"PASS_LENIENT({best_score})"
-            print(f"[{ch_tag}] ⚠️ 宽松采纳 ({best_score} 接近 {min_score})")
         else:
             status = f"FAIL({best_score})"
-            print(f"[{ch_tag}] ❌ 未达标 best={best_score}")
 
-        results[chapter] = {"score": best_score, "status": status, "adopted": adopted}
-        print(f"[{ch_tag}] 结果: {status}")
+        print(f"[{ch_tag}] {status}", flush=True)
+        return chapter, status, best_score
+
+    # 分批并发：每批 max_workers 章
+    pending = list(range(args.start, args.end + 1))
+    batch_size = max_workers
+    total_done = 0
+
+    while pending:
+        elapsed = time.time() - start_time
+        if elapsed > args.time_limit:
+            print(f"\n[时间预算耗尽] {elapsed:.0f}s > {args.time_limit}s, 已完成{total_done}章", flush=True)
+            break
+
+        batch = pending[:batch_size]
+        pending = pending[batch_size:]
+        print(f"\n--- 并发批次: ch{batch[0]:04d}-ch{batch[-1]:04d} ({len(batch)}章并发) ---", flush=True)
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(process_one_chapter, ch): ch for ch in batch}
+            for future in as_completed(futures):
+                ch = futures[future]
+                try:
+                    chapter, status, score = future.result()
+                    total_done += 1
+                    flag = "✅" if "PASS" in status else "❌"
+                    print(f"  {flag} ch{chapter:04d}: {status}", flush=True)
+                except Exception as exc:
+                    print(f"  ❌ ch{ch:04d}: 异常 {exc}", flush=True)
 
     # 汇总
     print(f"\n{'='*60}\n汇总 ({args.start}-{args.end})\n{'='*60}")
