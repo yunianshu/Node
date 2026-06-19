@@ -154,6 +154,13 @@ def _writer_quality_contract() -> str:
     min_words = int(quality.get("min_chapter_words", 5000))
     max_words = int(quality.get("max_chapter_words", 12000))
     return f"""## 【9分神作契约】正文质量红线（必须满足，否则视为不合格）
+
+### 【让人读下去·最高优先】（评分高 ≠ 读着好看，以下决定读者留存，违反即判"普通"）
+- 【开头即刻钩子】第一句/第一段必须直接进入冲突、悬念、动作或一个让人不安的细节。**严禁环境描写开头**（雨夜/风/天气/景色）、**严禁设定解释开头**（介绍世界观/设备/体系/背景）、**严禁回顾或平淡过渡开头**（"过了几天/沈默醒来/那是一个")。理想开头：一上来就是主角正在做一件有张力的事、或撞见一个反常。承接上章时，第一句就要重新绷紧张力，而非平铺。
+- 【爽点循环·每章必释放】每章必须有完整的"期待→压制→反转→**释放**"。主角必须**主动出击、做出关键判断或扳回一城至少一次**，禁止整章被动挨打、单纯逃亡、被信息轰炸。读者要感到"主角赢了/赚了/打脸了/真相大白"的爽感释放，不能只挖坑不填。
+- 【代入主角】贴主角限制性视角，持续呈现主角此刻的欲望、恐惧、盘算与情绪波动，让读者代入"如果是我"。禁止上帝视角旁观式叙述把读者挡在门外。
+- 【赌注真实且升级】本章赌注必须具体可感、比上章更高（生存/在乎的人/身份真相/核心目标）。空洞的全书级口号不算赌注。
+
 - 审查目标分必须达到 {min_score:g} 分及以上；低于该分数视为不合格，必须重写。
 - 字数必须达到配置要求，建议不少于 {min_words} 字，避免超过 {max_words} 字。
 - 必须严格执行本章大纲的核心事件、人物、地点、危机和章末钩子，不得擅自改主线。
@@ -185,6 +192,22 @@ def _writer_quality_contract() -> str:
 ### 【信息新鲜度·强制要求】
 - 每章必须给读者带来至少一个"此前从未出现过的新元素"：新人物、新地点、新规则、新真相、新威胁、新情感关系。
 - 禁止整章都在重复已知信息或进行无新意的铺垫。
+
+### 【去AI味·强制要求】（去AI化的核心，违反即判AI腔）
+- 【句长起伏】长短句必须交替：用1-3字的短句打断，再接长句铺陈，禁止通篇句长均匀的"工整腔"。偶尔用一个字成句。
+- 【禁套路微表情】禁止"眼中闪过一丝XX""嘴角微微上扬""眉头微皱""心中暗道""心头涌起"等套路化微表情与内心独白。情绪必须用具体动作、对白、环境或身体反应外化（"他把杯子转了三圈" > "他心中涌起波澜"）。
+- 【破折号节制】全章破折号"——"不超过3-4处，禁止把它当万能戏剧停顿；改用短句断句或动作承接。
+- 【比喻节制】全章核心比喻不超过2-3个，禁止"仿佛/宛如/如同/犹如"的比喻堆叠；优先用直接动作和具象细节。
+- 【删冗余副词】删去"缓缓地/微微地/默默地/淡淡地"等软调副词，让动词本身承担动作质感。
+- 【展示而非告知】禁止"他感到/她意识到/他明白了"式直接告知情绪，改为可观察的动作与物象。
+- 【禁议论文腔】禁止"毫无疑问/众所周知/总而言之/综上所述/不得不说/显而易见"等连接词进入小说正文。
+
+### 【人物称呼一致性·强制要求】（world_consistency 主因，违反即判设定矛盾）
+- **全书出场角色已在前期锁定于 characters.json（闭环角色）**。正文只能使用其中已登记的角色；严禁临时生造新的命名角色。若剧情确实需要新角色，必须先在 characters.json 登记（name+aliases+role）再使用——这是防止人物漂移的根本约束。
+- 每个角色有唯一规范名（见角色信息）。正文优先用规范名指代。
+- 若用职务/称谓/别名称呼（如"周社长""老林"），首次出现必须与规范名绑定（如"周德茂——当年报社的周社长"），此后同一角色不得再冒出未绑定的新称呼。
+- 严禁让两个不同角色共用同一称呼或姓氏+职务组合；严禁同一角色在不同章节换用互不关联的名字。
+- 本章大纲 characters_involved 中列出的角色，必须在本章实际登场且其规范名（或已绑定称呼）至少出现一次，不得只提其名却不出场、或出场却换了陌生称呼。
 
 ### 【基础禁令】
 - 不得用设定解释替代剧情现场；世界观信息必须通过行动、对话、发现或冲突呈现。
@@ -220,6 +243,24 @@ def _deai_rewrite_directives(detection: dict) -> str:
             parts.append("- 用动作和物象替代'他感到/他意识到'式直接告知情绪")
         elif t == "meta_narration":
             parts.append("- 删除一切生成痕迹/元叙述词")
+        elif t == "simile_overuse":
+            parts.append("- 精简比喻：全章核心比喻不超过2-3个，删去'仿佛/宛如/如同'的堆叠，"
+                         "改用直接动作与具象细节（'风把门摔上' > '风仿佛一只无形的手'）")
+        elif t == "micro_expression_cliche":
+            parts.append("- 删除套路化微表情/内心独白（'眼中闪过一丝/嘴角微微上扬/心中暗道'），"
+                         "用具体动作、对白或环境外化情绪，禁止用'闪过一丝XX'交代心理")
+        elif t == "soft_adverb_overuse":
+            parts.append("- 删去冗余软调副词'缓缓/微微/默默/淡淡'，让动词本身承担质感")
+        elif t == "reflexive_cliche":
+            parts.append("- 减少'不由得/忍不住/情不自禁'，直接写动作，省略心理过渡")
+        elif t == "essay_connective":
+            parts.append("- 删除议论文连接词'毫无疑问/众所周知/总而言之/不得不说'，让叙事本身推进")
+        elif t == "temporal_filler":
+            parts.append("- 减少'顿时/霎时间/刹那间'，用动作节奏本身制造紧迫感")
+        elif t == "dash_overuse":
+            parts.append("- 大幅减少破折号'——'，每章不超过3-4处；改用短句断句或动作承接")
+        elif t == "sentence_uniformity":
+            parts.append("- 句子长短太均匀：穿插1-3字短句打断节奏，再接长句铺陈，制造起伏")
     return "\n".join(parts)
 
 
@@ -499,6 +540,29 @@ def generate_chapter(
     except Exception as _cse:
         log(f"[Writer] 角色状态加载异常（忽略）: {_cse}")
 
+    # 伏笔闭环：注入"本章应回收"的前期伏笔，强制在正文兑现 payoff（治伏笔悬空根因）
+    foreshadowing_directive = ""
+    try:
+        from core.foreshadowing_ledger import rebuild_from_outlines, dangling_threads
+        _ledger = rebuild_from_outlines(NOVELS_DIR)
+        _due = [
+            t for t in dangling_threads(_ledger, as_of_chapter=chapter_number)
+            if int(t.get("must_resolve_by", 0) or 0) <= chapter_number
+            and int(t.get("planted_at", 0) or 0) < chapter_number
+        ]
+        if _due:
+            _lines = ["## 【本章必须回收的伏笔】（前期埋下、已到回收点，必须在正文兑现 payoff，不得继续悬空）"]
+            for t in _due[:6]:
+                _setup = str(t.get("setup", "")).strip().replace("\n", " ")[:120]
+                _lines.append(f"- 第{t.get('planted_at')}章埋设：{_setup}")
+            _lines.append(
+                "请在正文自然兑现这些伏笔的 payoff（揭示/呼应/反转），让读者感到「原来如此」且符合前期铺垫；"
+                "若无法在本章全部回收，至少兑现最关键的1-2条，其余明确为后续回收，绝不能无声丢弃。"
+            )
+            foreshadowing_directive = "\n".join(_lines) + "\n"
+    except Exception as _fse:
+        log(f"[Writer] 伏笔台账加载异常（忽略）: {_fse}")
+
     review_section = ""
     if is_rewrite and review_data:
         suggestions = review_data.get("suggestions", [])
@@ -675,7 +739,7 @@ def generate_chapter(
     structure_directive = "\n".join(structure_parts) if structure_parts else "（本章大纲未提供结构功能/目标赌注/爽点链字段，按既有大纲执行即可）"
 
     if is_rewrite:
-        system = f"""你是一位追求9分神作的顶尖中文网络小说作家，同时也是一位冷酷的资深编辑。
+        system = (f"""你是一位追求9分神作的顶尖中文网络小说作家，同时也是一位冷酷的资深编辑。
 你现在需要对一篇接近9分但未达标的章节进行**局部精修**，而不是推倒重来。
 你擅长创作{genre}，但你的标准不是"合格"，而是"惊艳"。
 
@@ -700,6 +764,7 @@ def generate_chapter(
         + _deai_rewrite_directives(
             (review_data.get("local_analysis", {}) or {}).get("ai_flavor_detection", {})
             if isinstance(review_data, dict) else {}
+        )
         )
     else:
         system = f"""你是一位追求9分神作的顶尖中文网络小说作家，擅长创作{genre}。
@@ -747,6 +812,7 @@ def generate_chapter(
 ## 前一章结尾（用于衔接）
 {prev_ending[:300]}
 {character_state_directive}
+{foreshadowing_directive}
 ## 后一章摘要（为后续铺垫）
 {next_summary}{review_section}
 

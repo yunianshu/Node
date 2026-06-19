@@ -1,0 +1,112 @@
+:root {
+  --bg: #f5f5f5;
+  --card: #fff;
+  --text: #222;
+  --muted: #888;
+  --accent: #4a6cf7;
+  --border: #e5e5e5;
+}
+.reader.sepia {
+  --bg: #f4ecd8;
+  --card: #faf3e0;
+  --text: #5b4636;
+  --muted: #9a8a72;
+  --border: #e0d4b8;
+}
+.reader.dark {
+  --bg: #1a1a1a;
+  --card: #242424;
+  --text: #d0d0d0;
+  --muted: #888;
+  --border: #333;
+  --accent: #6d8bff;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ============ 书库 ============ */
+.bookshelf { max-width: 1000px; margin: 0 auto; padding: 24px 16px 60px; }
+.shelf-header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 20px; }
+.shelf-header h1 { margin: 0; font-size: 26px; }
+.shelf-header .sub { color: var(--muted); font-size: 14px; }
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 16px;
+}
+.book-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  cursor: pointer;
+  transition: transform 0.12s, box-shadow 0.12s;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.book-card:hover { transform: translateY(-2px); box-shadow: 0 4px 14px rgba(0,0,0,0.1); }
+.cover { width: 56px; height: 76px; flex-shrink: 0; border-radius: 4px; overflow: hidden; background: var(--bg); display: flex; align-items: center; justify-content: center; }
+.cover img { width: 100%; height: 100%; object-fit: cover; }
+.cover-ph { font-size: 28px; }
+.info { flex: 1; min-width: 0; }
+.title { font-weight: 600; font-size: 15px; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meta { font-size: 12px; color: var(--muted); }
+.prog { font-size: 12px; color: var(--accent); margin-top: 4px; }
+
+/* ============ 阅读页 ============ */
+.reader { min-height: 100vh; background: var(--bg); color: var(--text); }
+.topbar {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  background: var(--card); border-bottom: 1px solid var(--border);
+  padding: 10px 16px; flex-wrap: wrap;
+}
+.ch-title { font-size: 14px; color: var(--muted); flex: 1; min-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tools { display: flex; gap: 6px; }
+.btn {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 14px; white-space: nowrap;
+}
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn.sm { padding: 3px 8px; font-size: 12px; }
+
+.content {
+  max-width: 760px; margin: 0 auto; padding: 28px 20px 40px;
+  line-height: 1.9; letter-spacing: 0.02em;
+}
+.content p { margin: 0 0 1.1em; text-indent: 2em; }
+
+/* 目录浮层 */
+.toc {
+  position: fixed; top: 0; right: 0; bottom: 0; width: 320px; max-width: 85vw;
+  background: var(--card); border-left: 1px solid var(--border); z-index: 20;
+  display: flex; flex-direction: column; box-shadow: -4px 0 18px rgba(0,0,0,0.15);
+}
+.toc-head { padding: 14px 16px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; font-weight: 600; }
+.toc-list { overflow-y: auto; flex: 1; padding: 6px 0; }
+.toc-item { padding: 9px 16px; cursor: pointer; font-size: 14px; border-left: 3px solid transparent; }
+.toc-item:hover { background: var(--bg); }
+.toc-item.cur { border-left-color: var(--accent); color: var(--accent); font-weight: 600; }
+
+.pagenav {
+  max-width: 760px; margin: 0 auto; padding: 20px; display: flex; justify-content: space-between; align-items: center;
+}
+.pageinfo { color: var(--muted); font-size: 14px; }
+
+.hint { color: var(--muted); padding: 40px 0; text-align: center; }
+.err { color: #e53935; }
+
+@media (max-width: 600px) {
+  .grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+  .topbar { padding: 8px 10px; }
+  .content { padding: 20px 14px 30px; }
+}

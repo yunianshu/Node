@@ -25,6 +25,11 @@ from core.workflow_state import (
     outline_dir,
     outline_review_dir,
 )
+from core.outline_quality_gate import (
+    cast_name_set,
+    detect_beat_runs,
+    detect_cast_violations,
+)
 
 configure_stdio()
 
@@ -127,8 +132,26 @@ def review_outline(
     prev_outline = load_context_outline(chapter_number - 1)
     next_outline = load_context_outline(chapter_number + 1)
 
+    # 跨章 story_beat 分布检查（注水腰根因）：单章审查看不到连续多章同 beat。
+    # 取 N-2..N+2 的 story_beat，找出涉及本章的平推段。
+    beat_window = []
+    for offset, fallback in ((-2, None), (-1, prev_outline), (0, outline), (1, next_outline), (2, None)):
+        nch = chapter_number + offset
+        ob = fallback if fallback is not None else load_context_outline(nch)
+        beat = ob.get("story_beat") if isinstance(ob, dict) else None
+        if beat:
+            beat_window.append((nch, beat))
+    beat_flat_issues = [
+        it for it in detect_beat_runs(beat_window) if chapter_number in it.get("chapters", [])
+    ]
+
     world = load_json(NOVELS_DIR / "world.json")
     characters = load_json(NOVELS_DIR / "characters.json")
+
+    # 闭环角色校验（人物漂移根因）：出场角色必须前期锁定在 characters.json。
+    cast_violations = detect_cast_violations(
+        outline.get("characters_involved", []), cast_name_set(characters)
+    )
 
     book_title = world.get("title", "本小说")
     world_desc = world.get("world_description", "")[:300]
@@ -362,6 +385,36 @@ def review_outline(
             if isinstance(score, (int, float)) and score >= 9.0:
                 review_data["overall_score"] = 8.8
             review_data["verdict"] = "需修改"
+        # 跨章节奏守卫：本章若身处连续同 beat 的注水腰段，强制需修改并压分，
+        # 让 Outliner 带反馈重生成本章、换用不同转折 beat。
+        if beat_flat_issues:
+            fi = beat_flat_issues[0]
+            review_data.setdefault("continuity_issues", []).append(fi["evidence"])
+            review_data.setdefault("suggestions", []).insert(0, fi["suggestion"])
+            score = review_data.get("overall_score")
+            if isinstance(score, (int, float)):
+                review_data["overall_score"] = round(min(score, min_score - 0.1), 2)
+            review_data["verdict"] = "需修改"
+            review_data["beat_distribution_issue"] = fi
+        # 闭环角色守卫：出场角色未在前期 roster 锁定（带括号注释/临时生造/未登记别名），
+        # 强制需修改，让 Outliner 改用规范名或先把新角色登记进 characters.json。
+        if cast_violations["polluted"] or cast_violations["unregistered"]:
+            parts = []
+            if cast_violations["polluted"]:
+                parts.append("非规范写法(去括号注释/'类别：'前缀)：" + "、".join(cast_violations["polluted"]))
+            if cast_violations["unregistered"]:
+                parts.append("未登记角色/群体：" + "、".join(cast_violations["unregistered"]))
+            evi = "；".join(parts)
+            sug = ("characters_involved 必须只含 characters.json 已登记角色的规范名（无括号注释/整句描述）；"
+                   "若是新角色，先用规范名登记进 characters.json（含 name+aliases+role）再使用；"
+                   "若是已有角色的别名/称谓，把别名补进该角色 aliases。")
+            review_data.setdefault("continuity_issues", []).append("人物未闭环锁定：" + evi)
+            review_data.setdefault("suggestions", []).insert(0, sug)
+            score = review_data.get("overall_score")
+            if isinstance(score, (int, float)):
+                review_data["overall_score"] = round(min(score, min_score - 0.1), 2)
+            review_data["verdict"] = "需修改"
+            review_data["cast_violation"] = cast_violations
     except Exception as e:
         log(f"[OutlineReviewer] JSON解析失败: {e}")
         review_data = {

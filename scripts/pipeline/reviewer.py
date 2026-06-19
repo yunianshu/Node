@@ -198,6 +198,54 @@ def _partial_review_from_raw(chapter_number: int, content: str, local_analysis: 
     }
 
 
+def _character_presence_issues(
+    chapter_content: str, chapter_outline: dict, characters: dict
+) -> dict:
+    """确定性跨章一致性检查（series-bible 姓名核对）：
+
+    大纲 characters_involved 中、且在 characters.json 规范名册里的角色，
+    其规范名（或已登记别名）是否在正文中出现。缺失往往意味着称呼漂移
+    （同一角色被换成未绑定的称呼，如 周德茂→只用"周社长"）或角色被遗忘——
+    这是 world_consistency 扣分的主因之一。
+
+    只核对"规范名册内"的角色，避免大纲/名册称呼不一致造成的误报。
+    """
+    text = str(chapter_content or "")
+    roster: dict[str, list[str]] = {}
+    char_list = characters.get("characters", []) if isinstance(characters, dict) else []
+    if isinstance(char_list, list):
+        for c in char_list:
+            if not isinstance(c, dict):
+                continue
+            name = str(c.get("name", "")).strip()
+            if not name:
+                continue
+            aliases = c.get("aliases") or []
+            if isinstance(aliases, str):
+                aliases = [aliases]
+            roster[name] = [name] + [str(a).strip() for a in aliases if str(a).strip()]
+    involved = chapter_outline.get("characters_involved", []) if isinstance(chapter_outline, dict) else []
+    if isinstance(involved, str):
+        involved = [involved]
+    absent: list[str] = []
+    checked = 0
+    for who in involved:
+        who = str(who).strip()
+        if not who or who not in roster:
+            continue
+        checked += 1
+        if not any(form and form in text for form in roster[who]):
+            absent.append(who)
+    return {
+        "checked": checked,
+        "absent": absent,
+        "note": (
+            "characters_involved 中规范角色在正文未出现（可能称呼漂移/被遗忘）"
+            if absent else "ok"
+        ),
+    }
+
+
 def review_chapter(
     chapter_number: int,
     chapter_file_override: str | Path | None = None,
@@ -228,6 +276,9 @@ def review_chapter(
     chapter_outline = load_outline_chapter(NOVELS_DIR, chapter_number)
 
     characters = load_json(CHARACTERS_FILE)
+    local_analysis["character_presence"] = _character_presence_issues(
+        chapter_content, chapter_outline, characters
+    )
 
     content_sample = chapter_content[:1500]
     mid_start = max(0, len(chapter_content) // 2 - 500)
@@ -370,7 +421,8 @@ def review_chapter(
 8. 字数不足{warn_min}或超过{warn_max}要标记字数问题
 9. 必须输出合法JSON，不要Markdown，不要长篇解释
 10. **必须输出 edits 数组**：如果 verdict 不是"通过"，必须给出至少一条具体可定位的 edit ops（replace/insert/delete），用于定点修改而不是全文重写。edit 的 old/after 字段必须引用原文真实片段，长度 30-200 字。
-11. 若 local_analysis.ai_flavor_detection.ai_flavor_score < 7，verdict 不得为"通过"，必须在 edits 中给出针对排比抒情/总结收尾/形容词堆砌的定点重写。"""
+11. 若 local_analysis.ai_flavor_detection.ai_flavor_score < 7，verdict 不得为"通过"，必须在 edits 中给出针对排比抒情/总结收尾/形容词堆砌的定点重写。
+12. 若 local_analysis.character_presence.absent 非空（大纲要求出场、且在规范名册内的角色，其规范名/别名在正文均未出现），必须在 continuity_issues 中指出该角色；若确认是称呼漂移（同一角色被换成未绑定的称呼）或角色被遗忘，verdict 不得为"通过"，并在 edits 中要求首次出现处绑定规范名。"""
 
     log(f"[Reviewer] 正在审查第{chapter_number}章...")
     start_time = time.time()

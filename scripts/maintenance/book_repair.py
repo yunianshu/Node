@@ -237,6 +237,53 @@ def task_map(selected_ids: set[str] | None = None) -> dict[int, list[dict]]:
     return result
 
 
+def task_map_from_review(project: Path) -> dict[int, list[dict]]:
+    """通用入口：从 book_reviewer 产出的 final_book_review.json 动态读取 issues，
+    映射为 {chapter: [issue...]}。不依赖任何硬编码设定，适用于任意项目。
+
+    只保留确实存在 final 章节的章号；把 review 的 detail/evidence/suggestion
+    整理成 build_prompt/repair_one 可消费的 issue 结构。
+    """
+    review_path = project / "reports" / "book_review" / "final_book_review.json"
+    if not review_path.exists():
+        return {}
+    try:
+        data = json.loads(review_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    issues = data.get("issues", [])
+    if not isinstance(issues, list):
+        return {}
+    final_dir = project / "chapters" / "final"
+    result: dict[int, list[dict]] = {}
+    for idx, it in enumerate(issues):
+        if not isinstance(it, dict):
+            continue
+        chapters = it.get("chapters") or []
+        if isinstance(chapters, int):
+            chapters = [chapters]
+        category = it.get("category") or "issue"
+        task = {
+            "id": it.get("id") or f"{category}_{idx}",
+            "category": category,
+            "severity": it.get("severity", "major"),
+            "problem": it.get("detail", "") or it.get("problem", ""),
+            "evidence": it.get("evidence", ""),
+            "canon": it.get("suggestion", ""),  # build_prompt 把 issues 整体喂给模型，suggestion 即修订方向
+        }
+        for ch in chapters:
+            try:
+                ch_int = int(ch)
+            except (TypeError, ValueError):
+                continue
+            if not (final_dir / f"chapter_{ch_int:04d}.txt").exists():
+                continue
+            result.setdefault(ch_int, []).append(task)
+    return result
+
+
 def clean_text(text: str) -> tuple[str, list[str]]:
     changes: list[str] = []
     value = text.replace("```text", "").replace("```markdown", "").replace("```", "")
@@ -406,7 +453,7 @@ def run_reviewer(project: Path, chapter: int, candidate: Path, review_path: Path
         return {"status": "review_parse_error", "error": str(exc)}
 
 
-def repair_one(project: Path, config: dict, chapter: int, issues: list[dict], run_review: bool) -> dict:
+def repair_one(project: Path, config: dict, chapter: int, issues: list[dict], run_review: bool, backup_dir: Path | None = None) -> dict:
     final_path = project / "chapters" / "final" / f"chapter_{chapter:04d}.txt"
     draft_path = project / "chapters" / "draft" / f"chapter_{chapter:04d}.txt"
     review_path = project / "chapters" / "review" / f"chapter_{chapter:04d}_review.json"
@@ -467,6 +514,13 @@ def repair_one(project: Path, config: dict, chapter: int, issues: list[dict], ru
         }
 
     with PUBLISH_LOCK:
+        # 发布前对本章原始 final 做按运行可回滚备份（外科补丁可能压低整本分，需可逆）
+        if backup_dir is not None:
+            bdir = backup_dir / "final"
+            bdir.mkdir(parents=True, exist_ok=True)
+            bkp = bdir / final_path.name
+            if final_path.exists() and not bkp.exists():
+                shutil.copy2(final_path, bkp)
         atomic_write(final_path, candidate)
         atomic_write(draft_path, candidate)
         if run_review:
@@ -510,6 +564,8 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=3)
     parser.add_argument("--no-review", action="store_true")
     parser.add_argument("--only-plan", action="store_true")
+    parser.add_argument("--from-review", action="store_true",
+                        help="从 final_book_review.json 动态读取 issues（通用入口，适用于任意项目，不依赖硬编码根因）")
     parser.add_argument("--root-ids", default="", help="仅执行逗号分隔的根因ID")
     parser.add_argument("--run-name", default="primary", help="本轮结果文件后缀")
     args = parser.parse_args()
@@ -519,13 +575,19 @@ def main() -> None:
     total = int(config.get("total_chapters", 0))
     reports = project / "reports" / "book_repair"
     reports.mkdir(parents=True, exist_ok=True)
-    backup_dir = project / "backups" / "pre_book_repair_20260607"
+    backup_dir = project / "backups" / f"book_repair_{args.run_name}_{time.strftime('%Y%m%d_%H%M%S')}"
     selected_ids = {item.strip() for item in args.root_ids.split(",") if item.strip()}
-    tasks = task_map(selected_ids or None)
+    if args.from_review:
+        tasks = task_map_from_review(project)
+        if not tasks:
+            log(project, "未从 final_book_review.json 读取到任何待修订章节（issues 为空或文件缺失）")
+    else:
+        tasks = task_map(selected_ids or None)
     suffix = "" if args.run_name == "primary" else f"_{args.run_name}"
     plan = {
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "strategy": "确定性清理+根因锚点局部补丁+单章8.5质量门+整本复审",
+        "source": "book_review_issues" if args.from_review else "root_repairs",
         "canonical_rules": ROOT_REPAIRS,
         "target_chapters": sorted(tasks),
         "target_count": len(tasks),
@@ -555,7 +617,7 @@ def main() -> None:
     workers = max(1, args.workers)
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(repair_one, project, config, chapter, issues, not args.no_review): chapter
+            executor.submit(repair_one, project, config, chapter, issues, not args.no_review, backup_dir): chapter
             for chapter, issues in sorted(tasks.items())
             if chapter not in completed_chapters
         }
