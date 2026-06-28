@@ -219,6 +219,25 @@ def call_mmx(
         except Exception:
             pass
 
+    # G17: MiniMax 内部模型级别回退——highspeed 失败时用 pro 模型重试
+    fallback_model = model.replace("-highspeed", "-pro") if "-highspeed" in model else ""
+    if fallback_model and fallback_model != model:
+        try:
+            cmd_fb = [_c if _c != model else fallback_model for _c in cmd]
+            result_fb = subprocess.run(
+                cmd_fb, capture_output=True, text=True, encoding="utf-8", timeout=timeout or 300,
+            )
+            if result_fb.returncode == 0:
+                raw_fb = result_fb.stdout.strip()
+                if raw_fb:
+                    content_fb = extract_content(raw_fb)
+                    if content_fb and content_fb.strip():
+                        if log_dir:
+                            write_raw_response(log_dir, raw_name + "_fallback", raw_fb)
+                        return content_fb
+        except Exception:
+            pass
+
     # MiniMax 失败时自动回退到 Claude CLI（凌晨维护期间可用）
     try:
         from core.claude_client import call_claude, ClaudeError

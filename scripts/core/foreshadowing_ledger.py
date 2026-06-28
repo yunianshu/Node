@@ -28,7 +28,9 @@ CATEGORY_RESOLVE_RATIO = {
 }
 DEFAULT_CATEGORY = "plot_mystery"
 DEFAULT_PRIORITY = "major"
+DEFAULT_LAYER = "meso"  # G7: 默认中观悬念
 VALID_PRIORITIES = {"critical", "major", "minor"}
+VALID_LAYERS = {"macro", "meso", "micro"}  # G7: 宏观(贯穿全书)/中观(数十章)/微观(章末钩子)
 VALID_STATUSES = {"planted", "planned_resolution", "resolved", "dangling"}
 # 匹配 foreshadowing 字段中的 [埋]/[收] 标记与伏笔 id
 PLANT_RE = re.compile(r"\[埋\].*?\(?\s*(F\d{3,})\s*\)?", re.S)
@@ -88,11 +90,16 @@ def register_thread(ledger: dict, *, planted_at: int, setup: str,
                     category: str = DEFAULT_CATEGORY, priority: str = DEFAULT_PRIORITY,
                     total_chapters: int | None = None,
                     must_resolve_by: int | None = None,
-                    thread_id: str | None = None) -> str:
+                    thread_id: str | None = None,
+                    layer: str = DEFAULT_LAYER,
+                    audience_knows: bool = True,
+                    character_knows: bool = False) -> str:
     if category not in CATEGORY_RESOLVE_RATIO:
         category = DEFAULT_CATEGORY
     if priority not in VALID_PRIORITIES:
         priority = DEFAULT_PRIORITY
+    if layer not in VALID_LAYERS:
+        layer = DEFAULT_LAYER
     setup = str(setup or "").strip()
     if not setup:
         raise ValueError("setup 不能为空")
@@ -110,6 +117,9 @@ def register_thread(ledger: dict, *, planted_at: int, setup: str,
         "setup": setup,
         "category": category,
         "priority": priority,
+        "layer": layer,  # G7: macro/meso/micro
+        "audience_knows": audience_knows,  # G7: 读者是否已知此悬念存在
+        "character_knows": character_knows,  # G7: 角色是否已知此悬念存在
         "status": "planted",
         "must_resolve_by": must_resolve_by,
         "resolved_at": None,

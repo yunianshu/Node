@@ -11,7 +11,7 @@ from typing import Any
 CHAPTER_PATTERN = re.compile(r"chapter_(\d{4})\.json$")
 TIME_PATTERN = re.compile(r"(?:凌晨|上午|中午|下午|傍晚|晚上)?\s*\d{1,2}[:：]\d{2}")
 SECOND_PATTERN = re.compile(r"\d+(?:\.\d+)?\s*(?:秒|s)", re.IGNORECASE)
-LOCATION_KEYS = ("地点", "位置", "场景")
+LOCATION_KEYS = ("location", "地点", "位置", "场景", "场景地点")
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -99,12 +99,6 @@ def build_ledgers(project: Path) -> dict[str, Any]:
         "第一次激活",
         "签订契约",
         "完成契约",
-        "鼠王",
-        "左肩",
-        "破茧",
-        "虫茧",
-        "蚁群",
-        "蚁后",
     )
 
     for path in paths:
@@ -114,8 +108,22 @@ def build_ledgers(project: Path) -> dict[str, Any]:
         summary = text_value(data, "summary", "概要", "chapter_summary")
         power = text_value(data, "power_progression", "能力进展", "能力成长")
         foreshadowing = text_value(data, "foreshadowing", "伏笔")
-        hook = text_value(data, "hook", "章末钩子")
-        combined = "；".join(part for part in (title, summary, power, foreshadowing, hook) if part)
+        hook = text_value(data, "chapter_hook", "hook", "章末钩子")
+        key_events = text_value(data, "key_events", "关键事件")
+        time_progression = text_value(data, "time_progression", "时间推进")
+        combined = "；".join(
+            part
+            for part in (
+                title,
+                summary,
+                key_events,
+                power,
+                foreshadowing,
+                hook,
+                time_progression,
+            )
+            if part
+        )
 
         titles[title].append(number)
         for phrase in risky_phrases:
@@ -185,13 +193,7 @@ def build_ledgers(project: Path) -> dict[str, Any]:
         "character_state.json": {
             "source_chapters": len(paths),
             "characters": character_events,
-            "canonical_constraints": [
-                {
-                    "character": "陈星海",
-                    "constraint": "约第150章前不得死亡",
-                    "severity": "hard",
-                }
-            ],
+            "canonical_constraints": [],
         },
         "power_progression.json": {
             "source_chapters": len(paths),
@@ -222,28 +224,7 @@ def build_ledgers(project: Path) -> dict[str, Any]:
             "source_chapters": len(paths),
             "duplicate_titles": duplicate_titles,
             "repeated_risky_phrases": repeated_phrases,
-            "hard_conflicts": [
-                {
-                    "chapters": [2, 3],
-                    "conflict": "鼠王战与沈越左肩受伤重复",
-                },
-                {
-                    "chapters": [11, 12, 13, 14],
-                    "conflict": "首次直接接触与首次能力激活重复",
-                },
-                {
-                    "chapters": [15, 16, 17],
-                    "conflict": "契约建立过程重复",
-                },
-                {
-                    "chapters": [18, 19, 20],
-                    "conflict": "蚁群阶段战重复",
-                },
-                {
-                    "chapters": [21, 22, 23, 24],
-                    "conflict": "虫茧与破茧过程重复",
-                },
-            ],
+            "hard_conflicts": [],
         },
     }
     for filename, data in ledgers.items():

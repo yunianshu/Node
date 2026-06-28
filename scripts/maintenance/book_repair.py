@@ -29,7 +29,11 @@ LOG_LOCK = threading.Lock()
 PUBLISH_LOCK = threading.Lock()
 
 
-ROOT_REPAIRS = [
+ROOT_REPAIRS: list[dict[str, Any]] = []
+
+# Legacy project-specific repairs are intentionally disabled for the generic workflow.
+# Use --from-review so repairs are derived from the current project's final_book_review.json.
+LEGACY_ROOT_REPAIRS = [
     {
         "id": "ability_progression",
         "chapters": [301, 303, 321, 341, 345, 347, 445, 448, 449],

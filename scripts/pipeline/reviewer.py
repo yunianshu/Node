@@ -29,6 +29,7 @@ from core.workflow_state import (
     load_outline_chapter, load_review_status, review_dir,
     scan_chapter_status, write_status_file, highest_contiguous, report_path,
 )
+from core.outline_quality_gate import cast_name_set, clean_char_name
 
 configure_stdio()
 
@@ -102,6 +103,7 @@ def log(msg: str):
 def call_mmx(system_prompt: str, user_prompt: str, max_tokens: int = 4096, temperature: float = 0.3) -> str:
     try:
         cfg = CONFIG.get("reviewer", {})
+        fallback = CONFIG.get("writer", {})
         return call_mmx_client(
             system_prompt,
             user_prompt,
@@ -109,8 +111,8 @@ def call_mmx(system_prompt: str, user_prompt: str, max_tokens: int = 4096, tempe
             mmx_path=CONFIG["mmx_path"],
             max_tokens=cfg.get("max_tokens", max_tokens),
             temperature=cfg.get("temperature", temperature),
-            retries=CONFIG["writer"]["max_retries"],
-            retry_delay=CONFIG["writer"]["retry_delay"],
+            retries=cfg.get("max_retries", cfg.get("retries", fallback.get("max_retries", 3))),
+            retry_delay=cfg.get("retry_delay", fallback.get("retry_delay", 5.0)),
             log_dir=NOVELS_DIR / "logs" / "raw_responses",
             raw_name="reviewer",
             qps=CONFIG["api_qps"],
@@ -175,27 +177,41 @@ def _extract_array_items(content: str, field: str, limit: int = 3) -> list[str]:
 def _partial_review_from_raw(chapter_number: int, content: str, local_analysis: dict) -> dict:
     score = _extract_score_field(content, "overall_score")
     verdict = _extract_string_field(content, "verdict") or "需修改"
-    if score is None:
-        return {
-            "chapter_number": chapter_number,
-            "status": "parse_error",
-            "raw_response": content,
-            "local_analysis": local_analysis,
-        }
     return {
         "chapter_number": chapter_number,
-        "status": "completed",
-        "overall_score": score,
-        "verdict": verdict,
-        "scores": {},
-        "strengths": _extract_array_items(content, "strengths"),
-        "weaknesses": _extract_array_items(content, "weaknesses"),
-        "suggestions": _extract_array_items(content, "suggestions"),
-        "continuity_issues": _extract_array_items(content, "continuity_issues"),
-        "summary": _extract_string_field(content, "summary") or "审查JSON被截断，已提取核心评分与意见。",
+        "status": "parse_error",
+        "reported_overall_score": score,
+        "reported_verdict": verdict,
+        "verdict": "需修改",
+        "partial_strengths": _extract_array_items(content, "strengths"),
+        "partial_weaknesses": _extract_array_items(content, "weaknesses"),
+        "partial_suggestions": _extract_array_items(content, "suggestions"),
+        "partial_continuity_issues": _extract_array_items(content, "continuity_issues"),
         "raw_response": content[:3000],
         "local_analysis": local_analysis,
     }
+
+
+def _single_item_list(value) -> list:
+    if not isinstance(value, list):
+        return []
+    return value[:1]
+
+
+def _normalize_single_action_review(review_data: dict) -> None:
+    for field in ("strengths", "weaknesses", "suggestions", "continuity_issues", "edits"):
+        review_data[field] = _single_item_list(review_data.get(field))
+    primary_issue = ""
+    for field in ("weaknesses", "continuity_issues", "suggestions"):
+        values = review_data.get(field)
+        if isinstance(values, list) and values:
+            primary_issue = str(values[0]).strip()
+            if primary_issue:
+                break
+    if primary_issue:
+        review_data["primary_issue"] = primary_issue
+    if isinstance(review_data.get("suggestions"), list) and review_data["suggestions"]:
+        review_data["primary_suggestion"] = str(review_data["suggestions"][0]).strip()
 
 
 def _character_presence_issues(
@@ -211,31 +227,67 @@ def _character_presence_issues(
     只核对"规范名册内"的角色，避免大纲/名册称呼不一致造成的误报。
     """
     text = str(chapter_content or "")
-    roster: dict[str, list[str]] = {}
-    char_list = characters.get("characters", []) if isinstance(characters, dict) else []
-    if isinstance(char_list, list):
-        for c in char_list:
-            if not isinstance(c, dict):
-                continue
-            name = str(c.get("name", "")).strip()
-            if not name:
-                continue
-            aliases = c.get("aliases") or []
-            if isinstance(aliases, str):
-                aliases = [aliases]
-            roster[name] = [name] + [str(a).strip() for a in aliases if str(a).strip()]
+
+    def name_forms(value) -> set[str]:
+        raw = str(value or "").strip()
+        forms: set[str] = set()
+        if not raw:
+            return forms
+        forms.add(raw)
+        cleaned = clean_char_name(raw)
+        if cleaned:
+            forms.add(cleaned)
+        for part in re.findall(r"[（(]([^）)]*)[）)]", raw):
+            alias = str(part).strip()
+            if alias:
+                forms.add(alias)
+        return forms
+
+    roster: dict[str, set[str]] = {}
+
+    def add_character(value: dict) -> None:
+        forms = name_forms(value.get("name"))
+        aliases = value.get("aliases") or []
+        if isinstance(aliases, str):
+            aliases = [aliases]
+        if isinstance(aliases, list):
+            for alias in aliases:
+                forms.update(name_forms(alias))
+        if not forms:
+            return
+        for form in forms:
+            roster[form] = forms
+
+    def walk(value) -> None:
+        if isinstance(value, dict):
+            if "name" in value:
+                add_character(value)
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(characters)
+    cast_names = cast_name_set(characters)
     involved = chapter_outline.get("characters_involved", []) if isinstance(chapter_outline, dict) else []
     if isinstance(involved, str):
         involved = [involved]
     absent: list[str] = []
     checked = 0
     for who in involved:
-        who = str(who).strip()
-        if not who or who not in roster:
+        raw_who = str(who).strip()
+        if not raw_who:
+            continue
+        who_key = clean_char_name(raw_who)
+        forms = roster.get(raw_who) or roster.get(who_key)
+        if forms is None and who_key in cast_names:
+            forms = {raw_who, who_key}
+        if not forms:
             continue
         checked += 1
-        if not any(form and form in text for form in roster[who]):
-            absent.append(who)
+        if not any(form and form in text for form in forms):
+            absent.append(who_key or raw_who)
     return {
         "checked": checked,
         "absent": absent,
@@ -250,6 +302,8 @@ def review_chapter(
     chapter_number: int,
     chapter_file_override: str | Path | None = None,
     review_file_override: str | Path | None = None,
+    _semantic_attempt: int = 0,
+    _semantic_errors: list[str] | None = None,
 ) -> dict:
     chapter_file = Path(chapter_file_override) if chapter_file_override else CHAPTERS_DIR / f"chapter_{chapter_number:04d}.txt"
     review_file = Path(review_file_override) if review_file_override else REVIEWS_DIR / f"chapter_{chapter_number:04d}_review.json"
@@ -309,10 +363,20 @@ def review_chapter(
     warn_min = int(quality.get("warn_min_chapter_words", min_words - 200))
     warn_max = int(quality.get("warn_max_chapter_words", max_words + 3000))
 
+    retry_contract = ""
+    if _semantic_errors:
+        retry_contract = (
+            "\n## 上次输出无效，本次必须纠正\n"
+            "上次缺陷：" + "；".join(_semantic_errors) + "\n"
+            "本次必须返回完整 JSON；不得省略 strengths、weaknesses、suggestions、"
+            "continuity_issues、summary、edits。未通过时只给出一条最关键可定位 edits。\n"
+        )
+
     system = f"""你是一位拥有20年经验的资深网络小说编辑，同时也是一位苛刻的"神作猎手"。
-你的任务不是找"合格"的章节，而是找出"为什么这章还没达到9分"的每一个原因。
+你的任务不是列出所有问题，而是找出当前最阻碍本章达标的唯一问题，并给出唯一一条可执行修改。
 本书是《{book_title}》。
 {genre_text}
+{retry_contract}
 
 ## 【9分神作评分标准】
 - 10分：传世级神作。每一句都在推动剧情或揭示人物，章末钩子让人失眠，读完之后心跳加速，无法停止思考。
@@ -324,8 +388,8 @@ def review_chapter(
 【你的审查哲学】
 - 不要给"辛苦分"。写得多、写得顺不等于写得好。
 - 不要放过"还行"——"还行"就是失败的委婉说法。
-- 重点关注：读者读完这章后，会不会立刻想读下一章？如果不会，问题出在哪？
-- 如果你给不出9分以上，必须在 weaknesses 中明确说明"距离9分的具体差距"。
+- 重点关注：读者读完这章后，会不会立刻想读下一章？如果不会，只指出最关键的一处原因。
+- 如果你给不出9分以上，必须在 weaknesses 中只写一条"距离9分的最大差距"。
 
 输出必须是合法的紧凑JSON，不要使用Markdown代码块，不要输出JSON之外的任何文字。
 审查意见要短而具体，整份JSON尽量控制在1500个中文字符以内。"""
@@ -350,7 +414,7 @@ def review_chapter(
 ## 本地全文检查
 {json.dumps(local_analysis, ensure_ascii=False, indent=2)}
 
-请只输出以下JSON格式的审查报告，数组最多3条，每条不超过80字：
+请只输出以下JSON格式的审查报告。所有数组都只能有1条，每条不超过80字；edits只能有1条：
 {{
   "chapter_number": {chapter_number},
   "overall_score": "请给出0-10的客观评分。9分意味着'非常想读下一章'，10分意味着'震撼到说不出话'。不要给辛苦分",
@@ -369,17 +433,20 @@ def review_chapter(
     "information_freshness": "信息新鲜度（0-10。是否带来至少一个此前从未出现过的新元素？有无重复已知信息？）",
     "anti_cliche": "反套路程度（0-10。是否存在标准升级流/打怪流/解谜流模板？是否有意外和不可预测性？）",
     "read_desire": "读下去的欲望（0-10。假设你是第一次读的读者，读完这章后有多想立刻打开下一章？）",
-    "ai_flavor": "去AI味程度（0-10。越高越自然。参考 local_analysis.ai_flavor_detection 的本地证据）"
+    "ai_flavor": "去AI味程度（0-10。越高越自然。参考 local_analysis.ai_flavor_detection 的本地证据）",
+    "world_consistency": "世界观/设定一致性（0-10。本章涉及的力量体系/势力关系/地理/经济/规则是否与世界观设定自洽？有无设定矛盾或吃书？）"
   }},
   "word_count_check": {{
     "actual": {len(chapter_content)},
     "target": {min_words},
     "status": "达标/偏短/偏长"
   }},
-  "strengths": ["优点1，80字以内"],
-  "weaknesses": ["不足1，80字以内。如果给分低于9分，必须在这里明确写出'距离9分的具体差距'"],
-  "suggestions": ["具体修改建议1，80字以内"],
-  "continuity_issues": ["与前文不一致之处，80字以内"],
+  "primary_issue": "当前最关键的唯一问题，80字以内",
+  "primary_suggestion": "针对primary_issue的唯一修改建议，80字以内",
+  "strengths": ["唯一优点，80字以内"],
+  "weaknesses": ["唯一不足，80字以内。如果给分低于9分，必须写出'距离9分的最大差距'"],
+  "suggestions": ["唯一具体修改建议，80字以内"],
+  "continuity_issues": ["唯一连续性问题；没有则空数组"],
   "summary": "总体评价，80字以内。如果评分低于9分，用一句话回答：'本章最致命的短板是什么？'",
   "edits": [
     {{
@@ -399,8 +466,8 @@ def review_chapter(
   ]
 }}
 
-【9分神作审查清单——逐条自检】
-请你在给出评分前，先在心中逐条回答以下问题。如果有任何一条答案为"否"或"不够"，overall_score 不得超过8.5分：
+【9分神作核心审查清单】
+请你在给出评分前按以下核心项快速自检；如存在多个问题，只输出最影响通过的一项：
 1. 章末最后200字是否包含一个让人心跳加速的强力钩子（危机升级/信息反转/情感爆点）？
 2. 本章是否有至少一个让读者心头一紧的"刺点"细节（反常动作、未说出口的话、突然沉默）？
 3. 每800-1200字是否至少有一次有效推进（新信息、冲突升级、意外转折、人物关系质变）？
@@ -415,14 +482,14 @@ def review_chapter(
 2. 重点审查：悬念密度、情感冲击、信息新鲜度、反套路程度、读下去的欲望。这五个维度比文笔更重要。
 3. 剧情推进是否自然，有无逻辑漏洞或突兀转折
 4. 对话是否有潜台词，是否符合角色身份，是否避免了解说员式长篇大论
-5. 必须给出具体的修改建议，不能泛泛而谈，但每类最多3条
+5. 必须给出具体的修改建议，不能泛泛而谈，且只给最关键1条
 6. 如果 origin/ 中存在素材，必须检查正文是否参考并遵守原始素材；与素材冲突需列入 weaknesses 或 continuity_issues
 7. 如低于{review_min_score}分必须标记为"需重写"
 8. 字数不足{warn_min}或超过{warn_max}要标记字数问题
 9. 必须输出合法JSON，不要Markdown，不要长篇解释
-10. **必须输出 edits 数组**：如果 verdict 不是"通过"，必须给出至少一条具体可定位的 edit ops（replace/insert/delete），用于定点修改而不是全文重写。edit 的 old/after 字段必须引用原文真实片段，长度 30-200 字。
-11. 若 local_analysis.ai_flavor_detection.ai_flavor_score < 7，verdict 不得为"通过"，必须在 edits 中给出针对排比抒情/总结收尾/形容词堆砌的定点重写。
-12. 若 local_analysis.character_presence.absent 非空（大纲要求出场、且在规范名册内的角色，其规范名/别名在正文均未出现），必须在 continuity_issues 中指出该角色；若确认是称呼漂移（同一角色被换成未绑定的称呼）或角色被遗忘，verdict 不得为"通过"，并在 edits 中要求首次出现处绑定规范名。"""
+10. **必须输出 edits 数组**：如果 verdict 不是"通过"，只能给出1条最关键、最可定位的 edit ops（replace/insert/delete），用于定点修改而不是全文重写。edit 的 old/after 字段必须引用原文真实片段，长度 30-200 字。
+11. 若 local_analysis.ai_flavor_detection.ai_flavor_score < 7，verdict 不得为"通过"，只挑最严重的一处AI味问题在 edits 中定点重写。
+12. 若 local_analysis.character_presence.absent 非空，verdict 不得为"通过"，只挑最关键缺失角色在 continuity_issues 和 edits 中处理。"""
 
     log(f"[Reviewer] 正在审查第{chapter_number}章...")
     start_time = time.time()
@@ -455,11 +522,137 @@ def review_chapter(
         if isinstance(scores, dict):
             for k, v in list(scores.items()):
                 scores[k] = _parse_score(v)
+        _normalize_single_action_review(review_data)
+
+        contract_errors: list[str] = []
+        score = review_data.get("overall_score")
+        verdict = review_data.get("verdict")
+        if review_data.get("chapter_number") != chapter_number:
+            contract_errors.append("chapter_number 缺失或不匹配")
+        if not isinstance(score, (int, float)) or not 0 <= float(score) <= 10:
+            contract_errors.append("overall_score 缺失、不是数字或超出0-10")
+        if verdict not in {"通过", "需修改", "需重写"}:
+            contract_errors.append("verdict 缺失或非法")
+        if not isinstance(review_data.get("scores"), dict):
+            contract_errors.append("scores 缺失或不是对象")
+        for field in ("strengths", "weaknesses", "suggestions", "continuity_issues", "edits"):
+            if not isinstance(review_data.get(field), list):
+                contract_errors.append(f"{field} 缺失或不是数组")
+        if not isinstance(review_data.get("summary"), str) or not review_data["summary"].strip():
+            contract_errors.append("summary 缺失")
+
+        hard_gate_reasons: list[str] = []
+        if not local_analysis.get("word_count_ok", False):
+            hard_gate_reasons.append("正文字数未通过本地范围检查")
+        ai_flavor_score = (local_analysis.get("ai_flavor_detection") or {}).get("ai_flavor_score")
+        if isinstance(ai_flavor_score, (int, float)) and ai_flavor_score < 7:
+            hard_gate_reasons.append("本地去AI味评分低于7")
+        absent = (local_analysis.get("character_presence") or {}).get("absent")
+        if isinstance(absent, list) and absent:
+            hard_gate_reasons.append("大纲要求角色在正文缺失：" + "、".join(str(item) for item in absent[:3]))
+
+        if isinstance(score, (int, float)):
+            if hard_gate_reasons and score >= review_min_score:
+                review_data["reported_overall_score"] = score
+                review_data["overall_score"] = round(review_min_score - 0.1, 2)
+                score = review_data["overall_score"]
+                review_data["verdict"] = "需修改"
+                verdict = "需修改"
+            elif score >= review_min_score:
+                review_data["verdict"] = "通过"
+                verdict = "通过"
+            elif verdict == "通过":
+                review_data["verdict"] = "需修改"
+                verdict = "需修改"
+
+        if hard_gate_reasons:
+            weaknesses = review_data.get("weaknesses")
+            weakness_text = "；".join(hard_gate_reasons)
+            if isinstance(weaknesses, list) and weakness_text not in weaknesses:
+                weaknesses[:] = [weakness_text]
+
+        score = review_data.get("overall_score")
+        if isinstance(score, (int, float)) and score < 9:
+            weaknesses = review_data.get("weaknesses")
+            if not isinstance(weaknesses, list) or not weaknesses:
+                contract_errors.append("低于9分但未说明具体 weaknesses")
+
+        edits = review_data.get("edits")
+        if verdict != "通过":
+            if not isinstance(review_data.get("suggestions"), list) or not review_data["suggestions"]:
+                contract_errors.append("未通过但没有可执行 suggestions")
+            if not isinstance(edits, list) or not edits:
+                contract_errors.append("未通过但没有可定位 edits")
+
+        if isinstance(edits, list):
+            review_data["edits"] = edits[:1]
+            edits = review_data["edits"]
+            valid_edit_count = 0
+            for index, edit in enumerate(edits):
+                if not isinstance(edit, dict):
+                    contract_errors.append(f"edits[{index}] 不是对象")
+                    continue
+                edit_type = edit.get("type")
+                anchor = edit.get("after") if edit_type == "insert" else edit.get("old")
+                replacement = edit.get("text") if edit_type == "insert" else edit.get("new")
+                if edit_type not in {"replace", "insert", "delete"}:
+                    contract_errors.append(f"edits[{index}] type 非法")
+                    continue
+                if not isinstance(anchor, str) or not anchor.strip() or anchor not in chapter_content:
+                    contract_errors.append(f"edits[{index}] 原文锚点无法定位")
+                    continue
+                if edit_type != "delete" and (not isinstance(replacement, str) or not replacement.strip()):
+                    contract_errors.append(f"edits[{index}] 修改后文本缺失")
+                    continue
+                valid_edit_count += 1
+            if verdict != "通过" and valid_edit_count == 0:
+                contract_errors.append("未通过但没有任何可应用的 edit")
+
+        if contract_errors:
+            semantic_retries = max(
+                0,
+                int(CONFIG.get("reviewer", {}).get("semantic_retries", 1) or 0),
+            )
+            if _semantic_attempt < semantic_retries:
+                log(
+                    f"[Reviewer] 第{chapter_number}章审查报告契约不完整，"
+                    f"原候选重审 {_semantic_attempt + 1}/{semantic_retries}: "
+                    + "；".join(contract_errors)
+                )
+                return review_chapter(
+                    chapter_number,
+                    chapter_file_override,
+                    review_file_override,
+                    _semantic_attempt=_semantic_attempt + 1,
+                    _semantic_errors=contract_errors,
+                )
+            review_data["reported_overall_score"] = review_data.get(
+                "reported_overall_score",
+                review_data.get("overall_score"),
+            )
+            review_data["overall_score"] = None
+            review_data["verdict"] = "需修改"
+            review_data["status"] = "invalid_review"
+            review_data["review_contract_errors"] = contract_errors
     except Exception as e:
         log(f"[Reviewer] JSON解析失败: {e}")
+        semantic_retries = max(
+            0,
+            int(CONFIG.get("reviewer", {}).get("semantic_retries", 1) or 0),
+        )
+        if _semantic_attempt < semantic_retries:
+            log(
+                f"[Reviewer] 第{chapter_number}章审查响应解析失败，"
+                f"原候选重审 {_semantic_attempt + 1}/{semantic_retries}"
+            )
+            return review_chapter(
+                chapter_number,
+                chapter_file_override,
+                review_file_override,
+                _semantic_attempt=_semantic_attempt + 1,
+                _semantic_errors=["响应不是可解析的完整 JSON 对象"],
+            )
         review_data = _partial_review_from_raw(chapter_number, content, local_analysis)
-        if review_data.get("status") == "completed":
-            log(f"[Reviewer] 已从截断JSON中提取评分: {review_data.get('overall_score')}，verdict: {review_data.get('verdict')}")
 
     review_file.parent.mkdir(parents=True, exist_ok=True)
     with open(review_file, "w", encoding="utf-8") as f:

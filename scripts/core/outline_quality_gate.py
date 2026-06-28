@@ -16,24 +16,37 @@ REQUIRED_DESIGN_GATES = (
 def cast_name_set(characters: Any) -> set[str]:
     """从 characters.json 提取全部已知角色名（规范名 + 已登记别名），用于闭环角色校验。"""
     names: set[str] = set()
-    if isinstance(characters, dict):
-        char_list = characters.get("characters", [])
-    else:
-        char_list = characters
-    if isinstance(char_list, list):
-        for c in char_list:
-            if not isinstance(c, dict):
-                continue
-            n = str(c.get("name", "")).strip()
-            if n:
-                names.add(n)
-            aliases = c.get("aliases") or []
+
+    def add_name(value: Any) -> None:
+        raw = str(value or "").strip()
+        if not raw:
+            return
+        names.add(raw)
+        cleaned = clean_char_name(raw)
+        if cleaned:
+            names.add(cleaned)
+        for part in re.findall(r"[（(]([^）)]*)[）)]", raw):
+            alias = str(part).strip()
+            if alias:
+                names.add(alias)
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            if "name" in value:
+                add_name(value.get("name"))
+            aliases = value.get("aliases") or []
             if isinstance(aliases, str):
                 aliases = [aliases]
-            for a in aliases:
-                a = str(a).strip()
-                if a:
-                    names.add(a)
+            if isinstance(aliases, list):
+                for alias in aliases:
+                    add_name(alias)
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(characters)
     return names
 
 
@@ -45,6 +58,7 @@ def clean_char_name(entry: Any) -> str:
     s = re.sub(r"[（(][^）)]*[）)]", "", s).strip()
     if re.search(r"[：:]", s):
         s = re.split(r"[：:]", s)[-1].strip()
+    s = re.sub(r"(个人信息|人物信息|角色信息|人物档案|角色档案)$", "", s).strip()
     return s
 
 
@@ -124,6 +138,69 @@ def detect_beat_runs(
             })
         i = j + 1
     return issues
+
+
+def _event_bigrams(value: Any) -> set[str]:
+    if isinstance(value, (dict, list)):
+        text = str(value)
+    else:
+        text = str(value or "")
+    compact = re.sub(r"[\W_]+", "", text, flags=re.UNICODE)
+    return {
+        compact[index:index + 2]
+        for index in range(max(0, len(compact) - 1))
+    }
+
+
+def detect_adjacent_event_repetition(
+    previous: dict[str, Any],
+    current: dict[str, Any],
+    *,
+    similarity_threshold: float = 0.28,
+    exact_threshold: float = 0.42,
+) -> dict[str, Any] | None:
+    previous_events = previous.get("key_events", []) if isinstance(previous, dict) else []
+    current_events = current.get("key_events", []) if isinstance(current, dict) else []
+    if not isinstance(previous_events, list) or not isinstance(current_events, list):
+        return None
+
+    matches: list[dict[str, Any]] = []
+    for current_index, current_event in enumerate(current_events):
+        current_tokens = _event_bigrams(current_event)
+        if not current_tokens:
+            continue
+        best_similarity = 0.0
+        best_previous_index = None
+        for previous_index, previous_event in enumerate(previous_events):
+            previous_tokens = _event_bigrams(previous_event)
+            if not previous_tokens:
+                continue
+            similarity = len(current_tokens & previous_tokens) / len(current_tokens | previous_tokens)
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_previous_index = previous_index
+        if best_previous_index is not None and best_similarity >= similarity_threshold:
+            matches.append({
+                "current_index": current_index,
+                "previous_index": best_previous_index,
+                "similarity": round(best_similarity, 3),
+                "current_event": str(current_event),
+                "previous_event": str(previous_events[best_previous_index]),
+            })
+
+    if len(matches) < 2 and not any(
+        item["similarity"] >= exact_threshold for item in matches
+    ):
+        return None
+    return {
+        "type": "adjacent_event_repetition",
+        "matches": matches,
+        "evidence": "；".join(
+            f"本章事件{item['current_index'] + 1}与前章事件{item['previous_index'] + 1}相似度{item['similarity']:.0%}"
+            for item in matches[:3]
+        ),
+        "suggestion": "删除前章已完成事件，从其结果或代价开始设计本章的新冲突和新信息。",
+    }
 
 
 

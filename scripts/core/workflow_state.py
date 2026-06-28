@@ -396,6 +396,26 @@ def load_outline_review_status(
     return True, status or "unknown", score_value, ok
 
 
+def _is_older_than(path: Path, reference: Path, tolerance_seconds: float = 0.5) -> bool:
+    if not path.exists() or not reference.exists():
+        return False
+    try:
+        return path.stat().st_mtime + tolerance_seconds < reference.stat().st_mtime
+    except OSError:
+        return False
+
+
+def _same_text_file(left: Path, right: Path) -> bool:
+    if not left.exists() or not right.exists():
+        return False
+    try:
+        if left.stat().st_size != right.stat().st_size:
+            return False
+        return left.read_text(encoding="utf-8", errors="ignore") == right.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+
+
 def validate_review_schema(data: dict) -> list[str]:
     if not isinstance(data.get("status"), str) or not data.get("status"):
         return ["missing_status"]
@@ -416,6 +436,7 @@ def scan_one_chapter(base_dir: Path, chapter: int, rules: dict | None = None) ->
     draft_file = draft_dir(base_dir) / f"chapter_{chapter:04d}.txt"
     final_file = final_dir(base_dir) / f"chapter_{chapter:04d}.txt"
     review_file = review_dir(base_dir) / f"chapter_{chapter:04d}_review.json"
+    outline_file = outline_chapter_path(base_dir, chapter)
     outline_review_file = outline_review_path(base_dir, chapter)
     config = load_config(base_dir)
     outline_min_score = float(config.get("outline_reviewer", {}).get("min_score", 8.5))
@@ -433,7 +454,15 @@ def scan_one_chapter(base_dir: Path, chapter: int, rules: dict | None = None) ->
         outline_min_score,
         require_quality_gate=require_outline_quality_gate,
     )
-    final_ok = final_exists and final_length_ok and review_ok
+    if review_ok and _is_older_than(review_file, draft_file):
+        review_status = "stale_review"
+        review_ok = False
+    if outline_review_ok and _is_older_than(outline_review_file, outline_file):
+        outline_review_status = "stale_outline_review"
+        outline_review_ok = False
+
+    final_matches_draft = (not draft_exists) or _same_text_file(final_file, draft_file)
+    final_ok = final_exists and final_length_ok and review_ok and final_matches_draft
 
     failed_reason = ""
     if draft_exists and not draft_ok:
@@ -444,6 +473,8 @@ def scan_one_chapter(base_dir: Path, chapter: int, rules: dict | None = None) ->
     outline_review_issues = [] if outline_review_ok else [outline_review_status]
     if final_exists and not final_length_ok:
         failed_reason = "final_" + ",".join(final_issues)
+    if final_exists and draft_exists and not final_matches_draft:
+        failed_reason = "final_stale_or_modified"
 
     return ChapterStatus(
         chapter=chapter,

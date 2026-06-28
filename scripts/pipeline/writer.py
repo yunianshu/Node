@@ -100,6 +100,7 @@ def load_json(filepath: Path) -> dict:
 
 
 _GENRE_KEYWORDS = {
+    "都市悬疑/社会派": ["悬疑", "案件", "调查", "记者", "证据", "真相", "追踪", "警方", "犯罪", "谜", "反转", "都市", "档案", "举报", "旧案"],
     "东方玄幻/仙侠": ["修仙", "武道", "真气", "灵气", "境界", "斗气", "魔法", "飞升", "宗门", "法宝", "神通", "筑基", "金丹", "元婴", "渡劫", "仙人", "神魔", "妖兽", "灵根", "天劫", "修炼", "炼气", "悟道", "儒道", "剑修", "魔教", "仙宫", "圣地"],
     "都市重生/职场": ["重生", "都市", "现代", "职场", "校园", "商战", "创业", "房价", "互联网", "移动互联网", "智能手机", "时代", "金钱", "银行卡", "股票", "投资", "公司", "上班", "打工", "商业", "电商", "地产", "金融", "中年", "青年", "生活", "婚姻", "家庭"],
     "灵异恐怖": ["鬼", "灵异", "恐怖", "诡异", "尸体", "死亡", "诅咒", "惊悚", "阴间", "黄泉", "冥界", "怨灵", "厉鬼", "驱鬼", "驭鬼", "复苏", "僵尸", "邪祟", "阴气", "灵魂"],
@@ -120,6 +121,97 @@ def _infer_genre(world: dict) -> str:
         if scores[best] > 0:
             return best
     return "网络小说"
+
+
+def _flatten_project_text(*values, limit: int = 12000) -> str:
+    parts: list[str] = []
+
+    def walk(value) -> None:
+        if len(" ".join(parts)) >= limit:
+            return
+        if isinstance(value, dict):
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+        elif value is not None:
+            text = str(value).strip()
+            if text:
+                parts.append(text)
+
+    for value in values:
+        walk(value)
+    return " ".join(parts)[:limit]
+
+
+def _payoff_profile(world: dict, chapter_outline: dict | None = None) -> dict:
+    text = _flatten_project_text(world, chapter_outline or {}, NOVEL_PREMISE).lower()
+    if any(key in text for key in ("悬疑", "案件", "调查", "记者", "证据", "真相", "追踪", "警方", "犯罪", "谜", "都市")):
+        return {
+            "label": "阅读回报",
+            "chain": "期待→压迫/阻碍→线索反转→代价兑现/局势推进",
+            "directive": "回报来自主角在压力下的判断、行动、取舍、证据推进或关系破局，不要求战力碾压。",
+        }
+    if any(key in text for key in ("修仙", "武道", "玄幻", "境界", "灵气", "真气", "宗门", "神通", "法宝", "修炼")):
+        return {
+            "label": "爽点链",
+            "chain": "期待→压制→反转→兑现",
+            "directive": "爽点来自主角判断、能力、资源或协作的真实发挥，不能靠巧合或突然觉醒硬赢。",
+        }
+    return {
+        "label": "阅读回报",
+        "chain": "期待→阻碍→反转→兑现",
+        "directive": "回报来自人物选择、行动、资源或关系变化，按本书题材落地，不套固定升级打脸模板。",
+    }
+
+
+def _character_brief(item: dict) -> str:
+    name = str(item.get("name", "")).strip()
+    if not name:
+        return ""
+    fields = []
+    for key in (
+        "identity",
+        "occupation",
+        "role",
+        "description",
+        "motivation",
+        "character_arc",
+        "relationship_with_protagonist",
+    ):
+        value = item.get(key)
+        if isinstance(value, (list, tuple)):
+            value = "、".join(str(v) for v in value[:3])
+        elif isinstance(value, dict):
+            value = "；".join(f"{k}:{v}" for k, v in list(value.items())[:3])
+        text = str(value or "").strip()
+        if text:
+            fields.append(text[:80])
+    return f"{name}：{'；'.join(fields)[:220]}" if fields else name
+
+
+def _collect_character_briefs(value, *, limit: int = 10) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+
+    def walk(item) -> None:
+        if len(result) >= limit:
+            return
+        if isinstance(item, dict):
+            brief = _character_brief(item)
+            name = str(item.get("name", "")).strip()
+            if brief and name and name not in seen:
+                seen.add(name)
+                result.append(brief)
+            for child in item.values():
+                walk(child)
+        elif isinstance(item, list):
+            for child in item:
+                walk(child)
+
+    walk(value)
+    return result
 
 
 def _cjk_count(text: str) -> int:
@@ -157,7 +249,7 @@ def _writer_quality_contract() -> str:
 
 ### 【让人读下去·最高优先】（评分高 ≠ 读着好看，以下决定读者留存，违反即判"普通"）
 - 【开头即刻钩子】第一句/第一段必须直接进入冲突、悬念、动作或一个让人不安的细节。**严禁环境描写开头**（雨夜/风/天气/景色）、**严禁设定解释开头**（介绍世界观/设备/体系/背景）、**严禁回顾或平淡过渡开头**（"过了几天/沈默醒来/那是一个")。理想开头：一上来就是主角正在做一件有张力的事、或撞见一个反常。承接上章时，第一句就要重新绷紧张力，而非平铺。
-- 【爽点循环·每章必释放】每章必须有完整的"期待→压制→反转→**释放**"。主角必须**主动出击、做出关键判断或扳回一城至少一次**，禁止整章被动挨打、单纯逃亡、被信息轰炸。读者要感到"主角赢了/赚了/打脸了/真相大白"的爽感释放，不能只挖坑不填。
+- 【阅读回报·每章必释放】每章必须有完整的"期待→阻碍/压迫→反转→兑现/推进"。主角必须主动做出关键判断、行动或取舍，禁止整章被动挨打、单纯逃亡、被信息轰炸。读者要感到局势被推进、真相更近、关系改变或主动权发生变化，不能只挖坑不填。
 - 【代入主角】贴主角限制性视角，持续呈现主角此刻的欲望、恐惧、盘算与情绪波动，让读者代入"如果是我"。禁止上帝视角旁观式叙述把读者挡在门外。
 - 【赌注真实且升级】本章赌注必须具体可感、比上章更高（生存/在乎的人/身份真相/核心目标）。空洞的全书级口号不算赌注。
 
@@ -181,11 +273,11 @@ def _writer_quality_contract() -> str:
 ### 【反套路·强制要求】
 - 禁止套路化战斗描写：禁止"主角遇敌→分析弱点→能力爆发→战胜敌人"的标准升级流模板。
 - 禁止套路化解谜描写：禁止"发现问题→查阅资料→恍然大悟→轻松解决"的流水账推演。
-- 禁止用技术细节、设定解释、数据参数替代人物情感和剧情张力。技术元素必须服务于"人"的困境，不能成为叙事主体。
+- 禁止用专业细节、设定解释、数据参数替代人物情感和剧情张力。专业元素必须服务于"人"的困境，不能成为叙事主体。
 - 禁止配角沦为解说员或工具人。每个有台词的配角必须有自己的欲望、恐惧和秘密。
 
 ### 【情感冲击·强制要求】
-- 心理描写必须展现"真实的恐惧、孤独、愤怒或渴望"，禁止空泛的IDE式颅内注释或代码化思维流水账。
+- 心理描写必须展现"真实的恐惧、孤独、愤怒或渴望"，禁止空泛的概念分析、术语堆叠或机械化心理流水账。
 - 每章至少有一个"刺点"——一个让读者心头一紧的细节：一个反常的动作、一句没说出口的话、一个突然沉默的瞬间。
 - 冲突必须触及角色的核心恐惧或核心欲望，不能停留在表层利害计算。
 
@@ -314,20 +406,58 @@ def _load_feedback_as_review(feedback_file: Path, chapter_number: int) -> dict:
         return {}
     reviews = item.get("reviews", [])
     analysis = item.get("failure_analysis", {})
-    latest = reviews[-1] if isinstance(reviews, list) and reviews else {}
-    if not isinstance(latest, dict):
-        latest = {}
+    selected: dict = {}
+    candidates: list[tuple[int, float, dict]] = []
+    if isinstance(reviews, list):
+        for index, review in enumerate(reviews):
+            if not isinstance(review, dict):
+                continue
+            status = str(review.get("status", "")).strip().lower()
+            if status and status != "completed":
+                continue
+            try:
+                score = float(review.get("overall_score"))
+            except (TypeError, ValueError):
+                continue
+            candidates.append((index, score, review))
+    if candidates:
+        selected = max(candidates, key=lambda item: (item[1], item[0]))[2]
+    elif isinstance(reviews, list):
+        selected = next((review for review in reversed(reviews) if isinstance(review, dict)), {})
     if not isinstance(analysis, dict):
         analysis = {}
+    def first_list(value):
+        return value[:1] if isinstance(value, list) else []
+
     return {
         "status": "completed",
         "verdict": "需重写",
-        "overall_score": analysis.get("best_score", latest.get("overall_score", 0)),
-        "weaknesses": analysis.get("likely_reasons", latest.get("weaknesses", [])),
-        "suggestions": analysis.get("adjustments", latest.get("suggestions", [])),
-        "continuity_issues": latest.get("continuity_issues", []),
-        "summary": latest.get("summary", ""),
+        "overall_score": analysis.get("best_score", selected.get("overall_score", 0)),
+        "strengths": first_list(selected.get("strengths", [])),
+        "weaknesses": first_list(analysis.get("likely_reasons", selected.get("weaknesses", []))),
+        "suggestions": first_list(analysis.get("adjustments", selected.get("suggestions", []))),
+        "continuity_issues": first_list(selected.get("continuity_issues", [])),
+        "summary": selected.get("summary", ""),
+        "edits": first_list(selected.get("edits", [])),
+        "local_analysis": selected.get("local_analysis", {}),
+        "raw_response": selected.get("raw_response", ""),
+        "candidate_file": selected.get("candidate_file", ""),
     }
+
+
+def _feedback_base_text_path(review_data: dict, chapter_number: int) -> Path:
+    official = CHAPTERS_DIR / f"chapter_{chapter_number:04d}.txt"
+    candidate_value = str(review_data.get("candidate_file", "") or "").strip()
+    if not candidate_value:
+        return official
+    try:
+        candidate = Path(candidate_value).resolve()
+        project = NOVELS_DIR.resolve()
+        if candidate.is_file() and candidate.is_relative_to(project):
+            return candidate
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return official
 
 
 def _auto_compress(content: str, chapter_number: int, max_words: int, target_min: int, chapter_outline: dict) -> str:
@@ -427,6 +557,7 @@ def _apply_incremental_edits(
     except EditApplyError as e:
         log(f"[Writer] 增量编辑解析失败: {e}")
         return None
+    edits = edits[:1]
 
     if not edits:
         log("[Writer] 模型未输出有效 edits，回退到全文重写")
@@ -540,6 +671,15 @@ def generate_chapter(
     except Exception as _cse:
         log(f"[Writer] 角色状态加载异常（忽略）: {_cse}")
 
+    # 人物成长弧线追踪：注入主角当前弧线阶段，确保成长不倒退
+    arc_state_directive = ""
+    try:
+        from core.arc_state import format_arc_for_prompt, latest_arc_before
+        prev_arc = latest_arc_before(NOVELS_DIR, chapter_number)
+        arc_state_directive = format_arc_for_prompt(prev_arc)
+    except Exception as _ase:
+        log(f"[Writer] 弧线状态加载异常（忽略）: {_ase}")
+
     # 伏笔闭环：注入"本章应回收"的前期伏笔，强制在正文兑现 payoff（治伏笔悬空根因）
     foreshadowing_directive = ""
     try:
@@ -565,13 +705,18 @@ def generate_chapter(
 
     review_section = ""
     if is_rewrite and review_data:
-        suggestions = review_data.get("suggestions", [])
-        continuity_issues = review_data.get("continuity_issues", [])
-        strengths = review_data.get("strengths", [])
-        weaknesses = review_data.get("weaknesses", [])
+        def one(value):
+            if isinstance(value, list):
+                return value[:1]
+            return [value] if str(value or "").strip() else []
+
+        suggestions = one(review_data.get("suggestions", []))
+        continuity_issues = one(review_data.get("continuity_issues", []))
+        strengths = one(review_data.get("strengths", []))
+        weaknesses = one(review_data.get("weaknesses", []))
         raw_response = str(review_data.get("raw_response", "") or "").strip()
 
-        review_section = "\n\n## 编辑审查反馈（请严格参考以下建议重写）\n"
+        review_section = "\n\n## 编辑审查反馈（本轮只处理以下唯一建议）\n"
 
         if strengths:
             review_section += "\n### 原文优点（请保留）\n"
@@ -584,7 +729,7 @@ def generate_chapter(
                 review_section += f"- {w}\n"
 
         if suggestions:
-            review_section += "\n### 具体修改建议（必须落实）\n"
+            review_section += "\n### 具体修改建议（本轮只落实这一条）\n"
             for s in suggestions:
                 review_section += f"- {s}\n"
 
@@ -598,7 +743,7 @@ def generate_chapter(
             review_section += "\n### 原始审查反馈（解析失败时也必须参考）\n"
             review_section += raw_response[:3000] + "\n"
 
-        old_file = CHAPTERS_DIR / f"chapter_{chapter_number:04d}.txt"
+        old_file = _feedback_base_text_path(review_data, chapter_number)
         old_content = ""
         if old_file.exists():
             with open(old_file, "r", encoding="utf-8") as f:
@@ -669,12 +814,7 @@ def generate_chapter(
     power_system = world.get("power_system", {})
     power_system_desc = power_system.get("description", "")[:200]
 
-    key_characters = []
-    for c in characters.get("characters", [])[:3]:
-        name = c.get("name", "")
-        desc = c.get("description", "")
-        if name and desc:
-            key_characters.append(f"{name}：{desc[:80]}")
+    key_characters = _collect_character_briefs(characters, limit=10)
     if not key_characters:
         for f in world.get("factions", [])[:3]:
             fname = f.get("name", "")
@@ -684,14 +824,29 @@ def generate_chapter(
 
     key_chars_text = "\n".join(f"- {kc}" for kc in key_characters) if key_characters else "（暂无详细角色设定）"
 
+    # G8: 注入语言指纹（文风锚定，防AI塑料感和风格漂移）
+    lang_fp = characters.get("language_fingerprint", {})
+    lang_fp_text = ""
+    if lang_fp:
+        parts = []
+        if lang_fp.get("prose_style"):
+            parts.append(f"文风基调：{lang_fp['prose_style']}")
+        if lang_fp.get("signature_metaphors"):
+            parts.append(f"标志性意象：{'、'.join(lang_fp['signature_metaphors'])}")
+        if lang_fp.get("forbidden_expressions"):
+            parts.append(f"避免表达：{'、'.join(lang_fp['forbidden_expressions'])}")
+        if parts:
+            lang_fp_text = "## 【语言指纹】（本章必须严格遵循以下文风，不得漂移）\n" + "\n".join(f"- {p}" for p in parts)
+
+    system_label = "核心规则/能力体系" if power_system_desc else "核心规则/现实约束"
     story_context = f"""主角：{protagonist_name}
 世界观：{world_desc[:200]}
-修炼体系：{power_system_desc[:150]}
+{system_label}：{power_system_desc[:150] or "按世界观、题材和人物关系推进，不强加修炼或升级体系。"}
 关键势力/角色：
 {key_chars_text}"""
 
-    # 9分范本参考：精简 prompt 时跳过（原 _load_9star_examples 会加~1800字，导致 API 空响应）
-    examples_section = ""
+    # 9分范本参考：注入此前高分章节作为风格锚定（限制1篇避免 prompt 膨胀）
+    examples_section = _load_9star_examples(chapter_number, max_examples=1)
 
     genre = _infer_genre(world)
     power_system = world.get("power_system", {})
@@ -732,8 +887,12 @@ def generate_chapter(
         structure_parts.append(f"- 【结构定位·{story_beat}】{beat_hint}")
     if chapter_goal:
         structure_parts.append(f"- 【章节目标与赌注】{chapter_goal}（必须在正文中落实目标的推进或受挫，让读者感受到赌注的分量）")
+    payoff_profile = _payoff_profile(world, chapter_outline)
     if payoff_design:
-        structure_parts.append(f"- 【爽点链】{payoff_design}（必须按「期待→压制→反转→碾压」的节奏落地，爽点来自主角实力真实发挥）")
+        structure_parts.append(
+            f"- 【{payoff_profile['label']}】{payoff_design}"
+            f"（按「{payoff_profile['chain']}」落地；{payoff_profile['directive']}）"
+        )
     if main_antagonist:
         structure_parts.append(f"- 【主要对抗】{main_antagonist}（必须塑造对抗力量的具体威胁，让读者感受到压力，而非抽象的「敌人」）")
     structure_directive = "\n".join(structure_parts) if structure_parts else "（本章大纲未提供结构功能/目标赌注/爽点链字段，按既有大纲执行即可）"
@@ -745,7 +904,7 @@ def generate_chapter(
 
 ## 精修原则（必须遵守）
 1. **保留优点，只改问题**：原文中 reviewer 没有批评的部分（特别是高张力的对话、成功的悬念场景、有效的刺点）必须保留，不得因为重写而丢失。
-2. **逐条落实修改建议**：你必须针对 reviewer 的每一条 weakness 和 suggestion 进行具体修改，修改后要在心中自检"这条建议是否已被解决"。
+2. **只落实本轮唯一修改建议**：只针对 reviewer 给出的唯一 weakness/suggestion/edit 做局部修改，修改后在心中自检"这一条建议是否已被解决"。
 3. **禁止为改而改**：不要改变原文中本已有效的部分，不要为了"创新"而破坏原有节奏。
 4. **局部手术，整体保留**：大多数问题只需要修改几个段落、几句对话或一个场景结尾，不需要全文重写。
 5. **修正连续性问题**
@@ -812,6 +971,8 @@ def generate_chapter(
 ## 前一章结尾（用于衔接）
 {prev_ending[:300]}
 {character_state_directive}
+{arc_state_directive}
+{lang_fp_text}
 {foreshadowing_directive}
 ## 后一章摘要（为后续铺垫）
 {next_summary}{review_section}
@@ -826,14 +987,14 @@ def generate_chapter(
 ## 写作要求（9分神作执行清单）
 1. 【字数红线】本章必须不少于{min_words}字，**严格不得超过{max_words}字**。建议写到{target_min}-8000字。超过{max_words}字视为不合格，必须删减。低于{min_words}字不得结束，必须继续补充。
 2. 【关键事件红线】必须严格按照上方【必须严格执行的关键事件清单】逐条写入正文，不能遗漏、不能跳过、不能替换时间点。每个关键事件都必须有主角的现场参与和情感反应。
-3. 【技术细节禁令】禁止大段参数、数值、算法、代码、专业术语的解释。Loss值可以出现，但只能用一句话带过；禁止连续超过200字解释技术概念。读者要的是"沈越害怕了"，不是"Loss值的小数点后第八位代表什么"。
-4. 【开头】必须自然衔接前一章，但衔接的第一句话就要有张力——禁止以"过了几天""沈越醒来"等平淡方式开头。理想开头：直接切入一个正在进行的动作、一个突然发生的事件、或一个让人不安的细节
+3. 【专业细节禁令】禁止大段参数、数值、算法、术语、设定或背景解释；任何专业信息都只能服务于人物处境和剧情压力。读者要的是"{protagonist_name}此刻必须作出什么选择"，不是概念说明书。
+4. 【开头】必须自然衔接前一章，但衔接的第一句话就要有张力——禁止以"过了几天""{protagonist_name}醒来"等平淡方式开头。理想开头：直接切入一个正在进行的动作、一个突然发生的事件、或一个让人不安的细节
 5. 【对话】要符合角色性格，推动情节发展，且每段重要对话必须包含至少一层潜台词（言外之意）。禁止长篇解释性对话，禁止配角当解说员
 6. 【场景】描写要生动，但重点不是"画面感"，而是"氛围感"——让读者感到压抑、紧迫、诡异或震撼，而不是"看清了这个地方长什么样"
 7. 【冲突】必须触及角色核心恐惧或核心欲望，不能停留在表层利害计算。冲突的输赢不重要，重要的是冲突过程中暴露了什么秘密、改变了什么关系
-8. 【心理】描写要展现真实的情感波动（恐惧、愤怒、孤独、渴望、自我怀疑），严禁代码化/分析化的"IDE式颅内注释"。主角是程序员，但他首先是个人——他会害怕、会冲动、会后悔
+8. 【心理】描写要展现真实的情感波动（恐惧、愤怒、孤独、渴望、自我怀疑），严禁术语化、分析化或机械化的心理流水账。主角首先是具体的人——他会害怕、会冲动、会后悔，也会为了目标付出代价
 9. 【感官冲击】必须有至少一个"主角本人直面威胁"的近距离刺点，不能所有危险都发生在监控屏幕或远处。
-10. 【爽点】必须来自主角在极端压力下的判断、抉择或牺牲，不能靠巧合、升级或突然觉醒硬赢。最顶级的爽点是"主角明知道会输，还是做了最正确的选择"
+10. 【阅读回报】必须来自主角在极端压力下的判断、抉择、行动或牺牲，不能靠巧合、升级或突然觉醒硬赢。最顶级的回报是"主角明知道会付出代价，还是做了最正确的选择"
 11. 【配角】要有各自的欲望、恐惧和秘密，不是纯背景板。即使是只出现一次的龙套，也要让读者感觉到"这个人有自己的故事"
 12. 如果 origin/ 中存在素材，必须参考其中的原始设定、人物关系、历史事件、语气风格和限制，不能与其冲突
 13. 【节奏】禁止流水账。每800-1200字必须有一次有效推进。章节中段必须有一个"小高潮"或"小反转"，不能把所有爆点都堆在结尾

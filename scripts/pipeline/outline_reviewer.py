@@ -14,6 +14,7 @@ if str(TOOLS_ROOT) not in sys.path:
 import argparse
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -27,9 +28,12 @@ from core.workflow_state import (
 )
 from core.outline_quality_gate import (
     cast_name_set,
+    clean_char_name,
+    detect_adjacent_event_repetition,
     detect_beat_runs,
     detect_cast_violations,
 )
+from core.json_repair import fix_inner_quotes, fix_truncated_json
 
 configure_stdio()
 
@@ -38,6 +42,26 @@ OUTLINE_REVIEW_DIR = None
 LOG_FILE = None
 CONFIG = None
 ORIGIN_MATERIALS = ""
+
+VALID_STORY_BEATS = {
+    "opening_image",
+    "theme_stated",
+    "setup",
+    "catalyst",
+    "debate",
+    "break_into_two",
+    "b_story",
+    "fun_and_games",
+    "midpoint",
+    "bad_guys_close_in",
+    "all_is_lost",
+    "dark_night",
+    "break_into_three",
+    "finale",
+    "final_image",
+    "rising_action",
+    "transition",
+}
 
 
 def init_project(project_dir: str | Path) -> None:
@@ -65,6 +89,7 @@ def log(msg: str):
 def call_mmx(system_prompt: str, user_prompt: str, max_tokens: int = 4096, temperature: float = 0.3) -> str:
     try:
         cfg = CONFIG.get("outline_reviewer", {})
+        fallback = CONFIG.get("writer", {})
         return call_mmx_client(
             system_prompt,
             user_prompt,
@@ -72,8 +97,8 @@ def call_mmx(system_prompt: str, user_prompt: str, max_tokens: int = 4096, tempe
             mmx_path=CONFIG["mmx_path"],
             max_tokens=cfg.get("max_tokens", max_tokens),
             temperature=cfg.get("temperature", temperature),
-            retries=CONFIG["writer"]["max_retries"],
-            retry_delay=CONFIG["writer"]["retry_delay"],
+            retries=cfg.get("max_retries", cfg.get("retries", fallback.get("max_retries", 3))),
+            retry_delay=cfg.get("retry_delay", fallback.get("retry_delay", 5.0)),
             log_dir=NOVELS_DIR / "logs" / "raw_responses",
             raw_name="outline_reviewer",
             qps=CONFIG["api_qps"],
@@ -91,11 +116,162 @@ def load_json(filepath: Path) -> dict:
         return json.load(f)
 
 
+def _flatten_project_text(*values, limit: int = 12000) -> str:
+    parts: list[str] = []
+
+    def walk(value) -> None:
+        if len(" ".join(parts)) >= limit:
+            return
+        if isinstance(value, dict):
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+        elif value is not None:
+            text = str(value).strip()
+            if text:
+                parts.append(text)
+
+    for value in values:
+        walk(value)
+    return " ".join(parts)[:limit]
+
+
+def _payoff_review_profile(world: dict, outline: dict) -> dict:
+    text = _flatten_project_text(world, outline).lower()
+    if any(key in text for key in ("悬疑", "案件", "调查", "记者", "证据", "真相", "追踪", "警方", "犯罪", "谜", "都市")):
+        return {
+            "label": "阅读回报",
+            "chain": "期待→压迫/阻碍→线索反转→代价兑现/局势推进",
+            "score_desc": "payoff_design是否有完整的期待、阻碍、反转和阶段性兑现？回报是否来自主角判断/行动/证据推进而非巧合？",
+            "check": "payoff_design是否包含题材适配的阅读回报链（期待→阻碍/压迫→反转→兑现/推进）？若该字段缺失或空泛，需在weaknesses指出。",
+            "design": "阅读回报是否到位：是否有期待感、压迫或阻碍、信息/局势反转、阶段性兑现，且是否触及角色内核",
+        }
+    return {
+        "label": "阅读回报",
+        "chain": "期待→阻碍/压制→反转→兑现",
+        "score_desc": "payoff_design是否有完整的期待、阻碍/压制、反转和兑现？回报是否来自主角真实发挥而非巧合？",
+        "check": "payoff_design是否包含完整阅读回报链（期待→阻碍/压制→反转→兑现）？若该字段缺失或空泛，需在weaknesses指出。",
+        "design": "阅读回报是否到位：是否有期待感、阻碍、反转、兑现等要素，且是否触及角色内核",
+    }
+
+
+def _current_chapter_continuity_failures(chapter: int, issues: object) -> list[str]:
+    if not isinstance(issues, list):
+        return []
+    hard_markers = (
+        "矛盾", "冲突", "重复", "断裂", "倒退", "重演", "推翻",
+        "无法承接", "同一时间", "生死状态", "证据归属",
+    )
+    previous_markers = ("前章", "上一章", "前序", "此前章节")
+    later_markers = ("后章", "下一章", "后续章节", "后续既定")
+    failures = []
+    for value in issues:
+        text = str(value or "").strip()
+        if not text or not any(marker in text for marker in hard_markers):
+            continue
+        referenced = {
+            int(match)
+            for match in re.findall(r"(?:第\s*|ch(?:apter)?\s*)(\d+)\s*章?", text, flags=re.I)
+        }
+        if any(number < chapter for number in referenced):
+            failures.append(text)
+            continue
+        if any(marker in text for marker in previous_markers):
+            failures.append(text)
+            continue
+        if referenced or any(marker in text for marker in later_markers):
+            continue
+        failures.append(text)
+    return failures
+
+
+def _load_repair_requirements(feedback_file: Path | None, chapter: int) -> list[dict]:
+    if feedback_file is None or not feedback_file.exists():
+        return []
+    try:
+        payload = load_json(feedback_file)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return []
+    item = payload.get(str(chapter)) if isinstance(payload, dict) else None
+    if not isinstance(item, dict) or item.get("gate") != "outline_book_review":
+        return []
+    repair_items = item.get("repair_items")
+    if isinstance(repair_items, list):
+        requirements = []
+        for index, repair_item in enumerate(repair_items):
+            if not isinstance(repair_item, dict):
+                continue
+            problem = str(repair_item.get("problem", "")).strip()
+            acceptance = str(repair_item.get("acceptance", "")).strip()
+            if not problem and not acceptance:
+                continue
+            requirements.append({
+                "id": str(repair_item.get("id") or f"R{index + 1}"),
+                "problem": problem,
+                "acceptance": acceptance,
+                "evidence": str(repair_item.get("evidence", "")).strip(),
+                "chapters": repair_item.get("chapters", []),
+                "category": repair_item.get("category", ""),
+            })
+        if requirements:
+            return requirements[:8]
+    analysis = item.get("failure_analysis")
+    analysis = analysis if isinstance(analysis, dict) else {}
+    reasons = analysis.get("likely_reasons")
+    adjustments = analysis.get("adjustments")
+    reasons = reasons if isinstance(reasons, list) else []
+    adjustments = adjustments if isinstance(adjustments, list) else []
+    requirements = []
+    for index in range(max(len(reasons), len(adjustments))):
+        problem = str(reasons[index] if index < len(reasons) else "").strip()
+        acceptance = str(adjustments[index] if index < len(adjustments) else "").strip()
+        if not problem and not acceptance:
+            continue
+        requirements.append({
+            "id": f"R{len(requirements) + 1}",
+            "problem": problem,
+            "acceptance": acceptance,
+        })
+    return requirements[:8]
+
+
+def _repair_id_sort_key(value: str) -> tuple[int, str]:
+    match = re.search(r"\d+", value)
+    return (int(match.group(0)) if match else 9999, value)
+
+
+def _single_item_list(value) -> list:
+    if not isinstance(value, list):
+        return []
+    return value[:1]
+
+
+def _normalize_single_action_review(review_data: dict) -> None:
+    for field in ("strengths", "weaknesses", "suggestions", "continuity_issues", "edits"):
+        review_data[field] = _single_item_list(review_data.get(field))
+    primary_issue = ""
+    for field in ("weaknesses", "continuity_issues", "suggestions"):
+        values = review_data.get(field)
+        if isinstance(values, list) and values:
+            primary_issue = str(values[0]).strip()
+            if primary_issue:
+                break
+    if primary_issue:
+        review_data["primary_issue"] = primary_issue
+    if isinstance(review_data.get("suggestions"), list) and review_data["suggestions"]:
+        review_data["primary_suggestion"] = str(review_data["suggestions"][0]).strip()
+
+
 def review_outline(
     chapter_number: int,
     outline_file_override: Path | None = None,
     review_file_override: Path | None = None,
     context_outline_dir: Path | None = None,
+    repair_feedback_file: Path | None = None,
+    _semantic_attempt: int = 0,
+    _semantic_errors: list[str] | None = None,
 ) -> dict:
     outline_file = outline_file_override or outline_dir(NOVELS_DIR) / f"chapter_{chapter_number:04d}.json"
     review_file = review_file_override or OUTLINE_REVIEW_DIR / f"chapter_{chapter_number:04d}_review.json"
@@ -109,13 +285,19 @@ def review_outline(
             existing = json.loads(review_file.read_text(encoding="utf-8"))
             min_score = float(CONFIG.get("outline_reviewer", {}).get("min_score", 8.5))
             _, status, score, ok = load_outline_review_status(review_file, min_score)
-            if ok:
+            if ok and repair_feedback_file is None:
                 log(f"[OutlineReviewer] 第{chapter_number}章大纲已有达标审查报告（{score}分），跳过")
                 return existing
-            log(
-                f"[OutlineReviewer] 第{chapter_number}章现有审查未达门槛"
-                f"（status={status}, score={score}, min={min_score:g}），重新审查"
-            )
+            if ok and repair_feedback_file is not None:
+                log(
+                    f"[OutlineReviewer] 第{chapter_number}章已有达标审查报告，"
+                    "但本次带整本修复反馈，必须重新验收"
+                )
+            else:
+                log(
+                    f"[OutlineReviewer] 第{chapter_number}章现有审查未达门槛"
+                    f"（status={status}, score={score}, min={min_score:g}），重新审查"
+                )
         except Exception:
             pass
 
@@ -129,8 +311,25 @@ def review_outline(
             return load_outline_chapter(NOVELS_DIR, number)
         return load_json(context_outline_dir / f"chapter_{number:04d}.json")
 
-    prev_outline = load_context_outline(chapter_number - 1)
-    next_outline = load_context_outline(chapter_number + 1)
+    context_window = max(
+        1,
+        int(CONFIG.get("outline_reviewer", {}).get("context_window", 5) or 5),
+    )
+    context_outlines = {
+        number: load_context_outline(number)
+        for number in range(
+            max(1, chapter_number - context_window),
+            min(int(CONFIG.get("total_chapters", chapter_number)), chapter_number + context_window) + 1,
+        )
+        if number != chapter_number
+    }
+    context_outlines = {
+        number: item
+        for number, item in context_outlines.items()
+        if isinstance(item, dict) and item
+    }
+    prev_outline = context_outlines.get(chapter_number - 1, {})
+    next_outline = context_outlines.get(chapter_number + 1, {})
 
     # 跨章 story_beat 分布检查（注水腰根因）：单章审查看不到连续多章同 beat。
     # 取 N-2..N+2 的 story_beat，找出涉及本章的平推段。
@@ -142,15 +341,20 @@ def review_outline(
         if beat:
             beat_window.append((nch, beat))
     beat_flat_issues = [
-        it for it in detect_beat_runs(beat_window) if chapter_number in it.get("chapters", [])
+        item
+        for item in detect_beat_runs(beat_window)
+        if item.get("chapters")
+        and chapter_number == max(item.get("chapters", []))
     ]
+    adjacent_repetition_issue = detect_adjacent_event_repetition(prev_outline, outline)
+    repair_requirements = _load_repair_requirements(repair_feedback_file, chapter_number)
 
     world = load_json(NOVELS_DIR / "world.json")
     characters = load_json(NOVELS_DIR / "characters.json")
 
-    # 闭环角色校验（人物漂移根因）：出场角色必须前期锁定在 characters.json。
+    # 闭环角色校验（人物漂移根因）：出场角色必须前期锁定在角色档案或世界观。
     cast_violations = detect_cast_violations(
-        outline.get("characters_involved", []), cast_name_set(characters)
+        outline.get("characters_involved", []), cast_name_set({"characters": characters, "world": world})
     )
 
     book_title = world.get("title", "本小说")
@@ -168,13 +372,24 @@ def review_outline(
     if world_desc:
         genre_hints.append(f"世界观：{world_desc}")
     genre_text = "\n".join(genre_hints) if genre_hints else "请根据世界观和角色设定判断题材类型。"
+    payoff_profile = _payoff_review_profile(world, outline)
 
     min_score = float(CONFIG.get("outline_reviewer", {}).get("min_score", 8.5))
 
+    retry_contract = ""
+    if _semantic_errors:
+        retry_contract = (
+            "\n## 上次输出无效，本次必须纠正\n"
+            "上次缺陷：" + "；".join(_semantic_errors) + "\n"
+            "本次必须返回完整 JSON，尤其不得省略 strengths、weaknesses、suggestions、"
+            "continuity_issues、summary、edits。未通过时只给出1条最关键edit。\n"
+        )
+
     system = f"""你是一位拥有20年经验的资深网络小说总编，同时也是一位苛刻的"神作猎手"。
-你的任务是判断单章大纲能否稳定支撑高质量正文，并找出阻止它达到优秀水平的关键原因。
+你的任务是判断单章大纲能否稳定支撑高质量正文，并找出当前最阻止它达标的唯一关键原因。
 本书是《{book_title}》。
 {genre_text}
+{retry_contract}
 
 ## 【高质量单章大纲评分标准】
 - 10分：大纲足以支撑传世级神作。悬念密集，情感冲击强烈，信息新鲜，章末钩子让人失眠，Writer据此必能写出让人欲罢不能的章节。
@@ -187,70 +402,65 @@ def review_outline(
 - 不要给"辛苦分"。字段全不等于设计好。
 - 不要给字段完整性辛苦分，但也不要把每章都强行要求成卷终高潮。
 - 重点关注：这个大纲能否让 Writer 写出一章让人"读完立刻想打开下一章"的内容？
-- 如果你给不出9分以上，必须在 weaknesses 中明确说明"距离9分的具体差距"。
+- 如果你给不出9分以上，必须在 weaknesses 中只写一条"距离9分的最大差距"。
 
 输出必须是合法的紧凑JSON，不要使用Markdown代码块，不要输出JSON之外的任何文字。
-审查意见要短而具体，整份JSON尽量控制在1500个中文字符以内。"""
+审查意见要短而具体，整份JSON尽量控制在3500个中文字符以内；不得为压缩长度省略任何必填字段。"""
 
     context_parts = []
-    if prev_outline:
-        context_parts.append(f"""## 前一章大纲（第{chapter_number - 1}章）
-标题：{prev_outline.get('title', 'N/A')}
-摘要：{prev_outline.get('summary', 'N/A')[:200]}
-关键事件：{prev_outline.get('key_events', [])}""")
-    if next_outline:
-        context_parts.append(f"""## 后一章大纲（第{chapter_number + 1}章）
-标题：{next_outline.get('title', 'N/A')}
-摘要：{next_outline.get('summary', 'N/A')[:200]}
-关键事件：{next_outline.get('key_events', [])}""")
+    for number, item in sorted(context_outlines.items()):
+        relation = "前序事实锚点" if number < chapter_number else "后续既定接口"
+        context_parts.append(f"""## {relation}（第{number}章）
+标题：{item.get('title', 'N/A')}
+时间推进：{item.get('time_progression', 'N/A')}
+地点：{item.get('location', 'N/A')}
+涉及角色：{item.get('characters_involved', [])}
+摘要：{str(item.get('summary', 'N/A'))[:360]}
+关键事件：{json.dumps(item.get('key_events', []), ensure_ascii=False)[:650]}
+伏笔：{str(item.get('foreshadowing', ''))[:240]}
+章末状态：{str(item.get('chapter_hook', ''))[:240]}""")
     context_text = "\n\n".join(context_parts)
+    volume_outline = load_json(NOVELS_DIR / "volume_outline.json")
+    repair_section = ""
+    repair_gate_schema = ""
+    if repair_requirements:
+        repair_section = f"""\n## 本次整本审查修复验收单（硬门槛）
+{json.dumps(repair_requirements, ensure_ascii=False, indent=2)}
 
-    prompt = f"""请审查以下第{chapter_number}章的单章大纲。
+必须逐项检查 R1..R{len(repair_requirements)} 是否已在待审大纲中真正落地。仅改换地点、措辞或结果，
+却没有补齐验收单要求的原因、过程、人物状态或时间过渡，必须判定该项未闭环。\n"""
+        repair_gate_schema = """,
+    "repair_feedback_closed": {"passed": true, "evidence": "R1..Rn逐项闭环的简短证据"}"""
+
+    prompt = f"""请审查以下第{chapter_number}章的单章大纲。虽然输出是一份单章报告，但必须以给出的前后{context_window}章为事实链做跨章一致性检查。
 
 ## 世界观与角色设定
-{json.dumps(characters, ensure_ascii=False, indent=2)[:800]}
+世界观：{json.dumps(world, ensure_ascii=False, indent=2)[:1400]}
+角色：{json.dumps(characters, ensure_ascii=False, indent=2)[:1800]}
+
+## 分卷规划
+{json.dumps(volume_outline, ensure_ascii=False, indent=2)[:1800]}
 
 ## origin/ 原始参考素材
 {ORIGIN_MATERIALS or "（无）"}
 
 {context_text}
+{repair_section}
 
 ## 待审查大纲（第{chapter_number}章）
 {json.dumps(outline, ensure_ascii=False, indent=2)}
 
-请只输出以下JSON格式的审查报告，数组最多3条，每条不超过80字：
+请只输出以下JSON格式的审查报告。所有数组都只能有1条，每条不超过80字；edits只能有1条：
 {{
   "chapter_number": {chapter_number},
   "overall_score": "请给出0-10的客观评分。9分意味着Writer据此必能写出让人欲罢不能的章节。不要给辛苦分",
   "verdict": "通过/需修改/需重写。注意：如果 overall_score >= {min_score}，verdict 必须写'通过'；只有低于{min_score}分才写'需重写'或'需修改'",
-  "scores": {{
-    "plot_attraction": "剧情吸引力（0-10）",
-    "pacing": "节奏把控（0-10。中段是否有小高潮？是否存在超过1500字无转折的平铺直叙？）",
-    "character_motivation": "人物动机合理性（0-10）",
-    "satisfaction_design": "爽点设计（0-10。爽点是否触及核心恐惧/欲望？是否反套路？）",
-    "foreshadowing": "伏笔与呼应（0-10）",
-    "scene_diversity": "场景多样性（0-10）",
-    "power_consistency": "力量体系一致性（0-10）",
-    "hook_strength": "章末钩子强度（0-10。chapter_hook是否明确、强力、让人心跳加速？）",
-    "emotional_arc": "情绪曲线设计（0-10。emotional_arc是否有起伏？是否全程单一情绪？）",
-    "suspense_density": "悬念密度（0-10。tension_points是否有至少3个有效张力节点？分布是否合理？）",
-    "information_freshness": "信息新鲜度（0-10。是否有至少一个此前从未出现的新元素？有无重复已知信息？）",
-    "anti_cliche": "反套路程度（0-10。是否存在标准战斗/解谜模板？是否有意外和不可预测性？）",
-    "writeability": "整体可写性（0-10。Writer能否据此写出9分神作级正文？）",
-    "structure_function": "结构功能合理性（0-10。story_beat是否名实相符？是否呼应本章在全卷/全书中的结构位置？如标注为midpoint是否有真正的赌注升级与被动转主动？）",
-    "goal_stakes": "目标赌注清晰度（0-10。chapter_goal是否是本章可推进的具体目标？失败后果是否触及核心利益？还是空泛的全书级口号？）",
-    "payoff_chain": "爽点链完整性（0-10。payoff_design是否有完整的期待→压制→反转→碾压链条？爽点是否来自实力真实发挥而非巧合？）"
-  }},
-  "design_gates": {{
-    "core_desire": {{"passed": true, "evidence": "主角本章具体想得到或保护什么，60字以内"}},
-    "irreversible_choice": {{"passed": true, "evidence": "本章不可撤销的选择、损失或暴露，60字以内"}},
-    "midpoint_reversal": {{"passed": true, "evidence": "中段如何改变原行动方案，60字以内"}},
-    "strong_hook": {{"passed": true, "evidence": "章末正在发生的具体危机或反转，60字以内"}}
-  }},
-  "strengths": ["优点1，80字以内"],
-  "weaknesses": ["不足1，80字以内。如果给分低于9分，必须在这里明确写出距离9分的具体差距"],
-  "suggestions": ["具体修改建议1，80字以内"],
-  "continuity_issues": ["与前后章衔接问题，80字以内"],
+  "primary_issue": "当前最关键的唯一问题，80字以内",
+  "primary_suggestion": "针对primary_issue的唯一修改建议，80字以内",
+  "weaknesses": ["唯一不足，80字以内。如果给分低于9分，必须写出距离9分的最大差距"],
+  "suggestions": ["唯一具体修改建议，80字以内"],
+  "continuity_issues": ["唯一衔接问题；没有则空数组"],
+  "repair_feedback_checks": [{{"id": "R1", "passed": true, "evidence": "本章中实际完成修复的具体事件"}}],
   "summary": "总体评价，80字以内。如果评分低于9分，用一句话回答：本章大纲最致命的短板是什么？",
   "edits": [
     {{
@@ -269,11 +479,18 @@ def review_outline(
       "action": "replace",
       "value": "修改后的章末钩子"
     }}
-  ]
+  ],
+  "strengths": ["优点1，80字以内"],
+  "design_gates": {{
+    "core_desire": {{"passed": true, "evidence": "主角本章具体想得到或保护什么，60字以内"}},
+    "irreversible_choice": {{"passed": true, "evidence": "本章不可撤销的选择、损失或暴露，60字以内"}},
+    "midpoint_reversal": {{"passed": true, "evidence": "中段如何改变原行动方案，60字以内"}},
+    "strong_hook": {{"passed": true, "evidence": "章末正在发生的具体危机或反转，60字以内"}}{repair_gate_schema}
+  }}
 }}
 
-【9分神作大纲审查清单——逐条自检】
-请在给出评分前逐条检查。四项 design_gates 是硬门槛；其余项目用于综合评分，不得因为单个非致命维度不足就机械封顶：
+【9分神作大纲核心审查清单】
+请在给出评分前按以下核心项快速自检。四项 design_gates 是硬门槛；其余项目用于综合评分。若存在多个问题，只输出最影响通过的一项：
 1. chapter_hook字段是否明确写出了一个让人心跳加速的强力钩子（危机升级/信息反转/情感爆点）？
 2. chapter_hook是否禁止了平静收尾、总结现状、铺垫过渡？
 3. emotional_arc是否描述了清晰的情绪起伏（如压抑→紧张→希望→绝望），而非全程单一情绪？
@@ -284,13 +501,18 @@ def review_outline(
 8. 如果Writer严格按这个大纲写，能否产出一章让人读完立刻想打开下一章的内容？
 9. story_beat是否名实相符？标注的结构功能（如catalyst/midpoint/all_is_lost/finale）是否在剧情中真正兑现？与全卷节奏曲线是否衔接？
 10. chapter_goal是否是本章可推进的具体目标（非全书口号）？失败后果是否触及核心利益？
-11. payoff_design是否包含完整的爽点链（期待→压制→反转→碾压）？若该字段缺失或空泛，需在weaknesses指出。
+11. {payoff_profile['check']}
+12. 与上下文各章相比，是否重复了同一核心场景、追逐、对峙、取证、营救或直播动作链？
+13. 人物身份、阵营、生死、伤势、被捕/获救状态是否与前后章一致？不可逆事件是否只发生一次？
+14. 时间是否单调推进？跨日、等待、移动和地点切换是否有明确过渡？
+15. 本章新埋伏笔在后续接口中是否有承接；前章已回收信息是否被错误地再次当成未知？
+16. 问题归属遵循“最早事实为锚点”：若冲突由后章推翻前章事实造成，只在 continuity_issues 中指出应修改的后章，不得因此压低本章分数或判本章不通过。
 
 要求：
 1. 评分要客观可复现。9分代表单章设计突出；达到{min_score}分且四项设计门通过，代表足以进入全书层级审查。
-2. 重点审查：悬念密度、钩子强度、情绪曲线、信息新鲜度、反套路程度、结构功能合理性、目标赌注、爽点链。这些维度比字段完整性更重要。
+2. 重点审查：悬念密度、钩子强度、情绪曲线、信息新鲜度、反套路程度、结构功能合理性、目标赌注、{payoff_profile['label']}。这些维度比字段完整性更重要。
 3. 剧情是否有真正的冲突和转折，而非流水账
-4. 爽点设计是否到位：是否有期待感、压制、反转、碾压等要素，且是否触及角色内核
+4. {payoff_profile['design']}
 5. 人物动机是否合理，是否与角色设定一致
 6. 与前后章的衔接是否自然，伏笔是否呼应
 7. 场景使用是否有效；单章允许集中在一个地点，但不能重复做同样的事或缺少状态变化
@@ -299,7 +521,9 @@ def review_outline(
 10. 如果origin/中存在素材，必须检查大纲是否参考并遵守原始素材；与素材冲突需列入weaknesses或continuity_issues
 11. 如低于{min_score}分必须标记为需重写
 12. 必须输出合法JSON，不要Markdown，不要长篇解释
-13. **必须输出 edits 数组**：如果 verdict 不是"通过"，必须给出至少一条字段级 edit（field/action/value），让 Outliner 能直接修改 JSON 而不是整章重生成。action 可选 replace/append/replace_index/delete_index。小问题优先改 chapter_hook、key_events、summary 等字段。"""
+13. 任一由本章引入或应由本章承担修复责任的 critical 跨章矛盾（重复不可逆事件、身份/生死冲突、时间倒退、相邻章核心动作链重复）都必须判定为不通过；若责任在更晚章节，本章保留为事实锚点并正常评分
+14. **必须输出 edits 数组**：如果 verdict 不是"通过"，只能给出1条最关键字段级 edit（field/action/value），让 Outliner 定点修改 JSON 而不是整章重生成。action 可选 replace/append/replace_index/delete_index。小问题优先改 chapter_hook、key_events、summary 等字段。
+15. 如果 edit 修改 story_beat，value 只能取以下枚举之一：opening_image/theme_stated/setup/catalyst/debate/break_into_two/b_story/fun_and_games/midpoint/bad_guys_close_in/all_is_lost/dark_night/break_into_three/finale/final_image/rising_action/transition。不得发明 impossible_choice 等新标签。"""
 
     log(f"[OutlineReviewer] 正在审查第{chapter_number}章大纲...")
     start_time = time.time()
@@ -335,22 +559,172 @@ def review_outline(
                 pass
         return val
 
-    def _extract_first_json_object(text: str) -> dict:
+    def _strip_json_markdown(text: str) -> str:
         cleaned = text.strip()
         if "```json" in cleaned:
-            cleaned = cleaned.split("```json", 1)[1].split("```", 1)[0].strip()
-        elif "```" in cleaned:
-            cleaned = cleaned.split("```", 1)[1].split("```", 1)[0].strip()
-        start = cleaned.find("{")
+            return cleaned.split("```json", 1)[1].split("```", 1)[0].strip()
+        if "```" in cleaned:
+            return cleaned.split("```", 1)[1].split("```", 1)[0].strip()
+        return cleaned
+
+    required_gates = (
+        "core_desire",
+        "irreversible_choice",
+        "midpoint_reversal",
+        "strong_hook",
+    )
+    if repair_requirements:
+        required_gates += ("repair_feedback_closed",)
+
+    def _extract_object_after_key(text: str, key: str) -> str | None:
+        match = re.search(rf'"{re.escape(key)}"\s*:', text)
+        if not match:
+            return None
+        start = text.find("{", match.end())
         if start < 0:
-            raise ValueError("response contains no JSON object")
-        data, _ = json.JSONDecoder().raw_decode(cleaned[start:])
-        if not isinstance(data, dict):
-            raise ValueError("review response is not a JSON object")
-        return data
+            return None
+        stack: list[str] = []
+        in_string = False
+        escape = False
+        for idx in range(start, len(text)):
+            ch = text[idx]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                stack.append("}")
+            elif ch == "}":
+                if not stack:
+                    return None
+                stack.pop()
+                if not stack:
+                    return text[start:idx + 1]
+        return None
+
+    def _extract_scores_from_partial(text: str) -> dict:
+        scores_obj = _extract_object_after_key(text, "scores")
+        if scores_obj:
+            for variant in (scores_obj, fix_inner_quotes(scores_obj), fix_truncated_json(scores_obj)):
+                try:
+                    scores = json.loads(variant)
+                except Exception:
+                    continue
+                if isinstance(scores, dict):
+                    return scores
+        match = re.search(r'"scores"\s*:\s*\{(?P<body>.*?)(?:\}\s*,\s*"design_gates"|$)', text, re.S)
+        if not match:
+            return {}
+        body = match.group("body")
+        scores: dict[str, float | str] = {}
+        for key, val in re.findall(r'"([^"]+)"\s*:\s*("?[-+]?\d+(?:\.\d+)?"?)', body):
+            scores[key] = _parse_score(val.strip('"'))
+        return scores
+
+    def _partial_review_from_truncated(text: str) -> dict | None:
+        cleaned = _strip_json_markdown(text)
+        start = cleaned.find("{")
+        if start >= 0:
+            cleaned = cleaned[start:]
+        if '"overall_score"' not in cleaned and '"scores"' not in cleaned:
+            return None
+
+        review: dict = {
+            "chapter_number": chapter_number,
+            "parse_recovered": "truncated_response",
+            "suggestions": ["审查响应被截断，已保留可解析评分；缺失设计门证据需重新确认。"],
+            "continuity_issues": [],
+            "edits": [],
+        }
+        chapter_match = re.search(r'"chapter_number"\s*:\s*(\d+)', cleaned)
+        if chapter_match:
+            review["chapter_number"] = int(chapter_match.group(1))
+
+        score_match = re.search(r'"overall_score"\s*:\s*("?[-+]?\d+(?:\.\d+)?"?)', cleaned)
+        if score_match:
+            review["overall_score"] = _parse_score(score_match.group(1).strip('"'))
+
+        verdict_match = re.search(r'"verdict"\s*:\s*"([^"]+)"', cleaned)
+        if verdict_match:
+            review["verdict"] = verdict_match.group(1)
+
+        scores = _extract_scores_from_partial(cleaned)
+        if scores:
+            review["scores"] = scores
+
+        design_gates: dict[str, dict] = {}
+        for gate_name in required_gates:
+            gate_obj = _extract_object_after_key(cleaned, gate_name)
+            if not gate_obj:
+                continue
+            for variant in (gate_obj, fix_inner_quotes(gate_obj)):
+                try:
+                    gate_data = json.loads(variant)
+                except Exception:
+                    continue
+                if isinstance(gate_data, dict):
+                    design_gates[gate_name] = gate_data
+                    break
+        if design_gates:
+            review["design_gates"] = design_gates
+        if "overall_score" not in review and not scores:
+            return None
+        return review
+
+    def _json_candidates(text: str) -> list[str]:
+        cleaned = _strip_json_markdown(text)
+        candidates = [cleaned]
+        start = cleaned.find("{")
+        if start >= 0:
+            candidates.append(cleaned[start:])
+            end = cleaned.rfind("}")
+            if end > start:
+                candidates.append(cleaned[start:end + 1])
+        unique: list[str] = []
+        for candidate in candidates:
+            if candidate and candidate not in unique:
+                unique.append(candidate)
+        return unique
+
+    def _loads_json_object(text: str) -> dict:
+        errors: list[str] = []
+        for candidate in _json_candidates(text):
+            variants = [
+                candidate,
+                fix_inner_quotes(candidate),
+                fix_truncated_json(candidate),
+                fix_inner_quotes(fix_truncated_json(candidate)),
+            ]
+            for variant in variants:
+                try:
+                    data = json.loads(variant)
+                except Exception as exc:
+                    errors.append(str(exc))
+                    try:
+                        start = variant.find("{")
+                        if start >= 0:
+                            data, _ = json.JSONDecoder().raw_decode(variant[start:])
+                        else:
+                            continue
+                    except Exception as raw_exc:
+                        errors.append(str(raw_exc))
+                        continue
+                if isinstance(data, dict):
+                    return data
+                errors.append("review response is not a JSON object")
+        partial = _partial_review_from_truncated(text)
+        if partial:
+            return partial
+        raise ValueError(errors[-1] if errors else "response contains no JSON object")
 
     try:
-        review_data = _extract_first_json_object(content)
+        review_data = _loads_json_object(content)
         review_data["status"] = "completed"
         # 将 overall_score 统一转为 float
         review_data["overall_score"] = _parse_score(review_data.get("overall_score"))
@@ -359,19 +733,24 @@ def review_outline(
         if isinstance(scores, dict):
             for k, v in list(scores.items()):
                 scores[k] = _parse_score(v)
+        _normalize_single_action_review(review_data)
         design_gates = review_data.get("design_gates")
-        required_gates = (
-            "core_desire",
-            "irreversible_choice",
-            "midpoint_reversal",
-            "strong_hook",
-        )
         gate_results = []
         if isinstance(design_gates, dict):
             normalized_gates = {
                 str(key).replace(" ", "").replace("-", "_"): value
                 for key, value in design_gates.items()
             }
+            gate_aliases = {
+                "core_design": "core_desire",
+                "core_goal": "core_desire",
+                "irreversible_decision": "irreversible_choice",
+                "midpoint": "midpoint_reversal",
+                "strong_chapter_hook": "strong_hook",
+            }
+            for alias, canonical in gate_aliases.items():
+                if canonical not in normalized_gates and alias in normalized_gates:
+                    normalized_gates[canonical] = normalized_gates[alias]
             for gate_name in required_gates:
                 gate = normalized_gates.get(gate_name)
                 passed = isinstance(gate, dict) and gate.get("passed") is True
@@ -385,19 +764,166 @@ def review_outline(
             if isinstance(score, (int, float)) and score >= 9.0:
                 review_data["overall_score"] = 8.8
             review_data["verdict"] = "需修改"
+
+        def _ensure_review_list(field: str) -> list:
+            value = review_data.get(field)
+            if not isinstance(value, list):
+                value = []
+                review_data[field] = value
+            return value
+
+        repair_feedback_closed = True
+        repair_feedback_failed_ids: list[str] = []
+        repair_feedback_contract_errors: list[str] = []
+        if repair_requirements:
+            required_repair_ids = {
+                str(item.get("id", "")).strip()
+                for item in repair_requirements
+                if str(item.get("id", "")).strip()
+            }
+            repair_checks = review_data.get("repair_feedback_checks")
+            if not isinstance(repair_checks, list):
+                repair_checks = []
+                repair_feedback_contract_errors.append("repair_feedback_checks 缺失或不是数组")
+            review_data["repair_feedback_checks"] = repair_checks
+            passed_repair_ids: set[str] = set()
+            seen_repair_ids: set[str] = set()
+            for check in repair_checks:
+                if not isinstance(check, dict):
+                    continue
+                check_id = str(check.get("id", "")).strip()
+                if check_id:
+                    seen_repair_ids.add(check_id)
+                evidence = str(check.get("evidence", "")).strip()
+                if check_id in required_repair_ids and check.get("passed") is True and evidence:
+                    passed_repair_ids.add(check_id)
+            missing_check_ids = required_repair_ids - seen_repair_ids
+            if missing_check_ids:
+                repair_feedback_contract_errors.append(
+                    "repair_feedback_checks 未覆盖整本反馈项: "
+                    + "、".join(sorted(missing_check_ids, key=_repair_id_sort_key))
+                )
+            repair_feedback_failed_ids = sorted(
+                required_repair_ids - passed_repair_ids,
+                key=_repair_id_sort_key,
+            )
+            normalized_design_gates = review_data.get("design_gates")
+            repair_gate = (
+                normalized_design_gates.get("repair_feedback_closed")
+                if isinstance(normalized_design_gates, dict)
+                else None
+            )
+            repair_gate_ok = (
+                isinstance(repair_gate, dict)
+                and repair_gate.get("passed") is True
+                and bool(str(repair_gate.get("evidence", "")).strip())
+            )
+            repair_feedback_closed = not repair_feedback_failed_ids and repair_gate_ok
+            review_data["repair_feedback_requirements"] = repair_requirements
+            review_data["repair_feedback_closed"] = repair_feedback_closed
+            review_data["repair_feedback_failed_ids"] = repair_feedback_failed_ids
+            review_data["repair_feedback_gate_passed"] = repair_gate_ok
+            if not repair_feedback_closed:
+                failed_text = "、".join(repair_feedback_failed_ids) or "repair_feedback_closed"
+                evidence = f"整本大纲反馈未逐项闭环：{failed_text}"
+                _ensure_review_list("continuity_issues")[:] = [evidence]
+                _ensure_review_list("weaknesses")[:] = [evidence]
+                _ensure_review_list("suggestions")[:] = [
+                    "按整本反馈验收单补齐原因、过程、人物状态和时间过渡；未闭环前不得进入正文。"
+                ]
+                edits = _ensure_review_list("edits")
+                if isinstance(edits, list) and not edits:
+                    edits.append({
+                        "field": "summary",
+                        "action": "replace",
+                        "value": (
+                            str(outline.get("summary", "")).strip()
+                            + "（需按整本大纲反馈补齐跨章过渡、角色状态与因果闭环。）"
+                        )[:900],
+                    })
+                score = review_data.get("overall_score")
+                if isinstance(score, (int, float)):
+                    review_data["overall_score"] = round(min(score, min_score - 0.1), 2)
+                review_data["verdict"] = "需修改"
         # 跨章节奏守卫：本章若身处连续同 beat 的注水腰段，强制需修改并压分，
         # 让 Outliner 带反馈重生成本章、换用不同转折 beat。
         if beat_flat_issues:
             fi = beat_flat_issues[0]
-            review_data.setdefault("continuity_issues", []).append(fi["evidence"])
-            review_data.setdefault("suggestions", []).insert(0, fi["suggestion"])
+            review_data.setdefault("continuity_issues", [])[:] = [fi["evidence"]]
+            review_data.setdefault("weaknesses", [])[:] = [fi["evidence"]]
+            review_data.setdefault("suggestions", [])[:] = [fi["suggestion"]]
+            current_beat = str(outline.get("story_beat", "")).strip().lower()
+            replacement_beat = {
+                "setup": "catalyst",
+                "catalyst": "break_into_two",
+                "debate": "break_into_two",
+                "break_into_two": "b_story",
+                "b_story": "fun_and_games",
+                "fun_and_games": "midpoint",
+                "rising_action": "midpoint",
+                "transition": "rising_action",
+                "midpoint": "bad_guys_close_in",
+                "bad_guys_close_in": "all_is_lost",
+                "all_is_lost": "dark_night",
+                "dark_night": "break_into_three",
+                "break_into_three": "finale",
+                "finale": "final_image",
+            }.get(current_beat, "rising_action")
+            edits = review_data.setdefault("edits", [])
+            if isinstance(edits, list) and not any(
+                isinstance(edit, dict) and edit.get("field") == "story_beat"
+                for edit in edits
+            ):
+                edits[:] = [{
+                    "field": "story_beat",
+                    "action": "replace",
+                    "value": replacement_beat,
+                }]
             score = review_data.get("overall_score")
             if isinstance(score, (int, float)):
                 review_data["overall_score"] = round(min(score, min_score - 0.1), 2)
             review_data["verdict"] = "需修改"
             review_data["beat_distribution_issue"] = fi
+        if adjacent_repetition_issue:
+            evidence = adjacent_repetition_issue["evidence"]
+            suggestion = adjacent_repetition_issue["suggestion"]
+            review_data.setdefault("continuity_issues", [])[:] = [evidence]
+            review_data.setdefault("weaknesses", [])[:] = [evidence]
+            review_data.setdefault("suggestions", [])[:] = [suggestion]
+            edits = review_data.setdefault("edits", [])
+            has_key_event_edit = isinstance(edits, list) and any(
+                isinstance(edit, dict) and edit.get("field") == "key_events"
+                for edit in edits
+            )
+            if isinstance(edits, list) and not has_key_event_edit:
+                for match in sorted(
+                    adjacent_repetition_issue["matches"],
+                    key=lambda item: item["current_index"],
+                    reverse=True,
+                ):
+                    edits[:] = [{
+                        "field": "key_events",
+                        "action": "delete_index",
+                        "index": match["current_index"],
+                    }]
+                    break
+            score = review_data.get("overall_score")
+            if isinstance(score, (int, float)):
+                review_data["overall_score"] = round(min(score, min_score - 0.1), 2)
+            review_data["verdict"] = "需修改"
+            review_data["adjacent_event_repetition"] = adjacent_repetition_issue
+        continuity_hard_failures = _current_chapter_continuity_failures(
+            chapter_number,
+            review_data.get("continuity_issues"),
+        )
+        if continuity_hard_failures:
+            score = review_data.get("overall_score")
+            if isinstance(score, (int, float)):
+                review_data["overall_score"] = round(min(score, min_score - 0.1), 2)
+            review_data["verdict"] = "需修改"
+            review_data["continuity_hard_failures"] = continuity_hard_failures[:4]
         # 闭环角色守卫：出场角色未在前期 roster 锁定（带括号注释/临时生造/未登记别名），
-        # 强制需修改，让 Outliner 改用规范名或先把新角色登记进 characters.json。
+        # 强制需修改，让 Outliner 改用已登记角色或机构名，避免临时人名漂移。
         if cast_violations["polluted"] or cast_violations["unregistered"]:
             parts = []
             if cast_violations["polluted"]:
@@ -405,18 +931,164 @@ def review_outline(
             if cast_violations["unregistered"]:
                 parts.append("未登记角色/群体：" + "、".join(cast_violations["unregistered"]))
             evi = "；".join(parts)
-            sug = ("characters_involved 必须只含 characters.json 已登记角色的规范名（无括号注释/整句描述）；"
-                   "若是新角色，先用规范名登记进 characters.json（含 name+aliases+role）再使用；"
-                   "若是已有角色的别名/称谓，把别名补进该角色 aliases。")
-            review_data.setdefault("continuity_issues", []).append("人物未闭环锁定：" + evi)
-            review_data.setdefault("suggestions", []).insert(0, sug)
+            sug = ("characters_involved 必须只含 characters.json 或 world.json 已登记角色的规范名"
+                   "（无括号注释/整句描述）；若未登记，改用已登记角色或只作为背景机构写入剧情，"
+                   "不要把临时人名放进 characters_involved。")
+            review_data.setdefault("continuity_issues", [])[:] = ["人物未闭环锁定：" + evi]
+            review_data.setdefault("suggestions", [])[:] = [sug]
+            valid_names = cast_name_set({"characters": characters, "world": world})
+            normalized_cast = []
+            for raw_name in outline.get("characters_involved", []):
+                name = clean_char_name(raw_name)
+                if name and name in valid_names and name not in normalized_cast:
+                    normalized_cast.append(name)
+            if normalized_cast:
+                edits = review_data.setdefault("edits", [])
+                if isinstance(edits, list) and not any(
+                    isinstance(edit, dict) and edit.get("field") == "characters_involved"
+                    for edit in edits
+                ):
+                    edits[:] = [{
+                        "field": "characters_involved",
+                        "action": "replace",
+                        "value": normalized_cast,
+                    }]
             score = review_data.get("overall_score")
             if isinstance(score, (int, float)):
                 review_data["overall_score"] = round(min(score, min_score - 0.1), 2)
             review_data["verdict"] = "需修改"
             review_data["cast_violation"] = cast_violations
+
+        score = review_data.get("overall_score")
+        hard_gate_ok = (
+            design_gate_passed
+            and repair_feedback_closed
+            and not beat_flat_issues
+            and not adjacent_repetition_issue
+            and not continuity_hard_failures
+            and not (cast_violations["polluted"] or cast_violations["unregistered"])
+        )
+        if isinstance(score, (int, float)) and score >= min_score and hard_gate_ok:
+            review_data["verdict"] = "通过"
+        elif isinstance(score, (int, float)) and score < min_score and review_data.get("verdict") == "通过":
+            review_data["verdict"] = "需修改"
+
+        if not isinstance(review_data.get("strengths"), list):
+            review_data["strengths"] = []
+        if not isinstance(review_data.get("continuity_issues"), list):
+            review_data["continuity_issues"] = []
+        if not isinstance(review_data.get("weaknesses"), list):
+            derived = review_data["continuity_issues"][:3]
+            if not derived and isinstance(review_data.get("suggestions"), list):
+                derived = [str(item) for item in review_data["suggestions"][:3]]
+            review_data["weaknesses"] = derived
+        if not isinstance(review_data.get("suggestions"), list):
+            review_data["suggestions"] = [
+                f"修复：{item}" for item in review_data["weaknesses"][:3]
+            ]
+        if not isinstance(review_data.get("edits"), list):
+            review_data["edits"] = []
+        if not isinstance(review_data.get("summary"), str) or not review_data.get("summary", "").strip():
+            summary_sources = review_data["weaknesses"] or review_data["suggestions"]
+            review_data["summary"] = "；".join(str(item) for item in summary_sources[:2])[:300]
+        _normalize_single_action_review(review_data)
+
+        contract_errors: list[str] = []
+        contract_errors.extend(repair_feedback_contract_errors)
+        expected_lists = (
+            "strengths",
+            "weaknesses",
+            "suggestions",
+            "continuity_issues",
+            "edits",
+        )
+        if review_data.get("chapter_number") != chapter_number:
+            contract_errors.append("chapter_number 缺失或不匹配")
+        if not isinstance(review_data.get("overall_score"), (int, float)):
+            contract_errors.append("overall_score 缺失或不是数字")
+        if review_data.get("verdict") not in {"通过", "需修改", "需重写"}:
+            contract_errors.append("verdict 缺失或非法")
+        if not isinstance(review_data.get("scores"), dict):
+            review_data["scores"] = {}
+        for field in expected_lists:
+            if not isinstance(review_data.get(field), list):
+                contract_errors.append(f"{field} 缺失或不是数组")
+        if not isinstance(review_data.get("summary"), str) or not review_data["summary"].strip():
+            contract_errors.append("summary 缺失")
+
+        score = review_data.get("overall_score")
+        if isinstance(score, (int, float)) and score < 9.0:
+            weaknesses = review_data.get("weaknesses")
+            if not isinstance(weaknesses, list) or not weaknesses:
+                contract_errors.append("低于9分但未说明具体 weaknesses")
+        if review_data.get("verdict") != "通过":
+            suggestions = review_data.get("suggestions")
+            edits = review_data.get("edits")
+            if not isinstance(suggestions, list) or not suggestions:
+                contract_errors.append("未通过但没有可执行 suggestions")
+            if not isinstance(edits, list) or not edits:
+                contract_errors.append("未通过但没有字段级 edits")
+        edits = review_data.get("edits")
+        if isinstance(edits, list):
+            for index, edit in enumerate(edits):
+                if not isinstance(edit, dict):
+                    contract_errors.append(f"edits[{index}] 不是对象")
+                    continue
+                action = edit.get("action")
+                if action not in {"replace", "append", "replace_index", "delete_index"}:
+                    contract_errors.append(f"edits[{index}] action 非法")
+                if edit.get("field") == "story_beat":
+                    beat = str(edit.get("value", "")).strip().lower()
+                    if action != "replace" or beat not in VALID_STORY_BEATS:
+                        contract_errors.append(
+                            f"edits[{index}] story_beat 必须 replace 为合法枚举值"
+                        )
+
+        if contract_errors:
+            semantic_retries = max(
+                0,
+                int(CONFIG.get("outline_reviewer", {}).get("semantic_retries", 1) or 0),
+            )
+            if _semantic_attempt < semantic_retries:
+                log(
+                    f"[OutlineReviewer] 第{chapter_number}章审核报告契约不完整，"
+                    f"原候选重审 {_semantic_attempt + 1}/{semantic_retries}: "
+                    + "；".join(contract_errors)
+                )
+                return review_outline(
+                    chapter_number,
+                    outline_file_override,
+                    review_file_override,
+                    context_outline_dir,
+                    repair_feedback_file,
+                    _semantic_attempt=_semantic_attempt + 1,
+                    _semantic_errors=contract_errors,
+                )
+            review_data["reported_overall_score"] = review_data.get("overall_score")
+            review_data["overall_score"] = None
+            review_data["verdict"] = "需修改"
+            review_data["status"] = "invalid_review"
+            review_data["review_contract_errors"] = contract_errors
     except Exception as e:
         log(f"[OutlineReviewer] JSON解析失败: {e}")
+        semantic_retries = max(
+            0,
+            int(CONFIG.get("outline_reviewer", {}).get("semantic_retries", 1) or 0),
+        )
+        if _semantic_attempt < semantic_retries:
+            log(
+                f"[OutlineReviewer] 第{chapter_number}章审核响应解析失败，"
+                f"原候选重审 {_semantic_attempt + 1}/{semantic_retries}"
+            )
+            return review_outline(
+                chapter_number,
+                outline_file_override,
+                review_file_override,
+                context_outline_dir,
+                repair_feedback_file,
+                _semantic_attempt=_semantic_attempt + 1,
+                _semantic_errors=["响应不是可解析的完整 JSON 对象"],
+            )
         review_data = {
             "chapter_number": chapter_number,
             "status": "parse_error",
@@ -447,6 +1119,7 @@ def main():
     parser.add_argument("--review-file", type=str, default="", help="候选审查输出文件")
     parser.add_argument("--outline-dir", type=str, default="", help="候选大纲目录；批量审查时同时作为前后章上下文")
     parser.add_argument("--review-dir", type=str, default="", help="候选审查报告输出目录")
+    parser.add_argument("--repair-feedback", type=str, default="", help="整本大纲总审回灌到本章的修复验收反馈")
     args = parser.parse_args()
 
     try:
@@ -469,6 +1142,7 @@ def main():
     failed = 0
     candidate_outline_dir = Path(args.outline_dir).resolve() if args.outline_dir else None
     candidate_review_dir = Path(args.review_dir).resolve() if args.review_dir else None
+    repair_feedback = Path(args.repair_feedback).resolve() if args.repair_feedback else None
     if args.chapter > 0:
         outline_override = Path(args.outline_file) if args.outline_file else None
         if outline_override is None and candidate_outline_dir is not None:
@@ -481,8 +1155,9 @@ def main():
             outline_override,
             review_override,
             candidate_outline_dir,
+            repair_feedback,
         )
-        if result.get("status") in ("failed", "no_file", "parse_error"):
+        if result.get("status") in ("failed", "no_file", "parse_error", "invalid_review"):
             failed += 1
     else:
         for ch in range(args.start, args.end + 1):
@@ -501,8 +1176,9 @@ def main():
                 outline_override,
                 review_override,
                 candidate_outline_dir,
+                repair_feedback,
             )
-            if result.get("status") in ("failed", "no_file", "parse_error"):
+            if result.get("status") in ("failed", "no_file", "parse_error", "invalid_review"):
                 failed += 1
             time.sleep(1)
 

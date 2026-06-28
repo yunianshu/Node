@@ -14,11 +14,13 @@ if str(TOOLS_ROOT) not in sys.path:
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
 from core.novel_config import load_config, load_origin_materials, resolve_project_dir
+from core.outline_quality_gate import clean_char_name
 
 NOVELS_DIR = None
 WORLD_FILE = None
@@ -41,29 +43,26 @@ def init_project(project_dir: str | Path) -> None:
     if premise_file.exists():
         NOVEL_PREMISE = premise_file.read_text(encoding="utf-8").replace("{total_chapters}", str(total))
     else:
-        NOVEL_PREMISE = f"""《长生武道：虚空万界行》是《长生武道：从五禽养生拳开始》的续作/后传。
-
-前作结局回顾：
-主角苏长空，从黑铁山庄一个孱弱少年起步，修炼五禽养生拳、龟息真定功、天蚕神功等长生武学，靠"寿命增长则天赋无限提升"的金手指一步步崛起。历经百年，他达到了前无古人的"魂界"境界——在识海中开辟天地、演化世界，独立于天地之外。他斩杀了祸乱天地的大反派天魔神，拯救了人族。此时他100岁，寿命10000年，潜能值1000点。
-苏长空的同伴包括：华善（古圣，生命之道，治愈大师，鹤发童颜的老者）、姬雪潇（神凰转世，掌握虚无之道，冰晶火焰构成的神凰本体）、战无双等古圣强者。他们炼化了天道碎片，原本无法离开故土天地，但苏长空的魂界可以收容他们，带他们一起离开。
-
-续写设定：
-苏长空带着华善、姬雪潇等同伴，离开了故乡天地，进入了无尽虚空。无尽虚空是一片浩瀚的黑暗空间，其中漂浮着无数"天地"（世界），每个天地都有独立的天道法则和修炼体系。虚空中存在着各种各样的文明、种族和强者，还有危险的虚空生物、虚空风暴等。
-苏长空的魂界是一个还在成长中的独立世界，他需要在探索中不断壮大魂界。魂界境之上还有更高境界：界主境（完全掌控一方天地）、虚空境（在虚空中自由穿行，不惧虚空风暴）、混沌境（超越虚空，触及宇宙本源）。
-全书共{total}章，每章约5000字。风格延续前作的热血、升级、长生武道流，融合虚空万界、异界探索、文明碰撞等元素。"""
+        NOVEL_PREMISE = (
+            f"请根据项目配置、origin/参考素材和用户后续补充，规划一部长篇中文网络小说，"
+            f"全书共{total}章。题材、主角、世界规则、叙事风格必须从项目资料中推导；"
+            "资料不足时生成通用但可扩展的原创设定，不得套用任何固定旧项目。"
+        )
 
 
 def call_mmx(system_prompt: str, user_prompt: str, max_tokens: int = 8192, temperature: float = 0.4) -> str:
     try:
+        cfg = CONFIG.get("planner", {})
+        fallback = CONFIG.get("writer", {})
         return call_mmx_client(
             system_prompt,
             user_prompt,
             model=CONFIG["model"],
             mmx_path=CONFIG["mmx_path"],
-            max_tokens=max_tokens,
-            temperature=temperature,
-            retries=CONFIG["writer"]["max_retries"],
-            retry_delay=CONFIG["writer"]["retry_delay"],
+            max_tokens=cfg.get("max_tokens", max_tokens),
+            temperature=cfg.get("temperature", temperature),
+            retries=cfg.get("max_retries", cfg.get("retries", fallback.get("max_retries", 3))),
+            retry_delay=cfg.get("retry_delay", fallback.get("retry_delay", 5.0)),
             log_dir=NOVELS_DIR / "logs" / "raw_responses",
             raw_name="planner",
             qps=CONFIG["api_qps"],
@@ -74,13 +73,164 @@ def call_mmx(system_prompt: str, user_prompt: str, max_tokens: int = 8192, tempe
         return ""
 
 
-def generate_world():
-    if WORLD_FILE.exists():
-        print(f"[Planner] world.json 已存在，跳过生成")
-        return
+def _parse_json_response(content: str) -> dict | None:
+    text = str(content or "").strip()
+    if "```json" in text:
+        text = text.split("```json", 1)[1].split("```", 1)[0].strip()
+    elif "```" in text:
+        text = text.split("```", 1)[1].split("```", 1)[0].strip()
+    variants = [text]
+    try:
+        from core.json_repair import fix_inner_quotes, fix_truncated_json
+        variants.extend([
+            fix_inner_quotes(text),
+            fix_truncated_json(text),
+            fix_truncated_json(fix_inner_quotes(text)),
+        ])
+    except Exception:
+        pass
+    for variant in variants:
+        try:
+            value = json.loads(variant)
+        except Exception:
+            continue
+        if isinstance(value, dict):
+            return value
+    return None
 
-    system = """你是一位顶级东方玄幻/武侠/修仙世界观架构师。
-你需要根据用户提供的故事 premise，构建一个完整、详细、有深度的世界观。
+
+def _validate_world_data(world: dict) -> list[str]:
+    issues = []
+    for field in ("title", "world_description", "overall_arc"):
+        if not str(world.get(field, "")).strip():
+            issues.append(f"{field} 缺失")
+    if len(str(world.get("world_description", "")).strip()) < 120:
+        issues.append("world_description 过短，至少120字")
+    if len(str(world.get("overall_arc", "")).strip()) < 120:
+        issues.append("overall_arc 过短，至少120字")
+    three_act = world.get("three_act_structure")
+    if not isinstance(three_act, dict):
+        issues.append("three_act_structure 缺失或不是对象")
+    else:
+        for act in ("act1", "act2", "act3"):
+            if not str(three_act.get(act, "")).strip():
+                issues.append(f"three_act_structure.{act} 缺失")
+    if not isinstance(world.get("power_system"), dict):
+        issues.append("power_system 缺失或不是对象")
+    if not isinstance(world.get("key_locations"), list) or not world["key_locations"]:
+        issues.append("key_locations 缺失或为空")
+    if not isinstance(world.get("factions"), list) or not world["factions"]:
+        issues.append("factions 缺失或为空")
+    if not isinstance(world.get("rules"), list) or len(world["rules"]) < 3:
+        issues.append("rules 至少需要3条")
+    if not isinstance(world.get("themes"), list) or len(world["themes"]) < 2:
+        issues.append("themes 至少需要2条")
+    world_building = world.get("world_building")
+    if not isinstance(world_building, dict):
+        issues.append("world_building 缺失或不是对象")
+    else:
+        for field in ("economy", "politics", "geography", "history", "culture"):
+            if not str(world_building.get(field, "")).strip():
+                issues.append(f"world_building.{field} 缺失")
+    return issues
+
+
+def _validate_characters_data(characters: dict) -> list[str]:
+    issues: list[str] = []
+    protagonist = characters.get("protagonist")
+    if not isinstance(protagonist, dict):
+        issues.append("protagonist 缺失或不是对象")
+    names: list[str] = []
+
+    def walk(value, path: str) -> None:
+        if isinstance(value, dict):
+            if "name" in value:
+                raw = str(value.get("name", "")).strip()
+                cleaned = clean_char_name(raw)
+                if not raw:
+                    issues.append(f"{path}.name 为空")
+                elif raw != cleaned:
+                    issues.append(
+                        f"{path}.name 不是干净规范名：{raw}；"
+                        "括号说明或“个人信息”后缀必须移到 aliases/description"
+                    )
+                else:
+                    names.append(cleaned)
+                aliases = value.get("aliases")
+                if aliases is None:
+                    issues.append(f"{path}.aliases 缺失")
+                elif not isinstance(aliases, list):
+                    issues.append(f"{path}.aliases 必须是数组")
+            for key, child in value.items():
+                walk(child, f"{path}.{key}")
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                walk(child, f"{path}[{index}]")
+
+    walk(characters, "characters")
+    if len(names) < 4:
+        issues.append("显式登记角色少于4个")
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        issues.append("规范名重复：" + "、".join(duplicates))
+    if isinstance(protagonist, dict) and not protagonist.get("character_arc"):
+        issues.append("protagonist.character_arc 缺失")
+    return list(dict.fromkeys(issues))
+
+
+def _generate_json_with_contract(
+    system: str,
+    prompt: str,
+    *,
+    label: str,
+    validator,
+    max_tokens: int = 8192,
+) -> dict | None:
+    semantic_retries = max(
+        0,
+        int(CONFIG.get("planner", {}).get("semantic_retries", 1) or 0),
+    )
+    retry_hint = ""
+    last_content = ""
+    for attempt in range(semantic_retries + 1):
+        last_content = call_mmx(system, prompt + retry_hint, max_tokens=max_tokens, temperature=0.3)
+        data = _parse_json_response(last_content)
+        issues = validator(data) if isinstance(data, dict) else ["响应不是完整JSON对象"]
+        if isinstance(data, dict) and not issues:
+            return data
+        if attempt < semantic_retries:
+            print(
+                f"[Planner] {label}契约不完整，原任务重试 "
+                f"{attempt + 1}/{semantic_retries}: {'; '.join(issues[:8])}"
+            )
+            retry_hint = (
+                "\n\n## 上次输出无效，本次必须纠正\n"
+                + "；".join(issues[:8])
+                + "\n请从头返回完整合法JSON，不得省略必填字段。"
+            )
+    raw_file = NOVELS_DIR / "logs" / f"planner_{label}.raw"
+    raw_file.parent.mkdir(parents=True, exist_ok=True)
+    raw_file.write_text(last_content, encoding="utf-8")
+    print(f"[Planner] {label}生成失败，原始响应已保存到 {raw_file}")
+    return None
+
+
+def generate_world() -> bool:
+    if WORLD_FILE.exists():
+        try:
+            world_data = json.loads(WORLD_FILE.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"[Planner] world.json 无法读取: {exc}")
+            return False
+        issues = _validate_world_data(world_data) if isinstance(world_data, dict) else ["根节点不是对象"]
+        if issues:
+            print(f"[Planner] world.json 契约不合格: {'; '.join(issues[:8])}")
+            return False
+        print("[Planner] world.json 已存在且契约合格，跳过生成")
+        return True
+
+    system = """你是一位顶级长篇小说世界观架构师。
+你需要根据用户提供的故事 premise、项目配置和原始素材，构建一个完整、详细、有深度且题材匹配的世界观。
 输出必须是合法的JSON格式，不要包含任何markdown代码块标记。"""
 
     prompt = f"""请根据以下故事设定，构建完整的世界观JSON：
@@ -112,6 +262,16 @@ def generate_world():
   ],
   "rules": ["世界规则1", "世界规则2"],
   "themes": ["主题1", "主题2", "主题3"],
+  "world_building": {{
+    "economy": "经济系统：货币体系、贸易路线、核心资源的产出与消耗机制",
+    "politics": "政治体系：主要阵营的权力结构、政体类型、势力博弈关系",
+    "religion": "宗教信仰：神系/信仰体系（如有）、信仰机制、神凡关系",
+    "races": "种族关系：主要种族及其天赋差异、种族矛盾或联盟、混血规则（如有）",
+    "tech_tree": "力量/科技树：主干分支、等级划分、解锁条件与代价",
+    "geography": "地理设定：大陆/区域划分、标志性地理特征、地图层次",
+    "history": "历史纪元：编年史框架、转折性大事件、纪元命名规则",
+    "culture": "文化风俗：社会习俗、语言特色、核心价值观"
+  }},
   "overall_arc": "整体故事弧线描述（300字）",
   "three_act_structure": {{
     "act1": "第一幕描述",
@@ -129,38 +289,33 @@ def generate_world():
 6. 必须输出合法的JSON，不要任何注释或额外文本"""
 
     print("[Planner] 正在生成世界观...")
-    content = call_mmx(system, prompt, max_tokens=8192, temperature=0.4)
-    if not content:
-        print("[Planner] 世界观生成失败")
-        return
-
-    try:
-        world_data = json.loads(content)
-        with open(WORLD_FILE, "w", encoding="utf-8") as f:
-            json.dump(world_data, f, ensure_ascii=False, indent=2)
-        print(f"[Planner] 世界观已保存到 {WORLD_FILE}")
-    except json.JSONDecodeError as e:
-        print(f"[Planner] JSON解析失败: {e}")
-        # 状态机式引号修复
-        from core.json_repair import fix_inner_quotes
-        fixed = fix_inner_quotes(content)
-        try:
-            start = fixed.index("{")
-            end = fixed.rindex("}") + 1
-            world_data = json.loads(fixed[start:end])
-            with open(WORLD_FILE, "w", encoding="utf-8") as f:
-                json.dump(world_data, f, ensure_ascii=False, indent=2)
-            print(f"[Planner] 世界观已保存（经过修复）")
-        except Exception as e2:
-            print(f"[Planner] 修复失败: {e2}")
-            with open(WORLD_FILE.with_suffix(".raw"), "w", encoding="utf-8") as f:
-                f.write(content)
+    world_data = _generate_json_with_contract(
+        system,
+        prompt,
+        label="world",
+        validator=_validate_world_data,
+        max_tokens=8192,
+    )
+    if world_data is None:
+        return False
+    WORLD_FILE.write_text(json.dumps(world_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[Planner] 世界观已保存到 {WORLD_FILE}")
+    return True
 
 
-def generate_characters():
+def generate_characters() -> bool:
     if CHARACTERS_FILE.exists():
-        print(f"[Planner] characters.json 已存在，跳过生成")
-        return
+        try:
+            chars_data = json.loads(CHARACTERS_FILE.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"[Planner] characters.json 无法读取: {exc}")
+            return False
+        issues = _validate_characters_data(chars_data) if isinstance(chars_data, dict) else ["根节点不是对象"]
+        if issues:
+            print(f"[Planner] characters.json 契约不合格: {'; '.join(issues[:8])}")
+            return False
+        print("[Planner] characters.json 已存在且契约合格，跳过生成")
+        return True
 
     system = """你是一位顶级角色设计师，擅长设计有深度、有成长弧线的角色。
 你需要根据故事 premise 设计主要角色。
@@ -173,41 +328,87 @@ def generate_characters():
 ## origin/ 原始参考素材
 {ORIGIN_MATERIALS or "（无）"}
 
-请输出包含 protagonist、companions、new_characters、antagonists 的JSON结构。
+请严格输出以下JSON结构，各角色对象都必须保留 name、aliases 等公共字段：
+{{
+  "protagonist": {{
+    "name": "唯一规范名",
+    "aliases": ["简称或尊称"],
+    "identity": "身份",
+    "description": "人物简介",
+    "motivation": "核心动机",
+    "character_arc": "起点状态→触发事件→成长方向",
+    "language_fingerprint": {{
+      "speaking_style": "说话风格",
+      "signature_words": ["高频用词1", "高频用词2"],
+      "tone": "语气基调"
+    }}
+  }},
+  "companions": [
+    {{
+      "name": "唯一规范名",
+      "aliases": [],
+      "identity": "身份",
+      "description": "人物简介",
+      "motivation": "核心动机",
+      "arc": "起点状态→触发事件→成长方向",
+      "relationship_with_protagonist": "羁绊类型",
+      "language_fingerprint": {{
+        "speaking_style": "说话风格",
+        "signature_words": ["高频用词1", "高频用词2"],
+        "tone": "语气基调"
+      }}
+    }}
+  ],
+  "new_characters": [],
+  "antagonists": [
+    {{
+      "name": "唯一规范名",
+      "aliases": [],
+      "tier": 1,
+      "arc": "反派弧线",
+      "motivation": "核心动机",
+      "charm_point": "魅力点或共情点",
+      "language_fingerprint": {{
+        "speaking_style": "说话风格",
+        "signature_words": ["高频用词1", "高频用词2"],
+        "tone": "语气基调"
+      }}
+    }}
+  ],
+  "language_fingerprint": {{
+    "prose_style": "全书文风基调",
+    "signature_metaphors": ["标志性意象1", "标志性意象2"],
+    "forbidden_expressions": ["禁用AI味表达1", "禁用AI味表达2"]
+  }}
+}}
 
 要求：
 1. 主角设计要符合 premise 中的描述，有完整的成长路径设计
 2. 同伴角色要有血有肉，与主角有真实的情感羁绊
 3. 新角色至少设计8个重要角色，涵盖同伴、导师、对手等类型
 4. 可以有红颜知己或暧昧角色，但不要太滥
-5. 反派要有层次，设计至少3个层级的反派（小反派、中BOSS、最终BOSS）
-6. 如果 origin/ 中存在角色、前作、背景或风格素材，必须优先参考并保持一致
-7. 必须输出合法JSON"""
+5. 反派要有层次，设计至少3个层级的反派（小反派、中BOSS、最终BOSS），每个反派标注 tier（1/2/3）、arc（弧线方向）、motivation（核心动机）、charm_point（魅力点/共情点）
+6. 为每个重要配角（至少3个）设计 arc 字段：起点状态→触发事件→成长/转变方向，标注与主角的羁绊类型（师徒/战友/对手/暧昧等）
+7. 如果 origin/ 中存在角色、前作、背景或风格素材，必须优先参考并保持一致
+8. 每个角色的 name 必须是唯一、干净的规范名；括号说明、身份说明和“个人信息”等后缀必须放入 aliases 或 description
+9. 每个角色必须提供 aliases 数组，没有别名时使用空数组；正文可能使用的简称、尊称、曾用名都在此登记
+10. 必须输出合法JSON
+11. 为每个主要角色设计"语言指纹"：包含 speaking_style（说话风格：话多/话少/句式特征）、signature_words（口头禅/高频用词2-3个）、tone（语气基调：冷峻/热忱/阴鸷/洒脱等）
+12. 为整部小说设计 language_fingerprint：包含 prose_style（文风基调：如白描/华丽/简洁有力）、signature_metaphors（标志性比喻意象2-3个）、forbidden_expressions（应避免的AI味表达）"""
 
     print("[Planner] 正在生成角色档案...")
-    content = call_mmx(system, prompt, max_tokens=8192, temperature=0.4)
-    if not content:
-        print("[Planner] 角色档案生成失败")
-        return
-
-    try:
-        chars_data = json.loads(content)
-        with open(CHARACTERS_FILE, "w", encoding="utf-8") as f:
-            json.dump(chars_data, f, ensure_ascii=False, indent=2)
-        print(f"[Planner] 角色档案已保存到 {CHARACTERS_FILE}")
-    except json.JSONDecodeError as e:
-        print(f"[Planner] JSON解析失败: {e}")
-        from core.json_repair import fix_inner_quotes
-        fixed = fix_inner_quotes(content)
-        try:
-            start = fixed.index("{")
-            end = fixed.rindex("}") + 1
-            chars_data = json.loads(fixed[start:end])
-            with open(CHARACTERS_FILE, "w", encoding="utf-8") as f:
-                json.dump(chars_data, f, ensure_ascii=False, indent=2)
-            print(f"[Planner] 角色档案已保存（经过修复）")
-        except Exception as e2:
-            print(f"[Planner] 修复失败: {e2}")
+    chars_data = _generate_json_with_contract(
+        system,
+        prompt,
+        label="characters",
+        validator=_validate_characters_data,
+        max_tokens=8192,
+    )
+    if chars_data is None:
+        return False
+    CHARACTERS_FILE.write_text(json.dumps(chars_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[Planner] 角色档案已保存到 {CHARACTERS_FILE}")
+    return True
 
 
 def _strip_json_markdown(content: str) -> str:
@@ -227,17 +428,17 @@ def _default_media_prompts(world: dict, characters: dict) -> dict:
     return {
         "cover_prompt": (
             f"中文网络小说封面，书名《{title}》，{visual_core}。"
-            "电影级构图，强烈故事感，东方幻想/武侠质感，主角居中，背景展现核心世界观，"
+            "电影级构图，强烈故事感，视觉风格必须贴合本书题材和时代背景，主角居中，背景展现核心世界观，"
             "高细节，商业出版封面，避免现代广告字样和水印。"
         ),
         "video_prompt": (
             f"根据小说《{title}》世界观制作15秒电影感概念预告片：{visual_core}。"
-            "镜头从世界核心地貌推进到主角背影，再展现力量体系与主要冲突，史诗感，"
-            "动态光影，东方幻想氛围，无字幕，无水印。"
+            "镜头从核心场景推进到主角背影，再展现关键规则、人物关系与主要冲突，"
+            "动态光影，题材氛围鲜明，无字幕，无水印。"
         ),
         "song_prompt": (
             f"为中文网络小说《{title}》创作主题曲，贴合世界观：{world_desc[:300]}。"
-            "情绪从孤独起步到热血崛起，适合小说宣传视频和阅读氛围。"
+            "情绪从困境起步到关键抉择和阶段性爆发，适合小说宣传视频和阅读氛围。"
         ),
         "song_lyrics": (
             f"[Verse]\n长夜里踏过风霜，{protagonist_name}回望旧山河\n"
@@ -351,6 +552,24 @@ def generate_media_assets() -> bool:
         return False
 
 
+def generate_volume_outline():
+    """兼容旧参数；卷纲统一由 Outliner 生成和校验。"""
+    outliner = Path(__file__).with_name("outliner.py")
+    command = [
+        sys.executable,
+        str(outliner),
+        "--project",
+        str(NOVELS_DIR),
+        "--volume-only",
+    ]
+    print("[Planner] 分卷规划委托给 Outliner...")
+    result = subprocess.run(command, check=False)
+    if result.returncode != 0:
+        print(f"[Planner] Outliner 分卷规划失败: rc={result.returncode}")
+        return False
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--project", "-p", type=str,
@@ -360,6 +579,9 @@ def main():
     parser.add_argument("--end", type=int, default=0, help="兼容参数，Planner不再生成大纲")
     parser.add_argument("--world-only", action="store_true", help="兼容参数，Planner默认只生成世界观和角色")
     parser.add_argument("--outline-file", type=str, default="", help="兼容参数；Planner 不生成大纲")
+    parser.add_argument("--with-media-prompts", action="store_true", help="显式补齐 world.json.media_prompts")
+    parser.add_argument("--with-volume-outline", action="store_true", help="显式生成 volume_outline.json（兼容旧流程）")
+    parser.add_argument("--with-media-assets", action="store_true", help="显式调用 media_generator 生成媒体资产")
     args = parser.parse_args()
 
     try:
@@ -377,15 +599,20 @@ def main():
 
     NOVELS_DIR.mkdir(parents=True, exist_ok=True)
 
-    generate_world()
-    generate_characters()
-    generate_media_prompts()
+    world_ok = generate_world()
+    characters_ok = generate_characters()
+    if not (world_ok and characters_ok):
+        print("[Planner] 基础资料契约校验失败，阻断后续流程")
+        sys.exit(1)
 
-    # 媒体资产生成：提示词就绪后立即生成封面/视频/主题歌。
-    # 放在 planner 末尾，使无论用 coordinator 还是 _gen_serial.py 等任意编排，
-    # 只要跑过 planner，媒体都会生成（config.media.enabled=false 时跳过）。
-    if not generate_media_assets():
-        print("[Planner] 媒体资产生成未完成（详见 logs/media_generator.log）")
+    if args.with_media_prompts:
+        generate_media_prompts()
+    if args.with_volume_outline:
+        if not generate_volume_outline():
+            sys.exit(1)
+    if args.with_media_assets:
+        if not generate_media_assets():
+            print("[Planner] 媒体资产生成未完成（详见 logs/media_generator.log）")
 
     print("[Planner] 全部完成")
 

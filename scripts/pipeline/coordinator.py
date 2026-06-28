@@ -440,15 +440,29 @@ def save_progress(progress):
     with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
         json.dump(progress, f, ensure_ascii=False, indent=2)
 
+
+def refresh_progress_from_status(progress: dict | None = None) -> dict:
+    """Refresh progress from authoritative chapter artifacts, not stale progress.json."""
+    progress = dict(progress or load_progress())
+    statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"])
+    write_status_file(NOVELS_DIR, statuses.values())
+    progress["last_outline_reviewed_chapter"] = highest_contiguous(statuses, 1, "outline_review_ok")
+    progress["last_generated_chapter"] = highest_contiguous(statuses, 1, "draft_ok")
+    progress["last_reviewed_chapter"] = highest_contiguous(statuses, 1, "review_ok")
+    progress["last_final_chapter"] = highest_contiguous(statuses, 1, "final_ok")
+    progress.setdefault("failed_chapters", [])
+    save_progress(progress)
+    return progress
+
 def check_base_files_exist():
     return WORLD_FILE.exists() and CHARACTERS_FILE.exists()
 
-def run_planner():
+def run_planner(*extra_args):
     log("=" * 60)
     log("[Coordinator] 启动 Planner Agent")
     log("=" * 60)
     notify_stage("世界观/角色", "开始")
-    rc = run_script("planner.py")
+    rc = run_script("planner.py", *extra_args)
     notify_stage("世界观/角色", "完成" if rc == 0 else "异常", error="" if rc == 0 else f"退出码 {rc}")
     return rc
 
@@ -560,18 +574,27 @@ def _restore_best_draft(chapter: int) -> float:
     return score
 
 def _review_feedback(review_data: dict, chapter: int, gate: str, round_no: int, attempt: int, label: str = "") -> dict:
+    def first_list(value) -> list:
+        return value[:1] if isinstance(value, list) else []
+
     return {
         "chapter": chapter,
         "gate": gate,
         "round": round_no,
         "attempt": attempt,
         "label": label,
+        "status": review_data.get("status", ""),
         "overall_score": review_data.get("overall_score"),
         "verdict": review_data.get("verdict"),
-        "weaknesses": review_data.get("weaknesses", []),
-        "suggestions": review_data.get("suggestions", []),
-        "continuity_issues": review_data.get("continuity_issues", []),
+        "strengths": first_list(review_data.get("strengths", [])),
+        "weaknesses": first_list(review_data.get("weaknesses", [])),
+        "suggestions": first_list(review_data.get("suggestions", [])),
+        "continuity_issues": first_list(review_data.get("continuity_issues", [])),
         "summary": review_data.get("summary", ""),
+        "edits": first_list(review_data.get("edits", [])),
+        "local_analysis": review_data.get("local_analysis", {}),
+        "raw_response": review_data.get("raw_response", ""),
+        "review_contract_errors": review_data.get("review_contract_errors", []),
     }
 
 def _score_from_review(review_data: dict) -> float:
@@ -597,8 +620,8 @@ def _failure_analysis(chapter: int, gate: str, reviews: list[dict]) -> dict:
         statuses.append(str(item.get("status", "")))
         weaknesses.extend([str(v) for v in item.get("weaknesses", []) if v])
         suggestions.extend([str(v) for v in item.get("suggestions", []) if v])
-    top_weaknesses = list(dict.fromkeys(weaknesses))[:8]
-    top_suggestions = list(dict.fromkeys(suggestions))[:8]
+    top_weaknesses = list(dict.fromkeys(weaknesses))[:1]
+    top_suggestions = list(dict.fromkeys(suggestions))[:1]
     return {
         "chapter": chapter,
         "gate": gate,
@@ -610,6 +633,40 @@ def _failure_analysis(chapter: int, gate: str, reviews: list[dict]) -> dict:
         "adjustments": top_suggestions or top_weaknesses or ["提高剧情完整度、人物动机、节奏和可写性"],
     }
 
+
+def _feedback_review_score(review: dict) -> float | None:
+    status = str(review.get("status", "")).strip().lower()
+    if status and status != "completed":
+        return None
+    try:
+        return float(review.get("overall_score"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _feedback_review_window(reviews: list[dict], limit: int = 3) -> list[dict]:
+    valid = [
+        (index, score, review)
+        for index, review in enumerate(reviews)
+        if isinstance(review, dict)
+        and (score := _feedback_review_score(review)) is not None
+    ]
+    if not valid:
+        return [review for review in reviews[-limit:] if isinstance(review, dict)]
+
+    best = max(valid, key=lambda item: (item[1], item[0]))
+    selected_indices = {best[0]}
+    for index in range(max(0, len(reviews) - limit), len(reviews)):
+        if isinstance(reviews[index], dict):
+            selected_indices.add(index)
+    selected = [reviews[index] for index in sorted(selected_indices)]
+    if len(selected) > limit:
+        best_review = best[2]
+        latest = selected[-(limit - 1):]
+        selected = [best_review] + [review for review in latest if review is not best_review]
+    return selected[-limit:]
+
+
 def _write_gate_feedback(chapter: int, gate: str, reviews: list[dict], round_no: int) -> Path:
     analysis = _failure_analysis(chapter, gate, reviews)
     payload = {
@@ -618,7 +675,7 @@ def _write_gate_feedback(chapter: int, gate: str, reviews: list[dict], round_no:
             "gate": gate,
             "analysis_round": round_no,
             "failure_analysis": analysis,
-            "reviews": reviews[-3:],
+            "reviews": _feedback_review_window(reviews),
         }
     }
     feedback_file = LOGS_DIR / f"{gate}_feedback_ch{chapter:04d}_round{round_no}.json"
@@ -718,6 +775,99 @@ def _repair_later_overlap(chapter: int, report: dict) -> int | None:
 def ensure_outline_lookahead(chapter: int, end: int, lookahead: int) -> tuple[bool, int | None]:
     return outline_gate_module.ensure_outline_lookahead(_runtime(), chapter, end, lookahead)
 
+
+def _extract_post_chapter_states(chapter: int) -> None:
+    """正文通过门禁后抽取角色状态快照 + 成长弧线进度，供下一章 writer 注入。"""
+    final_file = NOVELS_DIR / "chapters" / "final" / f"chapter_{chapter:04d}.txt"
+    draft_file = NOVELS_DIR / "chapters" / "draft" / f"chapter_{chapter:04d}.txt"
+    src = final_file if final_file.exists() else draft_file
+    if not src.exists():
+        log(f"[Coordinator] 第{chapter}章正文文件不存在，跳过状态抽取")
+        return
+    text = src.read_text(encoding="utf-8")
+    characters_meta = {}
+    chars_file = NOVELS_DIR / "characters.json"
+    if chars_file.exists():
+        try:
+            import json as _json
+            characters_meta = _json.loads(chars_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    # 角色状态快照
+    try:
+        from core.character_state import extract_character_states
+        extract_character_states(NOVELS_DIR, CONFIG, chapter, text, characters_meta)
+        log(f"[Coordinator] 第{chapter}章角色状态快照已抽取")
+    except Exception as _cse:
+        log(f"[Coordinator] 角色状态抽取异常（忽略）: {_cse}")
+    # 成长弧线进度
+    try:
+        from core.arc_state import extract_arc_progress
+        extract_arc_progress(NOVELS_DIR, CONFIG, chapter, text, characters_meta)
+        log(f"[Coordinator] 第{chapter}章成长弧线进度已抽取")
+    except Exception as _ase:
+        log(f"[Coordinator] 弧线进度抽取异常（忽略）: {_ase}")
+
+
+def _final_ai_flavor_check(chapter: int) -> None:
+    """G14: 终稿落盘后复检 AI 味，严重时记录告警（不阻断，仅报告）。"""
+    final_file = NOVELS_DIR / "chapters" / "final" / f"chapter_{chapter:04d}.txt"
+    if not final_file.exists():
+        return
+    try:
+        from core.ai_flavor_detector import detect_ai_flavor
+        text = final_file.read_text(encoding="utf-8")
+        result = detect_ai_flavor(text, project=NOVELS_DIR)
+        score = result.get("ai_flavor_score", 10) if isinstance(result, dict) else 10
+        if score < 7:
+            log(f"[Coordinator] ⚠️ 第{chapter}章终稿AI味复检偏低(score={score})，建议人工复核")
+        else:
+            log(f"[Coordinator] 第{chapter}章终稿AI味复检通过(score={score})")
+    except Exception as _afe:
+        log(f"[Coordinator] 终稿AI味复检异常（忽略）: {_afe}")
+
+
+def _ending_integrity_check(final_chapter: int) -> None:
+    """G16: 全书完结时检查结尾收束完整性（防烂尾）。
+
+    检查项：①主线是否收束 ②伏笔是否全回收 ③角色弧线是否到达终点
+    仅报告不阻断（结尾已生成，阻断无意义，但为后续修订提供方向）。
+    """
+    log("=" * 60)
+    log("[Coordinator] G16 结尾收束完整性检查（防烂尾）")
+    log("=" * 60)
+    issues = []
+
+    # 检查1：伏笔回收率
+    try:
+        from core.foreshadowing_ledger import load_ledger, dangling_threads
+        ledger = load_ledger(NOVELS_DIR)
+        dangling = dangling_threads(ledger, as_of_chapter=final_chapter)
+        if dangling:
+            issues.append(f"⚠️ 仍有 {len(dangling)} 条伏笔未回收（烂尾风险）")
+            for t in dangling[:5]:
+                issues.append(f"  - {t.get('id', '?')}: {t.get('setup', '')[:60]}")
+    except Exception as exc:
+        log(f"[Coordinator] 伏笔检查异常（忽略）: {exc}")
+
+    # 检查2：角色弧线是否到达终点
+    try:
+        from core.arc_state import load_arc
+        arc = load_arc(NOVELS_DIR, final_chapter)
+        stage = arc.get("current_stage", "")
+        if stage and stage != "destination":
+            issues.append(f"⚠️ 主角弧线未到达终点（当前: {stage}，期望: destination）")
+    except Exception as exc:
+        log(f"[Coordinator] 弧线检查异常（忽略）: {exc}")
+
+    if issues:
+        log("[Coordinator] 结尾收束检查发现问题：")
+        for issue in issues:
+            log(f"  {issue}")
+    else:
+        log("[Coordinator] ✅ 结尾收束检查通过：主线收束、伏笔回收、弧线到位")
+
+
 def run_serial_quality_workflow(start: int, end: int, outline_lookahead: int | None = None) -> bool:
     if outline_lookahead is None:
         outline_lookahead = int(CONFIG.get("coordinator", {}).get("outline_lookahead_chapters", 10) or 10)
@@ -753,16 +903,22 @@ def run_serial_quality_workflow(start: int, end: int, outline_lookahead: int | N
         if not process_draft_gate(chapter):
             return False
 
-        statuses = scan_chapter_status(NOVELS_DIR, 1, CONFIG["total_chapters"])
-        write_status_file(NOVELS_DIR, statuses.values())
-        progress = load_progress()
-        progress["last_outline_reviewed_chapter"] = highest_contiguous(statuses, 1, "outline_review_ok")
-        progress["last_generated_chapter"] = highest_contiguous(statuses, 1, "draft_ok")
-        progress["last_reviewed_chapter"] = highest_contiguous(statuses, 1, "review_ok")
+        # G3: 正文通过门禁后，抽取角色状态快照和成长弧线进度（供下一章 writer 注入）
+        _extract_post_chapter_states(chapter)
+
+        # G14: 终稿AI味复检——final 落盘后做一次 ai_flavor 检测，严重时记录告警
+        _final_ai_flavor_check(chapter)
+
+        progress = refresh_progress_from_status()
         progress["failed_chapters"] = []
         progress.pop("rewrite_queue", None)
         progress.pop("outline_rewrite_queue", None)
         save_progress(progress)
+
+    # G16: 全书最后一章完成后，执行结尾收束检查（防烂尾）
+    if end >= CONFIG.get("total_chapters", 9999):
+        _ending_integrity_check(end)
+
     return True
 
 def run_outline_book_review(force: bool = False) -> bool:
@@ -882,25 +1038,29 @@ def main():
     ensure_wechat_pusher_process(push_interval)
     ensure_gate_watchdog_processes()
 
-    progress = load_progress()
+    progress = refresh_progress_from_status()
     log(f"[Coordinator] 当前进度: 大纲审 {progress.get('last_outline_reviewed_chapter', 0)} 章，已生成 {progress['last_generated_chapter']} 章，已审查 {progress['last_reviewed_chapter']} 章")
 
     if args.batch_size:
         log("[Coordinator] 当前使用单章质量门主流程，--batch-size 仅保留兼容，不会改变章节推进方式")
     end_chapter = args.end or CONFIG["total_chapters"]
 
-    need_planner = not args.skip_planner and not check_base_files_exist()
-    if need_planner:
-        log("[Coordinator] 检测到世界观或角色档案缺失，启动Planner...")
+    if not args.skip_planner:
+        log("[Coordinator] 启动Planner生成或校验世界观、角色档案...")
         if run_planner() != 0:
-            log("[ERROR] Planner执行失败，请检查日志")
+            log("[ERROR] Planner生成或契约校验失败，请检查日志")
             return
         progress["planner_done"] = True
         save_progress(progress)
     elif check_base_files_exist():
-        log("[Coordinator] 世界观、角色档案已存在")
+        log("[Coordinator] 已显式跳过Planner，使用现有世界观和角色档案")
         progress["planner_done"] = True
         save_progress(progress)
+    else:
+        progress["planner_done"] = False
+        save_progress(progress)
+        log("[ERROR] 已跳过Planner，但 world.json 或 characters.json 不存在")
+        return
 
     if not progress["planner_done"]:
         log("[ERROR] Planner未完成且跳过标志未设置")
@@ -910,7 +1070,7 @@ def main():
     if media_cfg.get("enabled", True) and media_cfg.get("generate_after_planner", True):
         if not media_prompts_ready() and not args.skip_planner:
             log("[Coordinator] 检测到媒体提示词缺失，重新运行Planner补齐 media_prompts...")
-            if run_planner() != 0:
+            if run_planner("--with-media-prompts") != 0:
                 log("[ERROR] Planner补齐媒体提示词失败，请检查日志")
                 return
         if not media_prompts_ready():
@@ -932,17 +1092,25 @@ def main():
             end_chapter,
             force_review=args.force_outline_book_review,
         ):
+            refresh_progress_from_status(progress)
             log("[Coordinator] 全量大纲或整本大纲总审未通过，正文阶段未启动")
             return
         outline_lookahead = 1
         log("[Coordinator] 全量大纲已过审，正文阶段仅做当前章大纲校验")
         # A2 伏笔闭环门禁：全量大纲就绪后，writer 前强制回收 dangling 伏笔
         if not run_foreshadowing_audit(apply_patches=True):
+            refresh_progress_from_status(progress)
             log("[Coordinator] 伏笔闭环门禁未通过，正文阶段未启动")
+            return
+        log("[Coordinator] 伏笔审计完成，强制复核大纲门与整本大纲总审")
+        if not prepare_all_outlines_and_book_review(end_chapter, force_review=True):
+            refresh_progress_from_status(progress)
+            log("[Coordinator] 伏笔审计后大纲复核未通过，正文阶段未启动")
             return
     log(f"[Coordinator] 单章质量门范围: 第{args.start}-{end_chapter}章；大纲提前窗口: {outline_lookahead}章")
     ok = run_serial_quality_workflow(args.start, end_chapter, outline_lookahead)
     if not ok:
+        refresh_progress_from_status(progress)
         log("[Coordinator] 单章质量门失败，流程已停止")
         return
 

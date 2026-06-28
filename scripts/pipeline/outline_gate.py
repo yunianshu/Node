@@ -24,9 +24,17 @@ _outline_review_call_counts: dict[int, int] = {}
 
 
 def outline_gate_passed(rt, chapter: int) -> bool:
+    outline_file = outline_chapter_path(rt.NOVELS_DIR, chapter)
+    review_file = rt._outline_review_file(chapter)
+    if outline_file.exists() and review_file.exists():
+        try:
+            if review_file.stat().st_mtime + 0.5 < outline_file.stat().st_mtime:
+                return False
+        except OSError:
+            return False
     min_score = float(rt.CONFIG.get("outline_reviewer", {}).get("min_score", 8.5))
     _, _, _, ok = load_outline_review_status(
-        rt._outline_review_file(chapter),
+        review_file,
         min_score,
         require_quality_gate=outline_quality_gate_config(rt)["enabled"],
     )
@@ -89,6 +97,7 @@ def run_outline_review_rounds(
     outline_file: Path,
     aggregate_file: Path,
     *,
+    repair_feedback: Path | None = None,
     child_log: Path | None = None,
     stop_event: threading.Event | None = None,
 ) -> tuple[int, dict]:
@@ -102,6 +111,8 @@ def run_outline_review_rounds(
             "--review-file",
             str(aggregate_file),
         ]
+        if repair_feedback is not None:
+            args += ["--repair-feedback", str(repair_feedback)]
         rc = rt.run_script("outline_reviewer.py", *args)
         return rc, rt._load_json_file(aggregate_file)
 
@@ -139,6 +150,8 @@ def run_outline_review_rounds(
             "--review-file",
             str(review_file),
         ]
+        if repair_feedback is not None:
+            reviewer_args += ["--repair-feedback", str(repair_feedback)]
         rt.log(
             f"[Coordinator] 第{chapter}章独立质量审查 "
             f"{round_number}/{gate_cfg['review_rounds']}，章节预算{used}/{budget}"
@@ -198,7 +211,8 @@ def outline_race_config(rt) -> dict:
     return {
         "enabled": bool(cfg.get("enabled", False)),
         "candidates": max(1, int(cfg.get("candidates", 3) or 3)),
-        "stop_on_first_pass": bool(cfg.get("stop_on_first_pass", True)),
+        "stop_on_first_pass": bool(cfg.get("stop_on_first_pass", False)),
+        "early_stop_score": float(cfg.get("early_stop_score", 9.5) or 9.5),
         "max_workers": max(1, int(cfg.get("max_workers", cfg.get("candidates", 3)) or 3)),
     }
 
@@ -224,6 +238,114 @@ def _candidate_score(result: dict) -> float:
         return float(result.get("overall_score"))
     except (TypeError, ValueError):
         return -1.0
+
+
+def _valid_feedback_score(review: dict) -> float | None:
+    status = str(review.get("status", "")).strip().lower()
+    if status and status != "completed":
+        return None
+    try:
+        return float(review.get("overall_score"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _select_candidate_feedback_reviews(reviews: list[dict], limit: int = 2) -> list[dict]:
+    valid = [
+        (index, score, review)
+        for index, review in enumerate(reviews)
+        if isinstance(review, dict)
+        and (score := _valid_feedback_score(review)) is not None
+    ]
+    if not valid:
+        return [review for review in reviews[-limit:] if isinstance(review, dict)]
+
+    best = max(valid, key=lambda item: (item[1], item[0]))
+    latest = valid[-1]
+    selected = [best]
+    if latest[0] != best[0] and limit > 1:
+        selected.append(latest)
+    return [item[2] for item in sorted(selected, key=lambda item: item[0])][-limit:]
+
+
+def _feedback_has_direct_edits(rt, feedback_file: Path | None, chapter: int) -> bool:
+    if feedback_file is None:
+        return False
+    data = rt._load_json_file(feedback_file)
+    item = data.get(str(chapter)) if isinstance(data, dict) else None
+    if not isinstance(item, dict):
+        return False
+    reviews = item.get("reviews") if isinstance(item.get("reviews"), list) else []
+    for review in reversed(reviews):
+        if not isinstance(review, dict):
+            continue
+        if _valid_feedback_score(review) is None:
+            continue
+        edits = review.get("edits")
+        if isinstance(edits, list) and edits:
+            return True
+    return False
+
+
+def _write_outline_feedback(
+    rt,
+    chapter: int,
+    reviews: list[dict],
+    round_no: int,
+    *,
+    base_feedback: Path | None = None,
+) -> Path:
+    """Write retry feedback without discarding book-review constraints."""
+    feedback_file = rt._write_gate_feedback(chapter, "outline", reviews, round_no)
+    if base_feedback is None:
+        return feedback_file
+
+    base_payload = rt._load_json_file(base_feedback)
+    generated_payload = rt._load_json_file(feedback_file)
+    key = str(chapter)
+    base_item = base_payload.get(key) if isinstance(base_payload, dict) else None
+    generated_item = generated_payload.get(key) if isinstance(generated_payload, dict) else None
+    if not isinstance(base_item, dict) or not isinstance(generated_item, dict):
+        return feedback_file
+
+    merged = dict(base_item)
+    base_analysis = base_item.get("failure_analysis")
+    generated_analysis = generated_item.get("failure_analysis")
+    base_analysis = base_analysis if isinstance(base_analysis, dict) else {}
+    generated_analysis = generated_analysis if isinstance(generated_analysis, dict) else {}
+
+    def unique_values(*groups) -> list:
+        values = []
+        for group in groups:
+            if not isinstance(group, list):
+                continue
+            for value in group:
+                if value not in values:
+                    values.append(value)
+        return values
+
+    merged["analysis_round"] = round_no
+    merged["failure_analysis"] = {
+        **generated_analysis,
+        "attempts": generated_analysis.get("attempts", len(reviews)),
+        "likely_reasons": unique_values(
+            base_analysis.get("likely_reasons"),
+            generated_analysis.get("likely_reasons"),
+        )[:12],
+        "adjustments": unique_values(
+            base_analysis.get("adjustments"),
+            generated_analysis.get("adjustments"),
+        )[:12],
+    }
+
+    base_reviews = base_item.get("reviews")
+    base_reviews = base_reviews if isinstance(base_reviews, list) else []
+    # Keep the book-review directive, the highest-scoring actionable candidate,
+    # and the latest valid candidate. This prevents later low-score or invalid
+    # reports from discarding the best cumulative repair base.
+    merged["reviews"] = base_reviews[-1:] + _select_candidate_feedback_reviews(reviews)
+    atomic_write_json(feedback_file, {key: merged})
+    return feedback_file
 
 
 def _publish_outline_candidate(rt, chapter: int, candidate_file: Path, candidate_review_file: Path) -> None:
@@ -308,6 +430,7 @@ def _run_outline_candidate(
         chapter,
         candidate_file,
         candidate_review_file,
+        repair_feedback=feedback_file,
         child_log=child_log,
         stop_event=stop_event,
     )
@@ -347,23 +470,81 @@ def _process_outline_gate_race(rt, chapter: int, *, push_on_failure: bool = True
     max_workers = min(candidates, race_cfg["max_workers"])
     reviews: list[dict] = []
     feedback_file: Path | None = initial_feedback
+    base_feedback: Path | None = initial_feedback
+
+    # Bulk-prefilled outlines must be reviewed before falling back to
+    # single-chapter candidate generation. Otherwise the coherent batch is
+    # immediately discarded and every chapter is rewritten in isolation.
+    existing_outline = outline_chapter_path(rt.NOVELS_DIR, chapter)
+    if initial_feedback is None and existing_outline.exists():
+        existing_review_file = rt._outline_review_file(chapter)
+        existing_review_data = rt._load_json_file(existing_review_file)
+        review_is_current = False
+        if existing_review_data and existing_review_file.exists():
+            try:
+                review_is_current = existing_review_file.stat().st_mtime + 0.5 >= existing_outline.stat().st_mtime
+            except OSError:
+                review_is_current = False
+        if review_is_current:
+            rt.log(f"[Coordinator] 第{chapter}章复用当前未通过审查作为定点修改反馈")
+            rc, review_data = 0, existing_review_data
+        else:
+            rt.log(f"[Coordinator] 第{chapter}章先审查批量预生成大纲")
+            rc, review_data = run_outline_review_rounds(
+                rt,
+                chapter,
+                existing_outline,
+                existing_review_file,
+            )
+        if rc == 0:
+            reviews.append(rt._review_feedback(review_data, chapter, "outline", 0, 0))
+            if outline_gate_passed(rt, chapter):
+                build_ledgers(rt.NOVELS_DIR)
+                rt.log(f"[Coordinator] 第{chapter}章批量预生成大纲审查通过")
+                return True
+            feedback_file = rt._write_gate_feedback(chapter, "outline", reviews, 1)
+            rt.log(f"[Coordinator] 第{chapter}章批量预生成大纲未通过，候选赛马将使用反馈: {feedback_file}")
+        else:
+            reviews.append({
+                "chapter": chapter,
+                "status": "outline_reviewer_failed",
+                "weaknesses": ["批量预生成大纲审查器执行失败"],
+                "suggestions": ["保留批量上下文，重新生成本章候选并再次审查"],
+            })
 
     for round_no in range(1, max_rounds + 1):
         if reviews:
-            feedback_file = rt._write_gate_feedback(chapter, "outline", reviews, round_no)
+            feedback_file = _write_outline_feedback(
+                rt,
+                chapter,
+                reviews,
+                round_no,
+                base_feedback=base_feedback,
+            )
             rt.log(f"[Coordinator] 第{chapter}章大纲赛马进入第{round_no}轮原因调整: {feedback_file}")
 
         for attempt in range(1, attempts_per_round + 1):
-            rt.log(f"[Coordinator] 第{chapter}章大纲候选赛马 {round_no}.{attempt} candidates={candidates}")
             existing_review = rt._load_json_file(rt._outline_review_file(chapter))
-            if existing_review:
+            if existing_review and not reviews and base_feedback is None:
                 reviews.append(rt._review_feedback(existing_review, chapter, "outline", round_no, attempt))
-                feedback_file = rt._write_gate_feedback(chapter, "outline", reviews, round_no)
+                feedback_file = _write_outline_feedback(
+                    rt,
+                    chapter,
+                    reviews,
+                    round_no,
+                    base_feedback=base_feedback,
+                )
                 rt.log(f"[Coordinator] 第{chapter}章读取现有大纲审查意见，反馈给候选赛马: {feedback_file}")
+            attempt_candidates = 1 if _feedback_has_direct_edits(rt, feedback_file, chapter) else candidates
+            attempt_workers = min(attempt_candidates, max_workers)
+            rt.log(
+                f"[Coordinator] 第{chapter}章大纲候选赛马 {round_no}.{attempt} "
+                f"candidates={attempt_candidates}"
+            )
 
             stop_event = threading.Event()
             accepted: dict | None = None
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            with ThreadPoolExecutor(max_workers=attempt_workers) as executor:
                 future_candidates = {
                     executor.submit(
                         _run_outline_candidate,
@@ -376,7 +557,7 @@ def _process_outline_gate_race(rt, chapter: int, *, push_on_failure: bool = True
                         len(reviews) >= 8,
                         stop_event,
                     ): candidate_no
-                    for candidate_no in range(1, candidates + 1)
+                    for candidate_no in range(1, attempt_candidates + 1)
                 }
                 pending = set(future_candidates)
                 while pending:
@@ -396,7 +577,10 @@ def _process_outline_gate_race(rt, chapter: int, *, push_on_failure: bool = True
                         reviews.append(result)
                         if not result.get("passed"):
                             continue
-                        if race_cfg["stop_on_first_pass"]:
+                        if (
+                            race_cfg["stop_on_first_pass"]
+                            and _candidate_score(result) >= race_cfg["early_stop_score"]
+                        ):
                             accepted = result
                             stop_event.set()
                             break
@@ -422,13 +606,25 @@ def _process_outline_gate_race(rt, chapter: int, *, push_on_failure: bool = True
                         "weaknesses": [f"候选发布失败: {exc}"],
                         "suggestions": ["重新生成候选并检查候选文件与正式目录写入权限"],
                     })
-                    feedback_file = rt._write_gate_feedback(chapter, "outline", reviews, round_no)
+                    feedback_file = _write_outline_feedback(
+                        rt,
+                        chapter,
+                        reviews,
+                        round_no,
+                        base_feedback=base_feedback,
+                    )
                     rt.log(f"[Coordinator] 第{chapter}章候选发布失败，下一次重试使用反馈: {feedback_file}")
                     continue
                 rt.log(f"[Coordinator] 第{chapter}章大纲候选赛马通过")
                 return True
 
-            feedback_file = rt._write_gate_feedback(chapter, "outline", reviews, round_no)
+            feedback_file = _write_outline_feedback(
+                rt,
+                chapter,
+                reviews,
+                round_no,
+                base_feedback=base_feedback,
+            )
             best = rt._failure_analysis(chapter, "outline", reviews).get("best_score")
             rt.log(f"[Coordinator] 第{chapter}章本轮候选均未通过，最佳分数={best}，下一次使用汇总反馈: {feedback_file}")
 
@@ -436,6 +632,52 @@ def _process_outline_gate_race(rt, chapter: int, *, push_on_failure: bool = True
     if push_on_failure:
         rt._push_gate_failure(chapter, "大纲初审", report)
     return False
+
+
+def prefill_missing_outlines(rt, end: int) -> bool:
+    """Generate missing outlines in coherent batches before chapter reviews."""
+    missing = [
+        chapter
+        for chapter in range(1, end + 1)
+        if not outline_chapter_path(rt.NOVELS_DIR, chapter).exists()
+    ]
+    if not missing:
+        return True
+
+    batch_size = max(
+        2,
+        int(rt.CONFIG.get("outliner", {}).get("initial_batch_size", 5) or 5),
+    )
+    batches: list[tuple[int, int]] = []
+    start = missing[0]
+    previous = missing[0]
+    for chapter in missing[1:]:
+        if chapter == previous + 1 and chapter - start + 1 <= batch_size:
+            previous = chapter
+            continue
+        batches.append((start, previous))
+        start = previous = chapter
+    batches.append((start, previous))
+
+    all_ok = True
+    for start, batch_end in batches:
+        rt.log(f"[Coordinator] 首轮按跨章批次预生成第{start}-{batch_end}章大纲")
+        rc = rt.run_script(
+            "outliner.py",
+            "--start",
+            str(start),
+            "--end",
+            str(batch_end),
+        )
+        if rc != 0:
+            all_ok = False
+            rt.log(
+                f"[Coordinator] 第{start}-{batch_end}章批量预生成失败，"
+                "后续逐章质量门将继续兜底"
+            )
+    if any(outline_chapter_path(rt.NOVELS_DIR, chapter).exists() for chapter in missing):
+        build_ledgers(rt.NOVELS_DIR)
+    return all_ok
 
 
 def process_outline_gate(rt, chapter: int, *, push_on_failure: bool = True, initial_feedback: Path | None = None) -> bool:
@@ -457,18 +699,31 @@ def process_outline_gate(rt, chapter: int, *, push_on_failure: bool = True, init
     attempts_per_round = int(rt.CONFIG.get("coordinator", {}).get("outline_attempts_per_round", 3) or 3)
     reviews: list[dict] = []
     feedback_file: Path | None = initial_feedback
+    base_feedback: Path | None = initial_feedback
 
     for round_no in range(1, max_rounds + 1):
         if reviews:
-            feedback_file = rt._write_gate_feedback(chapter, "outline", reviews, round_no)
+            feedback_file = _write_outline_feedback(
+                rt,
+                chapter,
+                reviews,
+                round_no,
+                base_feedback=base_feedback,
+            )
             rt.log(f"[Coordinator] 第{chapter}章大纲进入第{round_no}轮原因调整: {feedback_file}")
 
         for attempt in range(1, attempts_per_round + 1):
             rt.log(f"[Coordinator] 第{chapter}章大纲生成/初审 {round_no}.{attempt}")
             existing_review = rt._load_json_file(rt._outline_review_file(chapter))
-            if existing_review:
+            if existing_review and base_feedback is None:
                 reviews.append(rt._review_feedback(existing_review, chapter, "outline", round_no, attempt))
-                feedback_file = rt._write_gate_feedback(chapter, "outline", reviews, round_no)
+                feedback_file = _write_outline_feedback(
+                    rt,
+                    chapter,
+                    reviews,
+                    round_no,
+                    base_feedback=base_feedback,
+                )
                 rt.log(f"[Coordinator] 第{chapter}章读取现有大纲审查意见，反馈给本次重生成: {feedback_file}")
             rt._drop_text_artifacts(chapter, reason="大纲正在重生成")
             rt._safe_unlink(outline_chapter_path(rt.NOVELS_DIR, chapter))
@@ -487,7 +742,13 @@ def process_outline_gate(rt, chapter: int, *, push_on_failure: bool = True, init
                     "weaknesses": ["大纲生成失败、JSON解析失败或结构字段不完整"],
                     "suggestions": ["重新生成时必须补齐summary、key_events、foreshadowing、power_progression等必填字段"],
                 })
-                feedback_file = rt._write_gate_feedback(chapter, "outline", reviews, round_no)
+                feedback_file = _write_outline_feedback(
+                    rt,
+                    chapter,
+                    reviews,
+                    round_no,
+                    base_feedback=base_feedback,
+                )
                 rt.log(f"[Coordinator] 第{chapter}章大纲生成失败，下一次重生成将使用反馈: {feedback_file}")
                 continue
 
@@ -496,6 +757,7 @@ def process_outline_gate(rt, chapter: int, *, push_on_failure: bool = True, init
                 chapter,
                 outline_chapter_path(rt.NOVELS_DIR, chapter),
                 rt._outline_review_file(chapter),
+                repair_feedback=feedback_file,
             )
             if rc != 0:
                 reviews.append({
@@ -504,7 +766,13 @@ def process_outline_gate(rt, chapter: int, *, push_on_failure: bool = True, init
                     "weaknesses": ["大纲审查器执行失败"],
                     "suggestions": ["重新生成大纲并确保结构完整、剧情冲突明确、伏笔和能力进展具体"],
                 })
-                feedback_file = rt._write_gate_feedback(chapter, "outline", reviews, round_no)
+                feedback_file = _write_outline_feedback(
+                    rt,
+                    chapter,
+                    reviews,
+                    round_no,
+                    base_feedback=base_feedback,
+                )
                 rt.log(f"[Coordinator] 第{chapter}章大纲审查失败，下一次重生成将使用反馈: {feedback_file}")
                 continue
 
@@ -519,7 +787,13 @@ def process_outline_gate(rt, chapter: int, *, push_on_failure: bool = True, init
                 if push_on_failure:
                     rt._push_gate_failure(chapter, "大纲初审", report)
                 return False
-            feedback_file = rt._write_gate_feedback(chapter, "outline", reviews, round_no)
+            feedback_file = _write_outline_feedback(
+                rt,
+                chapter,
+                reviews,
+                round_no,
+                base_feedback=base_feedback,
+            )
             rt.log(f"[Coordinator] 第{chapter}章大纲未通过，下一次重生成将使用反馈: {feedback_file}")
 
     report = rt._write_failure_report(chapter, "outline", reviews)
@@ -624,20 +898,70 @@ def _outline_book_review_report(rt) -> dict:
 
 
 def _global_outline_feedback(rt, chapter: int, issues: list[dict], round_no: int) -> Path:
-    relevant = []
-    for issue in issues:
-        chapters = issue.get("chapters", [])
-        if isinstance(chapters, list) and chapter in chapters:
-            relevant.append(issue)
-    reasons = [str(item.get("detail", "")).strip() for item in relevant if item.get("detail")]
-    suggestions = [str(item.get("suggestion", "")).strip() for item in relevant if item.get("suggestion")]
+    relevant = [issue for issue in issues if isinstance(issue, dict)]
+    repair_items = []
+    for index, item in enumerate(relevant, start=1):
+        problem = str(item.get("detail", "")).strip()
+        acceptance = str(item.get("suggestion", "")).strip() or problem
+        if not problem and not acceptance:
+            continue
+        repair_items.append({
+            "id": f"R{index}",
+            "severity": item.get("severity", "major"),
+            "chapters": item.get("chapters", []),
+            "category": item.get("category", ""),
+            "problem": problem[:500],
+            "evidence": str(item.get("evidence", "")).strip()[:400],
+            "acceptance": acceptance[:500],
+        })
+    reasons = [
+        f"{item['id']}: {item['problem']}"
+        for item in repair_items
+        if item.get("problem")
+    ]
+    suggestions = [
+        f"{item['id']}: {item['acceptance']}"
+        for item in repair_items
+        if item.get("acceptance")
+    ]
+    anchor_numbers = sorted({
+        value
+        for issue in relevant
+        for value in issue.get("chapters", [])
+        if isinstance(value, int) and value < chapter
+    })
+    fact_anchors = []
+    for anchor in anchor_numbers:
+        data = rt._load_json_file(outline_chapter_path(rt.NOVELS_DIR, anchor))
+        if not data:
+            continue
+        fact_anchors.append({
+            "chapter": anchor,
+            "role": "earlier_fact_anchor",
+            "title": data.get("title", ""),
+            "time_progression": data.get("time_progression", ""),
+            "location": data.get("location", ""),
+            "characters_involved": data.get("characters_involved", []),
+            "summary": str(data.get("summary", ""))[:260],
+            "key_events": data.get("key_events", [])[:5] if isinstance(data.get("key_events"), list) else data.get("key_events", ""),
+            "foreshadowing": str(data.get("foreshadowing", ""))[:180],
+            "chapter_hook": str(data.get("chapter_hook", ""))[:180],
+        })
     payload = {
         str(chapter): {
             "chapter": chapter,
             "gate": "outline_book_review",
             "analysis_round": round_no,
+            "repair_policy": (
+                "最早章节是已确认事实锚点。本章只能兼容锚点，"
+                "不得通过改写、否定或重复锚点事件来消除冲突。"
+                "逐条完成 repair_items；每条必须有明确剧情事件闭环。"
+            ),
+            "fact_anchors": fact_anchors,
+            "repair_items": repair_items[:8],
             "failure_analysis": {
-                "attempts": len(relevant),
+                "attempts": 0,
+                "issue_count": len(relevant),
                 "likely_reasons": reasons[:8],
                 "adjustments": suggestions[:8] or reasons[:8],
             },
@@ -656,28 +980,94 @@ def _global_outline_feedback(rt, chapter: int, issues: list[dict], round_no: int
     return path
 
 
+def _assign_repair_issues(
+    issues: list[dict],
+    *,
+    total: int,
+    limit: int,
+) -> dict[int, list[dict]]:
+    """Assign each cross-chapter issue to later chapters only.
+
+    Rewriting every chapter named by an issue removes all stable facts and
+    causes the repair loop to chase its own changes. The earliest referenced
+    chapter is therefore retained as the canonical anchor.
+    """
+    assigned: dict[int, list[dict]] = {}
+    severity_order = {"critical": 0, "major": 1, "minor": 2}
+    ordered = sorted(
+        (item for item in issues if isinstance(item, dict)),
+        key=lambda item: severity_order.get(str(item.get("severity", "")).lower(), 3),
+    )
+    for issue in ordered:
+        chapters = sorted({
+            value
+            for value in issue.get("chapters", [])
+            if isinstance(value, int) and 1 <= value <= total
+        })
+        issue_text = " ".join(
+            str(issue.get(field, ""))
+            for field in ("detail", "evidence", "suggestion")
+        )
+        explicit_chapters = {
+            int(value)
+            for value in re.findall(
+                r"(?:第\s*|ch(?:apter)?\s*)(\d+)\s*章?",
+                issue_text,
+                flags=re.I,
+            )
+        }
+        explicit_in_range = sorted(set(chapters) & explicit_chapters)
+        if len(explicit_in_range) >= 2:
+            chapters = explicit_in_range
+        if not chapters:
+            continue
+        targets = chapters if len(chapters) == 1 else chapters[1:]
+        for chapter in targets:
+            assigned.setdefault(chapter, []).append(issue)
+
+    if len(assigned) <= limit:
+        return {chapter: items[:1] for chapter, items in assigned.items()}
+    selected = sorted(
+        assigned,
+        key=lambda chapter: (
+            min(
+                severity_order.get(str(item.get("severity", "")).lower(), 3)
+                for item in assigned[chapter]
+            ),
+            chapter,
+        ),
+    )[:limit]
+    return {chapter: assigned[chapter][:1] for chapter in sorted(selected)}
+
+
 def repair_outline_book_review(rt, round_no: int) -> bool:
     report = _outline_book_review_report(rt)
     issues = report.get("issues", []) if isinstance(report.get("issues"), list) else []
-    chapters = []
-    for issue in issues:
-        values = issue.get("chapters", []) if isinstance(issue, dict) else []
-        if isinstance(values, list):
-            chapters.extend(value for value in values if isinstance(value, int))
     total = int(rt.CONFIG["total_chapters"])
     limit = int(rt.CONFIG.get("outline_book_reviewer", {}).get("max_repair_chapters", 80) or 80)
-    targets = sorted({chapter for chapter in chapters if 1 <= chapter <= total})[:max(1, limit)]
+    assigned = _assign_repair_issues(issues, total=total, limit=max(1, limit))
+    targets = sorted(assigned)
     if not targets:
-        rt.log("[Coordinator] 整本大纲总审未提供可定位章节，无法自动修复")
-        return False
+        fallback = []
+        for item in report.get("failed_ranges", []) if isinstance(report.get("failed_ranges"), list) else []:
+            match = re.search(r"\d+", str(item))
+            if match:
+                chapter = int(match.group(0))
+                if 1 <= chapter <= total:
+                    fallback.append(chapter)
+        targets = sorted(set(fallback))[:max(1, limit)] or [1]
+        assigned = {chapter: issues for chapter in targets}
+        rt.log(f"[Coordinator] 整本大纲总审未提供精确章节，使用兜底修复章节: {targets}")
     unlocked = unlock_chapters(rt.NOVELS_DIR, targets)
     if unlocked:
         rt.log(f"[Coordinator] 整本审查修复前已解锁批次: {unlocked}")
 
-    rt.log(f"[Coordinator] 整本大纲总审第{round_no}轮修复，重生成章节: {targets}")
+    rt.log(
+        f"[Coordinator] 整本大纲总审第{round_no}轮定向修复章节: {targets}；"
+        "每个问题保留最早章节作为事实锚点"
+    )
     for chapter in targets:
-        feedback = _global_outline_feedback(rt, chapter, issues, round_no)
-        drop_outline_artifacts(rt, chapter)
+        feedback = _global_outline_feedback(rt, chapter, assigned.get(chapter, []), round_no)
         if not process_outline_gate(rt, chapter, push_on_failure=False, initial_feedback=feedback):
             rt.log(f"[Coordinator] 第{chapter}章应用整本总审反馈后仍未通过逐章大纲门")
             return False
@@ -686,6 +1076,10 @@ def repair_outline_book_review(rt, round_no: int) -> bool:
 
 def prepare_all_outlines_and_book_review(rt, end: int, force_review: bool = False) -> bool:
     rt.log(f"[Coordinator] 全量大纲优先模式：先完成第1-{end}章逐章大纲质量门")
+    if rt.run_script("outliner.py", "--volume-only") != 0:
+        rt.log("[Coordinator] Outliner 卷级规划生成或校验失败")
+        return False
+    prefill_missing_outlines(rt, end)
     for chapter in range(1, end + 1):
         if not process_outline_gate(rt, chapter):
             return False
@@ -697,5 +1091,9 @@ def prepare_all_outlines_and_book_review(rt, end: int, force_review: bool = Fals
         if not repair_outline_book_review(rt, round_no):
             return False
         if run_outline_book_review(rt, force=True):
+            if rt.run_script("outliner.py", "--volume-only", "--force-volume") != 0:
+                rt.log("[Coordinator] 整本修复通过，但卷纲刷新失败")
+                return False
+            rt.log("[Coordinator] 整本修复通过，已按最新单章事实刷新卷纲")
             return True
     return False

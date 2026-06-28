@@ -10,12 +10,32 @@ from pathlib import Path
 from core.workflow_state import load_review_status, read_text_length, scan_one_chapter
 
 
-def draft_min_score(rt) -> float:
-    return float(rt.CONFIG.get("reviewer", {}).get("min_score", 8.5))
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _atomic_copy_text(source: Path, target: Path) -> None:
+    _atomic_write_text(target, source.read_text(encoding="utf-8", errors="ignore"))
+
+
+def draft_min_score(rt, chapter: int | None = None) -> float:
+    """返回正文通过门禁的最低评分。
+
+    G10 黄金三章专项门禁：第1-3章使用更高阈值（golden_chapter_min_score），
+    因为前3章决定全书追读率。后续章节使用标准 min_score。
+    """
+    base = float(rt.CONFIG.get("reviewer", {}).get("min_score", 8.5))
+    if chapter is not None and chapter <= 3:
+        golden = float(rt.CONFIG.get("reviewer", {}).get("golden_chapter_min_score", 9.0))
+        return max(base, golden)
+    return base
 
 
 def draft_gate_passed(rt, chapter: int) -> bool:
-    _, _, _, ok = load_review_status(rt._review_file(chapter), draft_min_score(rt))
+    _, _, _, ok = load_review_status(rt._review_file(chapter), draft_min_score(rt, chapter))
     return ok
 
 
@@ -24,8 +44,7 @@ def promote_draft_to_final(rt, chapter: int) -> bool:
     target = rt._final_file(chapter)
     if not source.exists():
         return False
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(source.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8")
+    _atomic_copy_text(source, target)
     rt.log(f"[Coordinator] 第{chapter}章初稿审查通过，已写入终稿 -> {target}")
     return True
 
@@ -36,7 +55,8 @@ def draft_race_config(rt) -> dict:
         "enabled": bool(cfg.get("enabled", False)),
         "candidates": max(1, int(cfg.get("candidates", 3) or 3)),
         "max_workers": max(1, int(cfg.get("max_workers", cfg.get("candidates", 3)) or 3)),
-        "stop_on_first_pass": bool(cfg.get("stop_on_first_pass", True)),
+        "stop_on_first_pass": bool(cfg.get("stop_on_first_pass", False)),
+        "early_stop_score": float(cfg.get("early_stop_score", 9.5) or 9.5),
     }
 
 
@@ -137,7 +157,7 @@ def _run_draft_candidate(
 
     review_data = rt._load_json_file(candidate_review_file)
     result = _candidate_feedback(rt, review_data, chapter, candidate_no, round_no, attempt)
-    _, _, _, ok = load_review_status(candidate_review_file, draft_min_score(rt))
+    _, _, _, ok = load_review_status(candidate_review_file, draft_min_score(rt, chapter))
     result["passed"] = ok
     result["candidate_file"] = str(draft_file)
     result["review_file"] = str(candidate_review_file)
@@ -148,16 +168,14 @@ def _publish_draft_candidate(rt, chapter: int, draft_file: Path, review_file: Pa
     exists, words, text_ok = read_text_length(draft_file)
     if not exists or not text_ok:
         return False, f"candidate_text_quality_failed words={words}"
-    _, status, score, review_ok = load_review_status(review_file, draft_min_score(rt))
+    _, status, score, review_ok = load_review_status(review_file, draft_min_score(rt, chapter))
     if not review_ok:
-        return False, f"candidate_review_failed status={status} score={score} min_score={draft_min_score(rt):g}"
+        return False, f"candidate_review_failed status={status} score={score} min_score={draft_min_score(rt, chapter):g}"
 
     target_draft = rt._draft_file(chapter)
     target_review = rt._review_file(chapter)
-    target_draft.parent.mkdir(parents=True, exist_ok=True)
-    target_review.parent.mkdir(parents=True, exist_ok=True)
-    target_draft.write_text(draft_file.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8")
-    target_review.write_text(review_file.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8")
+    _atomic_copy_text(draft_file, target_draft)
+    _atomic_copy_text(review_file, target_review)
     promote_draft_to_final(rt, chapter)
     if not final_ready(rt, chapter):
         return False, "final_quality_failed"
@@ -223,7 +241,10 @@ def _process_draft_gate_race(rt, chapter: int) -> bool:
                         reviews.append(result)
                         if not result.get("passed"):
                             continue
-                        if race_cfg["stop_on_first_pass"]:
+                        if (
+                            race_cfg["stop_on_first_pass"]
+                            and _candidate_score(result) >= race_cfg["early_stop_score"]
+                        ):
                             accepted = result
                             stop_event.set()
                             break
@@ -280,23 +301,27 @@ def _run_polish_only(rt, chapter: int, candidate_id: int, temperature: float) ->
 
 
 def _review_candidate(rt, chapter: int, candidate_id: int) -> tuple[float, dict]:
-    main_draft = rt._draft_file(chapter)
     cand_draft = rt._candidate_draft_file(chapter, candidate_id)
     cand_review = rt._candidate_review_file(chapter, candidate_id)
-    main_review = rt._review_file(chapter)
 
     if not cand_draft.exists():
         return 0.0, {}
 
-    main_draft.write_text(cand_draft.read_text(encoding="utf-8"), encoding="utf-8")
-    rt._safe_unlink(main_review)
-    rc = rt.run_script("reviewer.py", "--chapter", str(chapter))
-    if rc != 0 or not main_review.exists():
+    rt._safe_unlink(cand_review)
+    rc = rt.run_script(
+        "reviewer.py",
+        "--chapter",
+        str(chapter),
+        "--chapter-file",
+        str(cand_draft),
+        "--review-file",
+        str(cand_review),
+    )
+    if rc != 0 or not cand_review.exists():
         rt.log(f"[Coordinator] 第{chapter}章 Polisher 候选{candidate_id} 评分失败")
         return 0.0, {}
 
-    review_data = rt._load_json_file(main_review)
-    cand_review.write_text(main_review.read_text(encoding="utf-8"), encoding="utf-8")
+    review_data = rt._load_json_file(cand_review)
     score = rt._score_from_review(review_data)
     rt.log(f"[Coordinator] 第{chapter}章 Polisher 候选{candidate_id} 评分: {score}")
     return score, review_data
@@ -306,7 +331,7 @@ def _try_polish_race(rt, chapter: int, round_no: int, attempt: int, reviews: lis
     race_cfg = rt.CONFIG.get("polisher", {}).get("race", {})
     candidates = int(race_cfg.get("candidates", 3) or 3)
     max_workers = int(race_cfg.get("max_workers", 3) or 3)
-    stop_on_first_pass = bool(race_cfg.get("stop_on_first_pass", True))
+    stop_on_first_pass = bool(race_cfg.get("stop_on_first_pass", False))
     base_temp = float(rt.CONFIG.get("polisher", {}).get("temperature", 0.2))
     temps = [round(max(0.0, min(1.0, base_temp + (i - candidates // 2) * 0.05)), 2) for i in range(1, candidates + 1)]
 
@@ -349,7 +374,7 @@ def _try_polish_race(rt, chapter: int, round_no: int, attempt: int, reviews: lis
             continue
         results.append((i, score, review_data))
         reviews.append(rt._review_feedback(review_data, chapter, "draft", round_no, attempt, label=f"polish_race_{i}"))
-        if stop_on_first_pass and score >= draft_min_score(rt):
+        if stop_on_first_pass and score >= draft_min_score(rt, chapter):
             break
 
     if not results:
@@ -361,9 +386,9 @@ def _try_polish_race(rt, chapter: int, round_no: int, attempt: int, reviews: lis
     cand_draft = rt._candidate_draft_file(chapter, best_cand_id)
     cand_review = rt._candidate_review_file(chapter, best_cand_id)
     if cand_draft.exists():
-        main_draft.write_text(cand_draft.read_text(encoding="utf-8"), encoding="utf-8")
+        _atomic_copy_text(cand_draft, main_draft)
     if cand_review.exists():
-        main_review.write_text(cand_review.read_text(encoding="utf-8"), encoding="utf-8")
+        _atomic_copy_text(cand_review, main_review)
 
     rt.log(f"[Coordinator] 第{chapter}章 Polisher 赛马模式最优候选: {best_cand_id}，评分 {best_cand_score}")
 
@@ -381,7 +406,7 @@ def _try_polish_race(rt, chapter: int, round_no: int, attempt: int, reviews: lis
     if best_cand_score <= best_score:
         rt.log(f"[Coordinator] 第{chapter}章 Polisher 赛马模式最优候选 {best_cand_score} 分未超过历史最佳 {best_score} 分，回退到最佳草稿")
         restored_score = rt._restore_best_draft(chapter)
-        if restored_score >= draft_min_score(rt):
+        if restored_score >= draft_min_score(rt, chapter):
             return promote_draft_to_final(rt, chapter)
         return False
 
@@ -413,7 +438,7 @@ def _try_polish_pass(rt, chapter: int, round_no: int, attempt: int, reviews: lis
         rt.log(f"[Coordinator] 第{chapter}章评分 {last_score}，触发 Polisher 精修（第{polish_attempt}次）")
         if rt.run_script("polisher.py", "--chapter", str(chapter)) != 0:
             restored_score = rt._restore_best_draft(chapter)
-            if restored_score >= draft_min_score(rt):
+            if restored_score >= draft_min_score(rt, chapter):
                 return promote_draft_to_final(rt, chapter)
             return False
         rt._safe_unlink(rt._review_file(chapter))
@@ -431,7 +456,7 @@ def _try_polish_pass(rt, chapter: int, round_no: int, attempt: int, reviews: lis
         if new_score <= last_score:
             rt.log(f"[Coordinator] 第{chapter}章 Polisher 后分数未提升（{last_score} -> {new_score}），回退到最佳草稿 {best_score} 分")
             restored_score = rt._restore_best_draft(chapter)
-            if restored_score >= draft_min_score(rt):
+            if restored_score >= draft_min_score(rt, chapter):
                 return promote_draft_to_final(rt, chapter)
             return False
         last_score = new_score
@@ -460,7 +485,7 @@ def process_draft_gate(rt, chapter: int) -> bool:
         if enable_polisher and rt._draft_file(chapter).exists() and rt._review_file(chapter).exists():
             existing_review = rt._load_json_file(rt._review_file(chapter))
             existing_score = rt._score_from_review(existing_review)
-            if polish_threshold <= existing_score < draft_min_score(rt):
+            if polish_threshold <= existing_score < draft_min_score(rt, chapter):
                 rt.log(f"[Coordinator] 第{chapter}章已有 {existing_score} 分底稿，跳过 writer 重写，直接 Polisher 精修")
                 if _try_polish_pass(rt, chapter, round_no, 1, reviews):
                     return promote_draft_to_final(rt, chapter)
@@ -496,7 +521,7 @@ def process_draft_gate(rt, chapter: int) -> bool:
                     return promote_draft_to_final(rt, chapter)
 
     best_score = rt._load_best_score(chapter)
-    if best_score >= draft_min_score(rt):
+    if best_score >= draft_min_score(rt, chapter):
         rt.log(f"[Coordinator] 第{chapter}章最终回退到历史最佳草稿 {best_score} 分并通过")
         rt._restore_best_draft(chapter)
         return promote_draft_to_final(rt, chapter)

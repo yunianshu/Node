@@ -308,7 +308,7 @@ def _selftest() -> None:
     r1 = detect_ai_flavor(natural)
     assert r1["ai_flavor_score"] >= 8.5, r1
     ai_heavy = (
-        "苏长空不仅感受到了磅礴的力量，而且看到了璀璨的光芒，更明白了恐怖的真相。\n\n"
+        "他不仅感受到了磅礴的力量，而且看到了璀璨的光芒，更明白了恐怖的真相。\n\n"
         "他心中涌起一股暖流。他意识到，命运亘古不变。\n\n"
         "故事才刚刚开始。"
     )
