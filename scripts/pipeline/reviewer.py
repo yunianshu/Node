@@ -325,6 +325,59 @@ def detect_relationship_obligation(chapter_content: str, chapter_number: int) ->
     }
 
 
+def detect_scene_realization(chapter_content: str, chapter_outline: dict) -> dict:
+    """本地检测正文是否兑现大纲 scenes 的感官锚点、潜台词和出口钩子。
+
+    非硬门禁：用 bigram 软匹配避免误杀同义改写。scene_realization_rate < 0.5 时
+    由上层降 human_warmth 分并触发重写轮深化。
+    """
+    if not isinstance(chapter_outline, dict):
+        return {"required": False, "rate": None, "scenes": []}
+    scenes = chapter_outline.get("scenes")
+    if not isinstance(scenes, list) or not scenes:
+        return {"required": False, "rate": None, "scenes": []}
+    text = chapter_content or ""
+    subtext_markers = ("没说", "沉默", "欲言又止", "别告诉", "对不起", "谢谢", "别怕", "算了", "低声", "移开目光")
+    realized_count = 0
+    scene_results = []
+    for scene_idx, scene in enumerate(scenes):
+        if not isinstance(scene, dict):
+            continue
+        anchor = str(scene.get("sensory_anchor", "")).strip()
+        anchor_terms = _anchor_terms(anchor)
+        anchor_hits = [t for t in anchor_terms if t in text]
+        subtext = str(scene.get("subtext_beat", "")).strip()
+        subtext_terms = _anchor_terms(subtext)
+        subtext_hits = [t for t in subtext_terms if t in text]
+        subtext_marker_hits = [m for m in subtext_markers if m in text]
+        exit_hook = str(scene.get("exit_hook", "")).strip()
+        exit_terms = _anchor_terms(exit_hook)
+        exit_hits = [t for t in exit_terms if t in text]
+        anchor_ok = len(anchor_hits) >= max(1, min(2, len(anchor_terms) // 3)) if anchor_terms else False
+        subtext_ok = bool(subtext_hits) or bool(subtext_marker_hits)
+        exit_ok = bool(exit_hits)
+        realized = anchor_ok and (subtext_ok or exit_ok)
+        if realized:
+            realized_count += 1
+        scene_results.append({
+            "index": scene_idx,
+            "position": str(scene.get("position", "")),
+            "realized": realized,
+            "anchor_hits": anchor_hits[:6],
+            "subtext_hits": subtext_hits[:4],
+            "exit_hits": exit_hits[:4],
+        })
+    rate = round(realized_count / len(scene_results), 3) if scene_results else 0.0
+    return {
+        "required": True,
+        "rate": rate,
+        "realized_count": realized_count,
+        "total_scenes": len(scene_results),
+        "scenes": scene_results,
+        "needs_attention": rate < 0.5,
+    }
+
+
 def log(msg: str):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{timestamp}] {msg}"
@@ -576,6 +629,9 @@ def review_chapter(
     local_analysis["relationship_obligation_detection"] = detect_relationship_obligation(
         chapter_content, chapter_number
     )
+    local_analysis["scene_realization_detection"] = detect_scene_realization(
+        chapter_content, chapter_outline
+    )
 
     content_sample = chapter_content[:1500]
     mid_start = max(0, len(chapter_content) // 2 - 500)
@@ -739,6 +795,7 @@ def review_chapter(
 24. 是否有作者旁注式总结（“读者能看见”“这一章往前挪”“权力最怕的是”等）替代现场动作？
 25. 是否存在套路化描写（标准战斗模板、标准解谜流程、配角当解说员）？
 26. 如果我是第一次读这本书的读者，读完这章后会不会立刻想打开下一章？
+27. 本章是否按大纲 scenes 逐场兑现：每个场景的 sensory_anchor（可触摸物象）、subtext_beat（潜台词）、exit_hook（出口钩子）是否在正文中落地？兑现率过低视为内容单薄。
 
 要求：
 1. 评分要冷酷客观。不要给辛苦分，不要给"还行"分。9分意味着"非常想读下一章"，8分意味着"看完了，还行"。
@@ -756,7 +813,8 @@ def review_chapter(
 13. 若 local_analysis.character_presence.absent 非空，verdict 不得为"通过"，只挑最关键缺失角色在 continuity_issues 和 edits 中处理。
 14. 若 local_analysis.human_warmth_detection.passed=false，verdict 不得为"通过"，必须优先修正文中未兑现 human_anchor、缺少生活压力或关系牵挂的问题。
 15. 若 local_analysis.relationship_obligation_detection.required=true 且 passed=false，verdict 不得为"通过"，必须优先修复上一章延续下来的关系任务：让对应人物、压力、潜台词对白、照料/回避/补偿动作和关系结果进入正文。
-16. 若 local_analysis.origin_fact_reference_detection.needs_attention=true，说明正文没有命中 origin/facts 事实素材；这不是单独硬门槛，但应优先在 weaknesses/suggestions 中指出，避免只模仿 style 风格而不遵守事实。"""
+16. 若 local_analysis.origin_fact_reference_detection.needs_attention=true，说明正文没有命中 origin/facts 事实素材；这不是单独硬门槛，但应优先在 weaknesses/suggestions 中指出，避免只模仿 style 风格而不遵守事实。
+17. 若 local_analysis.scene_realization_detection.needs_attention=true，verdict 不得为"通过"，必须在 weaknesses/suggestions 中指出哪些 scene 未兑现，并在 edits 中定点补 sensory_anchor 或潜台词对白。"""
 
     log(f"[Reviewer] 正在审查第{chapter_number}章...")
     start_time = time.time()
@@ -855,6 +913,16 @@ def review_chapter(
                 hard_gate_reasons.append(prefix + "：" + "、".join(str(item) for item in issues[:3]))
             else:
                 hard_gate_reasons.append(prefix)
+        scene_realization = local_analysis.get("scene_realization_detection") or {}
+        if (
+            isinstance(scene_realization, dict)
+            and scene_realization.get("required") is True
+            and scene_realization.get("needs_attention") is True
+        ):
+            scene_rate = scene_realization.get("rate")
+            hard_gate_reasons.append(
+                f"本地场景兑现率过低({scene_rate})：scenes 的 sensory_anchor/subtext_beat/exit_hook 未充分落地正文"
+            )
 
         if isinstance(score, (int, float)):
             if hard_gate_reasons and score >= review_min_score:
