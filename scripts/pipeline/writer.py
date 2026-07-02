@@ -659,6 +659,86 @@ def _apply_incremental_edits(
     return new_text
 
 
+def _deepen_rewrite(
+    chapter_number: int,
+    first_pass: str,
+    chapter_outline: dict,
+    world: dict,
+    ai_flavor_detection: dict,
+) -> str:
+    """重写轮轻量二轮深化：局部补感官物象、潜台词、余韵，禁止改主线。
+
+    受 similarity >= 0.70 约束，不达标则返回 first_pass（丢弃深化结果）。
+    """
+    scenes = chapter_outline.get("scenes") if isinstance(chapter_outline, dict) else None
+    if not isinstance(scenes, list) or not scenes:
+        return first_pass
+    palette = (world.get("quality_bible") or {}).get("sensory_palette") if isinstance(world, dict) else None
+    human_anchor = str(chapter_outline.get("human_anchor", "")).strip() if isinstance(chapter_outline, dict) else ""
+
+    scenes_text = "\n".join(
+        f"- 场景{s.get('position', '')}：物象={s.get('sensory_anchor', '')}；潜台词={s.get('subtext_beat', '')}；出口={s.get('exit_hook', '')}"
+        for s in scenes if isinstance(s, dict)
+    )
+    palette_text = json.dumps(palette, ensure_ascii=False) if isinstance(palette, dict) else "（quality_bible.sensory_palette 缺失，自行选用室内/室外/身体/物件/声音气味物象）"
+    ai_issues = ai_flavor_detection.get("issues", []) if isinstance(ai_flavor_detection, dict) else []
+    ai_hint = ""
+    if ai_issues:
+        ai_hint = "\n## 本地AI味检测指出的缺失（针对性补齐）\n" + "\n".join(
+            f"- {it.get('type', '')}: {it.get('paragraph', '')}" for it in ai_issues[:4] if isinstance(it, dict)
+        )
+
+    system = (
+        "你是一位资深小说编辑，只做局部深化，绝不改主线、不换场景、不删事件。"
+        "你的任务是把已有正文在感官、潜台词和余韵上补厚，让它更像9分神作。"
+    )
+    prompt = f"""以下第{chapter_number}章正文已通过第一轮重写，请在**不改变主线、场景、事件和人物动作**的前提下，做局部深化：
+
+## 本章场景蓝图（每个场景补一个可触摸物象 + 一句潜台词 + 出口余韵）
+{scenes_text}
+
+## 感官物象分类库（物象从对应类别取材）
+{palette_text}
+
+## 本章烟火气锚点
+{human_anchor or "（无）"}
+{ai_hint}
+
+## 深化规则（严格遵守）
+1. 为每个场景补一个可触摸物象（气味、声音、身体细节或旧物），必须反映人物处境，不得堆砌风景。
+2. 把至少一句对白改成潜台词（嘴硬、转移话题、欲言又止、说反话），禁止把动机说透。
+3. 在不可逆动作之后加1-2个现场反应作为余韵（对手停顿、旁人吸气、灯光偏移、物件声响）。
+4. 针对 AI 味检测指出的缺失类别定点补齐。
+5. **禁止改主线、禁止换场景、禁止删事件、禁止大段重写**。改动总量不得超过全文30%。
+6. 保持字数在原有 ±10% 范围内。
+
+直接输出深化后的完整正文，不要任何解释：
+
+{first_pass}"""
+
+    log(f"[Writer] 第{chapter_number}章重写轮启动二轮深化...")
+    start = time.time()
+    deepened = call_mmx(system, prompt, max_tokens=4096, temperature=0.4)
+    elapsed = time.time() - start
+    if not deepened or not deepened.strip():
+        log(f"[Writer] 第{chapter_number}章二轮深化返回空，保留第一轮（耗时{elapsed:.1f}s）")
+        return first_pass
+    deepened = deepened.strip()
+    if deepened.startswith("```"):
+        lines = deepened.split("\n")
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        deepened = "\n".join(lines).strip()
+    sim = similarity(first_pass, deepened)
+    log(f"[Writer] 第{chapter_number}章二轮深化相似度 {sim:.2%}（耗时{elapsed:.1f}s）")
+    if sim < 0.70:
+        log(f"[Writer] 第{chapter_number}章二轮深化相似度过低({sim:.2%}<70%)，丢弃保留第一轮")
+        return first_pass
+    return deepened
+
+
 def generate_chapter(
     chapter_number: int,
     retry: int = 0,
@@ -1180,6 +1260,19 @@ def generate_chapter(
 
     # 自动压缩：如果超过 max_words，调用压缩 agent
     content = _auto_compress(content, chapter_number, max_words, target_min, chapter_outline)
+
+    # 重写轮轻量二轮深化（仅在重写路径且配置开启时）
+    deepen_enabled = bool(CONFIG.get("writer", {}).get("deepen_rewrite", True))
+    if is_rewrite and deepen_enabled and content:
+        try:
+            ai_detection = {}
+            if isinstance(review_data, dict):
+                ai_detection = (review_data.get("local_analysis") or {}).get("ai_flavor_detection") or {}
+            content = _deepen_rewrite(chapter_number, content, chapter_outline, world, ai_detection)
+            # 深化后可能再次超长，复用压缩
+            content = _auto_compress(content, chapter_number, max_words, target_min, chapter_outline)
+        except Exception as _de:
+            log(f"[Writer] 第{chapter_number}章二轮深化异常（保留第一轮）: {_de}")
 
     word_count = len(content)
     if not is_valid_chapter_text(content):
