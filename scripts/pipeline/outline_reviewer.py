@@ -32,6 +32,7 @@ from core.outline_quality_gate import (
     detect_adjacent_event_repetition,
     detect_beat_runs,
     detect_cast_violations,
+    detect_scene_density_issues,
 )
 from core.json_repair import fix_inner_quotes, fix_truncated_json
 
@@ -347,6 +348,7 @@ def review_outline(
         and chapter_number == max(item.get("chapters", []))
     ]
     adjacent_repetition_issue = detect_adjacent_event_repetition(prev_outline, outline)
+    scene_density_issue = detect_scene_density_issues(outline)
     repair_requirements = _load_repair_requirements(repair_feedback_file, chapter_number)
 
     world = load_json(NOVELS_DIR / "world.json")
@@ -492,7 +494,8 @@ def review_outline(
     "midpoint_reversal": {{"passed": true, "evidence": "中段如何改变原行动方案，60字以内"}},
     "human_warmth": {{"passed": true, "evidence": "本章具体生活压力、关系牵挂或潜台词如何参与剧情，60字以内"}},
     "content_richness": {{"passed": true, "evidence": "本章除外部事件外，至少哪一层关系/生活/秘密/规则内容被推进，60字以内"}},
-    "strong_hook": {{"passed": true, "evidence": "章末正在发生的具体危机或反转，60字以内"}}{repair_gate_schema}
+    "strong_hook": {{"passed": true, "evidence": "章末正在发生的具体危机或反转，60字以内"}},
+    "scene_design": {{"passed": true, "evidence": "scenes 数组3-5个、五字段齐全、sensory_anchor不重复且取自分类库、human_anchor落进至少一个场景，60字以内"}}{repair_gate_schema}
   }}
 }}
 
@@ -600,6 +603,7 @@ def review_outline(
         "human_warmth",
         "content_richness",
         "strong_hook",
+        "scene_design",
     )
     if repair_requirements:
         required_gates += ("repair_feedback_closed",)
@@ -915,6 +919,26 @@ def review_outline(
                 review_data["overall_score"] = round(min(score, min_score - 0.1), 2)
             review_data["verdict"] = "需修改"
             review_data["beat_distribution_issue"] = fi
+        if scene_density_issue:
+            scene_evi = "；".join(scene_density_issue["issues"])
+            review_data.setdefault("continuity_issues", [])[:] = [scene_evi]
+            review_data.setdefault("weaknesses", [])[:] = [scene_evi]
+            review_data.setdefault("suggestions", [])[:] = [scene_density_issue["suggestion"]]
+            scene_edits = review_data.setdefault("edits", [])
+            if isinstance(scene_edits, list) and not any(
+                isinstance(edit, dict) and edit.get("field") == "scenes"
+                for edit in scene_edits
+            ):
+                scene_edits[:] = [{
+                    "field": "scenes",
+                    "action": "replace",
+                    "value": "3-5个场景对象，每个含position/objective/conflict/sensory_anchor/subtext_beat/exit_hook",
+                }]
+            score = review_data.get("overall_score")
+            if isinstance(score, (int, float)):
+                review_data["overall_score"] = round(min(score, min_score - 0.1), 2)
+            review_data["verdict"] = "需修改"
+            review_data["scene_density_issue"] = scene_density_issue
         if adjacent_repetition_issue:
             evidence = adjacent_repetition_issue["evidence"]
             suggestion = adjacent_repetition_issue["suggestion"]
@@ -996,6 +1020,7 @@ def review_outline(
             and repair_feedback_closed
             and not beat_flat_issues
             and not adjacent_repetition_issue
+            and not scene_density_issue
             and not continuity_hard_failures
             and not (cast_violations["polluted"] or cast_violations["unregistered"])
         )
