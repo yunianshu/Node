@@ -247,6 +247,9 @@ def _story_architecture_context(
             if book_repair
             else "卷纲是单章设计的上位结构约束。"
         ),
+        "sensory_palette": (world.get("quality_bible") or {}).get("sensory_palette")
+        if isinstance(world.get("quality_bible"), dict)
+        else None,
     }
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
@@ -950,6 +953,7 @@ REQUIRED_CHAPTER_FIELDS = (
     "main_antagonist",
     "time_progression",
     "main_arc_link",
+    "scenes",
 )
 
 # Save the Cat 15 拍 + 网文扩展节拍。story_beat 必须取以下值之一。
@@ -1214,6 +1218,37 @@ def _validate_chapter_outline(chapter: dict, expected_number: int | None = None)
     except (TypeError, ValueError):
         issues.append("word_count_target必须是数字")
 
+    # scenes 场景级设计校验（向后兼容：旧章节缺 scenes 由 REQUIRED_CHAPTER_FIELDS 已报"缺少字段"，
+    # 这里校验字段质量）
+    scenes = chapter.get("scenes")
+    if isinstance(scenes, str):
+        issues.append("scenes 必须是数组，不能是字符串")
+    elif not isinstance(scenes, list):
+        issues.append("scenes 缺失或不是数组")
+    else:
+        if len(scenes) < 3 or len(scenes) > 5:
+            issues.append("scenes 必须为3-5个场景")
+        valid_positions = {"opening", "middle", "climax", "closing"}
+        scene_anchors: list[str] = []
+        for scene_idx, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                issues.append(f"scenes[{scene_idx}] 不是对象")
+                continue
+            for scene_field in ("position", "objective", "conflict", "sensory_anchor", "subtext_beat", "exit_hook"):
+                scene_val = str(scene.get(scene_field, "")).strip()
+                if len(scene_val) < 4:
+                    issues.append(f"scenes[{scene_idx}].{scene_field} 过短或为空")
+                if _has_placeholder(scene_val):
+                    issues.append(f"scenes[{scene_idx}].{scene_field} 是占位文本")
+            scene_pos = str(scene.get("position", "")).strip()
+            if scene_pos and scene_pos not in valid_positions:
+                issues.append(f"scenes[{scene_idx}].position 必须是 {','.join(sorted(valid_positions))} 之一")
+            scene_anchor = str(scene.get("sensory_anchor", "")).strip()
+            if scene_anchor:
+                scene_anchors.append(scene_anchor)
+        if scene_anchors and len(scene_anchors) != len(set(scene_anchors)):
+            issues.append("scenes 的 sensory_anchor 存在重复，每个场景物象必须独立")
+
     return issues
 
 
@@ -1294,6 +1329,12 @@ def _outline_quality_contract() -> str:
 - 多地点或跨时间段必须在 summary/key_events 中给出转场桥：声音、灯光、脚步、物件到达、传话延迟、时辰变化、伤口变化等，防止关键行动链跳步。
 - 禁止"打卡地图"：新地点不能只为拿道具、升境界或过副本服务；location/summary/key_events 必须体现当地风土人情、制度规则、生计结构、普通人压力或文化差异中的至少两项。
 - 禁止"抽象概念堆叠"：foreshadowing、power_progression、payoff_design 不能只写道意、本源、法则、共鸣、境界变化；必须说明它在身体、器物、环境、关系或现实成本上造成的具体后果。
+
+### 【场景级设计·强制要求】（scenes 数组）
+- 必须输出 3-5 个 scene 对象，每个含 position(opening/middle/climax/closing)、objective(本场景主角具体目标)、conflict(阻碍+对手+赌注)、sensory_anchor(本场景专属可触摸物象/气味/声音/身体细节，取自 quality_bible.sensory_palette 对应类别)、subtext_beat(一句潜台词或未说出口的话)、exit_hook(本场景如何推向下一场景的不可逆动作或信息落点)。
+- 每个 scene 的 sensory_anchor 必须互不重复，且至少一个 scene 落地本章 human_anchor 的生活压力/关系牵挂。
+- sensory_anchor 必须从 world.quality_bible.sensory_palette 五类(indoor/outdoor/body/object/sound_smell)中取材，不能写空泛形容词。
+- scenes 与 key_events 互补：key_events 是高层事件链，scenes 是场景级执行蓝图；Writer 会按 scenes 逐场兑现。
 
 ### 【基础要求】
 - summary 必须写具体剧情链路：起因、冲突、转折、结果、章末钩子，不得写模板话。
