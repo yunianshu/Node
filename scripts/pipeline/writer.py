@@ -22,7 +22,13 @@ from pathlib import Path
 from typing import Any
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
-from core.novel_config import configure_stdio, load_config, load_origin_materials, resolve_project_dir
+from core.novel_config import (
+    build_origin_fact_directive,
+    configure_stdio,
+    load_config,
+    load_origin_materials,
+    resolve_project_dir,
+)
 from core.workflow_state import load_outline_chapter, review_dir
 from core.workflow_state import FORBIDDEN_PHRASES, VALID_ENDINGS, is_valid_chapter_text, read_text_length
 from core.edit_diff import (
@@ -45,16 +51,19 @@ LOG_FILE = None
 CONFIG = None
 ORIGIN_MATERIALS = ""
 CANDIDATE_MODE = False
+NOVEL_PREMISE = ""
 
 
 def init_project(project_dir: str | Path) -> None:
-    global NOVELS_DIR, CHAPTERS_DIR, WORLD_FILE, CHARACTERS_FILE, LOG_FILE, CONFIG, ORIGIN_MATERIALS
+    global NOVELS_DIR, CHAPTERS_DIR, WORLD_FILE, CHARACTERS_FILE, LOG_FILE, CONFIG, ORIGIN_MATERIALS, NOVEL_PREMISE
     NOVELS_DIR = Path(project_dir).resolve()
     CHAPTERS_DIR = NOVELS_DIR / "chapters" / "draft"
     WORLD_FILE = NOVELS_DIR / "world.json"
     CHARACTERS_FILE = NOVELS_DIR / "characters.json"
     LOG_FILE = NOVELS_DIR / "logs" / "writer.log"
     CONFIG = load_config(NOVELS_DIR)
+    premise_file = NOVELS_DIR / "premise.txt"
+    NOVEL_PREMISE = premise_file.read_text(encoding="utf-8") if premise_file.exists() else ""
     # 限制 origin 素材长度，避免 prompt 过长导致 API 超时（reviewer/outline_reviewer 都有此限制）
     origin_max = int(CONFIG.get("writer", {}).get("origin_max_chars", 1200) or 1200)
     ORIGIN_MATERIALS = load_origin_materials(NOVELS_DIR, max_chars=origin_max)
@@ -179,6 +188,7 @@ def _character_brief(item: dict) -> str:
         "motivation",
         "character_arc",
         "relationship_with_protagonist",
+        "life_profile",
     ):
         value = item.get(key)
         if isinstance(value, (list, tuple)):
@@ -187,8 +197,8 @@ def _character_brief(item: dict) -> str:
             value = "；".join(f"{k}:{v}" for k, v in list(value.items())[:3])
         text = str(value or "").strip()
         if text:
-            fields.append(text[:80])
-    return f"{name}：{'；'.join(fields)[:220]}" if fields else name
+            fields.append(text[:140] if key == "life_profile" else text[:80])
+    return f"{name}：{'；'.join(fields)[:360]}" if fields else name
 
 
 def _collect_character_briefs(value, *, limit: int = 10) -> list[str]:
@@ -281,18 +291,42 @@ def _writer_quality_contract() -> str:
 - 每章至少有一个"刺点"——一个让读者心头一紧的细节：一个反常的动作、一句没说出口的话、一个突然沉默的瞬间。
 - 冲突必须触及角色的核心恐惧或核心欲望，不能停留在表层利害计算。
 
+### 【烟火气与人情味·强制要求】
+- 每章至少写出一个具体生活压力或人际牵挂：饭钱、房租、病痛、工作、邻里眼光、旧恩旧怨、家人等待、同事帮衬、欠下的人情。它必须参与剧情推进，不能只是背景装饰。
+- 每个核心场景至少放入一个能被读者触摸/闻到/听见的生活物件或身体细节，例如凉掉的饭、磨白的袖口、裂屏手机、楼道灯、药味、汗味、指节伤口；细节必须反映人物处境。
+- 重要对白要有潜台词：人物可以嘴硬、转移话题、开玩笑、沉默或说反话，禁止把动机和情绪用说明书式台词讲透。
+- 胜利、爽点或破局必须带关系回声：有人松一口气、有人更亏欠、有人被伤到、有人改变看法。没有人的反应，事件就没有温度。
+- 配角不能只负责递线索、解释设定或当工具。至少一个配角要表现出自己的小算盘、小善意、小恐惧或现实难处。
+
 ### 【信息新鲜度·强制要求】
 - 每章必须给读者带来至少一个"此前从未出现过的新元素"：新人物、新地点、新规则、新真相、新威胁、新情感关系。
 - 禁止整章都在重复已知信息或进行无新意的铺垫。
 
 ### 【去AI味·强制要求】（去AI化的核心，违反即判AI腔）
-- 【句长起伏】长短句必须交替：用1-3字的短句打断，再接长句铺陈，禁止通篇句长均匀的"工整腔"。偶尔用一个字成句。
+- 【禁短句断句指纹】禁止高频使用“他。没有，哭。”“走。了。结。”“快。滚。”这类用句号硬拆主谓宾/动宾结构的伪沉重写法。短句只能在真正的惊吓、打断、失语处偶尔出现；同一页不得连续堆叠。
+- 【句长起伏】长短句要服务情绪变化，而不是机械打点。用动作、对白、段落留白和具体物件制造停顿，禁止通篇句长均匀，也禁止把“1-3字短句”当固定节奏器。
 - 【禁套路微表情】禁止"眼中闪过一丝XX""嘴角微微上扬""眉头微皱""心中暗道""心头涌起"等套路化微表情与内心独白。情绪必须用具体动作、对白、环境或身体反应外化（"他把杯子转了三圈" > "他心中涌起波澜"）。
 - 【破折号节制】全章破折号"——"不超过3-4处，禁止把它当万能戏剧停顿；改用短句断句或动作承接。
 - 【比喻节制】全章核心比喻不超过2-3个，禁止"仿佛/宛如/如同/犹如"的比喻堆叠；优先用直接动作和具象细节。
 - 【删冗余副词】删去"缓缓地/微微地/默默地/淡淡地"等软调副词，让动词本身承担动作质感。
 - 【展示而非告知】禁止"他感到/她意识到/他明白了"式直接告知情绪，改为可观察的动作与物象。
 - 【禁议论文腔】禁止"毫无疑问/众所周知/总而言之/综上所述/不得不说/显而易见"等连接词进入小说正文。
+- 【禁对称式章节结尾】禁止每章用“身后……身前……”“朝着某方向迈步”“一步，又一步”“未知的路”这类对称锚点句式收尾。章末钩子必须来自具体现场：一个动作没完成、一句话没说完、一件物品暴露、一个人做出反常反应。
+- 【禁概念堆叠】修炼/规则/科技/神秘体系不得只写“某某之核、共鸣、境界、法则、经脉胀痛”。每个抽象概念变化都必须落到至少一个可见后果：身体代价、器物变化、他人误解、环境损伤、生活成本或关系裂痕。
+- 【禁打卡地图】新地点不能只是“拿道具/升境界/过副本”的站点。第一次进入地点必须写出当地风土人情、制度规则、生计结构或普通人的日常压力；地图切换必须有因果、代价和不可逆状态变化。
+- 【禁散文诗复沓】禁止整章用同一种段落起手、同一种物象聚焦句、同一句作者判断反复变奏。最多允许一处有意识的回环；超过两次就必须打散。小说章节首先要让事件在时间里推进，而不是把一个瞬间切成十几片。
+- 【不可逆一步】每章必须让主角或关键人物完成一个可被复述的不可逆动作：签下、撕毁、交出、藏起、公开、背叛、救下、放弃、承认、误伤或暴露。不能只反复强调“他往前挪了一步”，必须让读者看见他具体做了什么、因此失去了什么或改变了谁。
+- 【重奏到独步】可以用群像/多声部制造压力，但中后段必须收束到主角自己的判断和行动：让读者能复述“众人如何把路铺到这里，主角又独自迈出了哪一步”。禁止整章只有街坊、配角、制度在推动，主角只是被押着看见。
+- 【信息链清晰】证据、药包、账页、信物、钥匙、录音等关键物必须有可追踪路径：谁拿到、如何转交、收信人凭什么理解、风险在哪里、最后落到谁手里。禁止“证据自然传出去/大家都懂了”的跳步。
+- 【反派找台阶】反派不能只“脸色一变/恼羞成怒”。当权力露出破绽时，必须让反派立刻寻找程序、威胁、交易、沉默、嫁祸或规则解释来稳住场面；这样张力比单纯发怒更强。
+- 【反派意象反照】若反派有标志物（灯笼、戒指、刀、伞、手套、烟、车钥匙等），它不能只当随身道具；至少一次让该物照出/映出/碰到反派不愿面对的旧事、软肋、年轻时选择或当前破绽。读者要从物象看见反派的内层，而不是只看到“平静/变脸”两种状态。
+- 【反派裂隙半拍】当旧签押、旧证词、旧物证或熟人指认逼到反派时，必须给一个极短的身体裂隙：目光落下又移开、指节发白、手套按住旧疤、灯笼柄轻响、喉咙动一下、张口又咽回去、呼吸停半拍。随后再让他找台阶稳住场面。禁止只写“猛地站起/脸色一变”。
+- 【跨空间咬合】多地点并行时，要用声音、光、脚步、物件到达、传话延迟、时辰变化等桥接时间，避免从A地突然跳到B地让读者脑补整夜发生了什么。
+- 【关键道具预埋】章末要使用的关键物、墨印、录音、拓片、钥匙、药包、证词等，必须在前文有一次可见的制作、藏匿、转手或检查动作。可以保留悬念，但不能让道具像作者临时需要才冒出来。
+- 【拓印/复制动作】若结尾出现墨印、拓片、录音备份、账页副本等“复制型证据”，前文必须写出复制动作本身：蘸墨、按压、晾干、夹入账页、换袋、藏入夹层等至少一笔。只写“后来拿出墨印”不合格。
+- 【情感线回扣】本章前文出现的亲缘旧痕、父亲字迹、旧称呼、手把手教过的动作等情感线索，章末关键动作时必须有一个极小回响：字形重叠、手势重复、旧物触感返回、称呼卡在喉口。不要用解释性心理总结。
+- 【结尾余韵反应】章末关键动作落地后，不要立刻截断；必须给1-2个微小现场反应作为余韵：对手的手停住、旁人倒吸气、同伴松开账本、灯光落偏、某个物件发出声音。反应要短，不能写成解释性总结。
+- 【禁作者旁注】禁止“读者能看见/这一章往前挪/权力最怕的是/真正让本章立住的是”等评论式句子。把判断交给动作、物件、对白和他人反应，不要替读者写读后感。
 
 ### 【人物称呼一致性·强制要求】（world_consistency 主因，违反即判设定矛盾）
 - **全书出场角色已在前期锁定于 characters.json（闭环角色）**。正文只能使用其中已登记的角色；严禁临时生造新的命名角色。若剧情确实需要新角色，必须先在 characters.json 登记（name+aliases+role）再使用——这是防止人物漂移的根本约束。
@@ -326,6 +360,20 @@ def _deai_rewrite_directives(detection: dict) -> str:
         elif t == "summary_ending":
             parts.append("- 章末禁止总结性收尾：最后一句必须是未解决的问题、突然的威胁或未说出口的话，"
                          "禁止'故事才刚刚开始'式元叙述")
+        elif t == "short_sentence_fragmentation":
+            parts.append("- 删除短句断句指纹：不要再写'他。没有。哭。'这类句号硬拆；把情绪改成动作、沉默、对白错位或物件反应")
+        elif t == "symmetric_anchor_ending":
+            parts.append("- 重写章末最后300字：禁止'身后困境/身前方向/一步又一步'对称模板，改成具体现场钩子")
+        elif t == "abstract_concept_pileup":
+            parts.append("- 把抽象概念落地：减少'道意/本源/法则/共鸣/境界'堆叠，改写为身体代价、器物变化、旁人反应或现实成本")
+        elif t == "formal_refrain_stagnation":
+            parts.append("- 打散重复段式：删除同一开头/同一物象聚焦句的连续变奏，改成按时间推进的行动链")
+        elif t == "repeated_authorial_judgment":
+            parts.append("- 删除重复作者判断句：不要反复告诉读者'这不是升级秘境/这是一条窄路'，改用一次不可逆动作证明")
+        elif t == "authorial_aside":
+            parts.append("- 删除作者旁注式总结：不要写'读者能看见/这一章往前挪/权力最怕的是'，改为动作、证物转移、对白潜台词和旁人反应")
+        elif t == "static_lyrical_scene":
+            parts.append("- 静态散文诗化过重：增加目标受阻、人物行动、关系反应、信息变化和不可逆后果")
         elif t == "adjective_pileup":
             parts.append("- 删除'璀璨/磅礴/恐怖'等空泛形容词，每个形容词替换为具体感官细节"
                          "（'空气冷得像含着铁片' > '空气无比冰冷'）")
@@ -352,7 +400,7 @@ def _deai_rewrite_directives(detection: dict) -> str:
         elif t == "dash_overuse":
             parts.append("- 大幅减少破折号'——'，每章不超过3-4处；改用短句断句或动作承接")
         elif t == "sentence_uniformity":
-            parts.append("- 句子长短太均匀：穿插1-3字短句打断节奏，再接长句铺陈，制造起伏")
+            parts.append("- 句子长短太均匀：调整段落和动作节奏，但禁止高频1-3字断句，避免形成AI短句指纹")
     return "\n".join(parts)
 
 
@@ -429,13 +477,26 @@ def _load_feedback_as_review(feedback_file: Path, chapter_number: int) -> dict:
     def first_list(value):
         return value[:1] if isinstance(value, list) else []
 
+    def compressed_suggestions() -> list[str]:
+        repairs = [
+            str(v).strip()
+            for v in analysis.get("targeted_repairs", [])
+            if str(v).strip()
+        ][:3]
+        if len(repairs) > 1:
+            joined = "；".join(f"{idx}. {text}" for idx, text in enumerate(repairs, 1))
+            return [f"本轮重写必须同时完成这些硬修复项：{joined}。"]
+        if repairs:
+            return repairs
+        return first_list(analysis.get("adjustments", selected.get("suggestions", [])))
+
     return {
         "status": "completed",
         "verdict": "需重写",
         "overall_score": analysis.get("best_score", selected.get("overall_score", 0)),
         "strengths": first_list(selected.get("strengths", [])),
         "weaknesses": first_list(analysis.get("likely_reasons", selected.get("weaknesses", []))),
-        "suggestions": first_list(analysis.get("adjustments", selected.get("suggestions", []))),
+        "suggestions": compressed_suggestions(),
         "continuity_issues": first_list(selected.get("continuity_issues", [])),
         "summary": selected.get("summary", ""),
         "edits": first_list(selected.get("edits", [])),
@@ -680,6 +741,21 @@ def generate_chapter(
     except Exception as _ase:
         log(f"[Writer] 弧线状态加载异常（忽略）: {_ase}")
 
+    # 关系欠账追踪：注入上一章结束时仍在发酵的人情债、误会、承诺和未说出口的话
+    relationship_state_directive = ""
+    relationship_obligation_directive = ""
+    try:
+        from core.relationship_state import (
+            format_relationships_for_prompt,
+            latest_relationships_before,
+            relationship_obligation_for_prompt,
+        )
+        prev_relationships = latest_relationships_before(NOVELS_DIR, chapter_number)
+        relationship_state_directive = format_relationships_for_prompt(prev_relationships)
+        relationship_obligation_directive = relationship_obligation_for_prompt(prev_relationships)
+    except Exception as _rse:
+        log(f"[Writer] 关系欠账加载异常（忽略）: {_rse}")
+
     # 伏笔闭环：注入"本章应回收"的前期伏笔，强制在正文兑现 payoff（治伏笔悬空根因）
     foreshadowing_directive = ""
     try:
@@ -869,8 +945,17 @@ def generate_chapter(
     # 旧大纲可能缺这些字段，用空字符串兜底，正文 prompt 中对空值做条件渲染。
     chapter_goal = str(chapter_outline.get("chapter_goal", "")).strip()
     payoff_design = str(chapter_outline.get("payoff_design", "")).strip()
+    human_anchor = str(chapter_outline.get("human_anchor", "")).strip()
     story_beat = str(chapter_outline.get("story_beat", "")).strip()
     main_antagonist = str(chapter_outline.get("main_antagonist", "")).strip()
+    content_layers = chapter_outline.get("content_layers", [])
+    if isinstance(content_layers, str):
+        content_layers = [content_layers]
+    content_layers_text = "\n".join(
+        f"  - {str(item).strip()}"
+        for item in content_layers
+        if str(item).strip()
+    )
 
     # 结构功能执行指令：把大纲的结构维度翻译成 Writer 必须落实的写作要求。
     # 旧大纲缺这些字段时整段省略，不影响正文生成（向后兼容）。
@@ -893,9 +978,21 @@ def generate_chapter(
             f"- 【{payoff_profile['label']}】{payoff_design}"
             f"（按「{payoff_profile['chain']}」落地；{payoff_profile['directive']}）"
         )
+    if human_anchor:
+        structure_parts.append(
+            f"- 【烟火气锚点】{human_anchor}"
+            "（必须写进正文现场：用生活压力、关系牵挂、潜台词或具体物件推动剧情，不得只在心理旁白里解释）"
+        )
+    if content_layers_text:
+        structure_parts.append(
+            "- 【内容层次】正文必须逐层兑现以下设计，不能只写单线事件：\n"
+            f"{content_layers_text}\n"
+            "  每一层至少用一个现场动作、对话潜台词、具体物件、制度压力或关系结果落地。"
+        )
     if main_antagonist:
         structure_parts.append(f"- 【主要对抗】{main_antagonist}（必须塑造对抗力量的具体威胁，让读者感受到压力，而非抽象的「敌人」）")
     structure_directive = "\n".join(structure_parts) if structure_parts else "（本章大纲未提供结构功能/目标赌注/爽点链字段，按既有大纲执行即可）"
+    fact_directive = build_origin_fact_directive(ORIGIN_MATERIALS, limit=8)
 
     if is_rewrite:
         system = (f"""你是一位追求9分神作的顶尖中文网络小说作家，同时也是一位冷酷的资深编辑。
@@ -947,6 +1044,7 @@ def generate_chapter(
 ## origin/ 原始参考素材
 {ORIGIN_MATERIALS or "（无）"}
 
+{fact_directive}
 ## 本章大纲
 {json.dumps(chapter_outline, ensure_ascii=False, indent=2)}
 
@@ -972,6 +1070,8 @@ def generate_chapter(
 {prev_ending[:300]}
 {character_state_directive}
 {arc_state_directive}
+{relationship_state_directive}
+{relationship_obligation_directive}
 {lang_fp_text}
 {foreshadowing_directive}
 ## 后一章摘要（为后续铺垫）
@@ -996,11 +1096,23 @@ def generate_chapter(
 9. 【感官冲击】必须有至少一个"主角本人直面威胁"的近距离刺点，不能所有危险都发生在监控屏幕或远处。
 10. 【阅读回报】必须来自主角在极端压力下的判断、抉择、行动或牺牲，不能靠巧合、升级或突然觉醒硬赢。最顶级的回报是"主角明知道会付出代价，还是做了最正确的选择"
 11. 【配角】要有各自的欲望、恐惧和秘密，不是纯背景板。即使是只出现一次的龙套，也要让读者感觉到"这个人有自己的故事"
-12. 如果 origin/ 中存在素材，必须参考其中的原始设定、人物关系、历史事件、语气风格和限制，不能与其冲突
-13. 【节奏】禁止流水账。每800-1200字必须有一次有效推进。章节中段必须有一个"小高潮"或"小反转"，不能把所有爆点都堆在结尾
-14. 【信息】每章必须给读者带来至少一个"此前从未出现过的新元素"，禁止整章重复已知信息
-15. 不要输出章节标题，直接从正文开始
-16. 不要输出任何元信息（如"字数：""本章完"等），只输出正文
+12. 【内容层次】必须兑现大纲的 content_layers；外部事件之外，还要让关系、生活压力、秘密代价、制度规则或世界细节至少一层真正改变人物处境
+13. 【叙事推进】禁止把一个瞬间写成十几段意象变奏。每3-5段必须发生新的行动、阻碍、选择、反应或信息变化；本章至少完成一个不可逆动作，让读者能说清“{protagonist_name}这一章具体往前挪了哪一步”
+14. 【从重奏到独步】若本章有群像/多线协作，前中段可以写众人如何递火、藏证、遮掩或施压；中后段必须落回{protagonist_name}的独立判断和动作，让他亲手承担一次不可逆后果，不能只让配角把路铺完。
+15. 【证据链/信息链】关键物与关键信息必须写清“起点→转交→误读或风险→抵达→被使用”。每次转交至少有一个具体动作或接收者反应，禁止用一句“消息传开了/证据送到了”跳过。
+16. 【反派应对】反派被逼出破绽后，必须马上有更冷的应对：搬出规矩、扣字眼、拖程序、找替罪羊、威胁旁人或提出交易。不要只写“脸色一变/怒了”。
+17. 【反派意象反照】若反派有标志物或反复出现的随身物，至少让它在一处反照反派内层：照到旧签押、裂口漏光落在证物上、手套遮住疤、戒指敲到旧案文书等。物象必须揭示他害怕、亏欠或试图掩盖的东西。
+18. 【反派裂隙半拍】旧证据逼到反派时，写一个半拍身体反应再写他的冷处理；可用喉咙动、张口又咽回、呼吸停拍、指节发白等，让他像被旧案缠住的人，不只是压迫符号。
+19. 【关键道具预埋】章末要使用的关键道具/证据，前文必须有制作、拓印、藏入、转手或被人看见的一笔；结尾出现时读者应能回想起“原来她刚才留了这一手”。
+20. 【复制证据制作】墨印/拓片/副本/录音备份必须写出制作动作，哪怕只是一句“她用裂碗底蘸墨，在矿牌边缘按了一下”。
+21. 【情感线回扣】前文亲缘旧痕或父辈线索，章末关键动作要用字形、手势、触感或旧称呼回扣一次，让情感线闭合，不要只写事件推进。
+22. 【转场咬合】跨地点或跨时间转场必须有桥：脚步声、灯火、钟声、传话延迟、物件到达、天气后果、伤口变化等。读者不能被迫脑补关键行动链。
+23. 【结尾余韵】最后关键动作之后必须留1-2个短反应承接力量：反派如何停顿/找台阶，旁人如何吸气或退半步，同伴的手如何松开或攥紧，标志物的光如何偏移。禁止用作者总结替代余韵。
+24. 如果 origin/ 中存在素材，必须参考其中的原始设定、人物关系、历史事件、语气风格和限制，不能与其冲突；若存在 origin/facts，正文必须至少让 1 条事实线索变成现场中的人物、地点、旧事、物件或关系动作
+25. 【节奏】禁止流水账。每800-1200字必须有一次有效推进。章节中段必须有一个"小高潮"或"小反转"，不能把所有爆点都堆在结尾
+26. 【信息】每章必须给读者带来至少一个"此前从未出现过的新元素"，禁止整章重复已知信息
+27. 不要输出章节标题，直接从正文开始
+28. 不要输出任何元信息（如"字数：""本章完"等），只输出正文
 
 ## 最终硬性要求
 输出正文必须不少于{min_words}字，严格不得超过{max_words}字。生成结束前请自行检查篇幅：
@@ -1011,6 +1123,13 @@ def generate_chapter(
 - 本章是否包含上方【关键事件清单】中的每一个事件？
 - 本章是否至少有一个"主角本人直面威胁"的近距离刺点？
 - 本章是否至少有三个有效的情绪转折（参考上方【情绪曲线】）？
+- 本章是否有一个不可逆动作，而不是只靠反复意象和作者判断制造重量？
+- 本章是否把群像压力收束成{protagonist_name}的一次独立行动？
+- 本章关键证据/信息的传递链是否清楚，没有跳步？
+- 章末关键道具是否在前文预埋过，且最后动作后是否有现场反应形成余韵？
+- 反派标志物是否至少一次反照出他的内层或破绽，而不只是随身道具？
+- 旧证据逼到反派时，是否有半拍身体裂隙再接冷处理？
+- 亲缘/父辈/旧痕线索是否在章末关键动作中有微小回扣？
 - 如果我是第一次读这本书的读者，读完这章后会不会立刻想打开下一章？
 
 请开始写作："""
@@ -1073,6 +1192,26 @@ def generate_chapter(
         f.write(content)
 
     log(f"[Writer] 第{chapter_number}章已保存 -> {chapter_file}")
+
+    # 伏笔回收回验：本章大纲声称回收(claimed)的伏笔，正文是否真的兑现。
+    # 通过 bigram 重叠粗判，通过则台账升 resolved，否则降回 planted 并打 unresolved_in_text。
+    # 这是治"大纲写了[收]但正文没写"假回收的关键，纯本地计算不耗 LLM。
+    try:
+        from core.foreshadowing_ledger import load_ledger, save_ledger, verify_resolution_in_text
+        _ledger = load_ledger(NOVELS_DIR)
+        result = verify_resolution_in_text(_ledger, chapter_number, content)
+        if result["changed"]:
+            save_ledger(NOVELS_DIR, _ledger)
+            if result["verified"]:
+                log(f"[Writer] 第{chapter_number}章伏笔回验通过：{result['verified']}")
+            if result["failed"]:
+                log(
+                    f"[Writer] ⚠️ 第{chapter_number}章伏笔回验失败（正文未兑现）：{result['failed']}，"
+                    "台账已降回 planted 并标记 unresolved_in_text"
+                )
+    except Exception as _fre:
+        log(f"[Writer] 伏笔回收回验异常（忽略）: {_fre}")
+
     return "success"
 
 

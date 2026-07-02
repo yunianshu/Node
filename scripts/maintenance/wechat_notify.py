@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 from core.novel_config import load_config, resolve_project_dir
-from core.push_notifier import push_progress
+from core.push_notifier import push_progress, story_flow_audit_note
 from core.workflow_state import aggregate_review_scores, outline_completed_count, scan_chapter_status
 
 NOVELS_DIR = None
@@ -47,6 +47,7 @@ def get_progress_data():
     pass_rate = score_metrics["pass_rate"] if scores else None
     status_note = current_status_note(statuses)
     eta_text = estimate_remaining_time(NOVELS_DIR, CONFIG["total_chapters"], final_count)
+    audit_note = story_flow_audit_note(NOVELS_DIR)
 
     return {
         "outline": outline_count,
@@ -59,6 +60,7 @@ def get_progress_data():
         "avg_score": avg_score,
         "pass_rate": pass_rate,
         "status_note": status_note,
+        "audit_note": audit_note,
         "eta_text": eta_text,
     }
 
@@ -162,6 +164,7 @@ def main():
         avg_score=p["avg_score"],
         pass_rate=p["pass_rate"],
         status_note=p["status_note"],
+        audit_note=p["audit_note"],
         eta_text=p["eta_text"],
     )
     print("推送成功" if ok else "推送失败")

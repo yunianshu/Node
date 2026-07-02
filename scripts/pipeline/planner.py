@@ -29,6 +29,24 @@ CONFIG = None
 NOVEL_PREMISE = ""
 ORIGIN_MATERIALS = ""
 
+LIFE_PROFILE_KEYS = (
+    "family_ties",
+    "livelihood_pressure",
+    "old_debts",
+    "soft_spot",
+    "daily_habits",
+    "relationship_taboo",
+)
+
+QUALITY_BIBLE_KEYS = (
+    "conflict_engine",
+    "content_density_rules",
+    "scene_variety",
+    "sensory_palette",
+    "emotional_promises",
+    "taboo_cliches",
+)
+
 
 def init_project(project_dir: str | Path) -> None:
     global NOVELS_DIR, WORLD_FILE, CHARACTERS_FILE, CONFIG, NOVEL_PREMISE, ORIGIN_MATERIALS
@@ -132,6 +150,113 @@ def _validate_world_data(world: dict) -> list[str]:
         for field in ("economy", "politics", "geography", "history", "culture"):
             if not str(world_building.get(field, "")).strip():
                 issues.append(f"world_building.{field} 缺失")
+    quality_bible = world.get("quality_bible")
+    if not isinstance(quality_bible, dict):
+        issues.append("quality_bible 缺失或不是对象")
+    else:
+        for field in QUALITY_BIBLE_KEYS:
+            value = quality_bible.get(field)
+            if isinstance(value, list):
+                if not any(str(item).strip() for item in value):
+                    issues.append(f"quality_bible.{field} 缺失或为空")
+            elif not str(value or "").strip():
+                issues.append(f"quality_bible.{field} 缺失")
+    return issues
+
+
+def _default_quality_bible(world: dict) -> dict:
+    title = str(world.get("title") or world.get("world_name") or "本书").strip()
+    themes = "、".join(str(item) for item in world.get("themes", [])[:3]) if isinstance(world.get("themes"), list) else ""
+    factions = "、".join(
+        str(item.get("name", ""))
+        for item in world.get("factions", [])[:4]
+        if isinstance(item, dict) and item.get("name")
+    )
+    return {
+        "conflict_engine": (
+            f"《{title}》每章冲突必须来自人物欲望、现实压力、势力博弈与主线秘密的交叉，"
+            f"不能只靠随机敌人或设定解释推进。核心势力压力：{factions or '按已登记势力递进'}。"
+        ),
+        "content_density_rules": [
+            "每章至少有一个新信息、一个关系变化、一个具体代价或一个旧伏笔回收。",
+            "设定信息必须通过行动、交易、调查、对抗或人物取舍呈现。",
+            "连续两章不得使用同一种核心动作链作为主要阅读回报。",
+        ],
+        "scene_variety": [
+            "场景轮换要体现阶层、职业、地理或制度差异，避免所有冲突都发生在同类空间。",
+            "每个重要场景必须有一个可触摸的物件、气味、声音或身体细节服务人物处境。",
+        ],
+        "sensory_palette": [
+            "优先使用与题材绑定的物象、工具、账目、伤痕、旧物、空间压迫和生活噪声。",
+            "少用空泛宏大形容词，避免把氛围写成通用影视预告片。",
+        ],
+        "emotional_promises": [
+            f"围绕{themes or '核心主题'}制造选择代价：人物越接近目标，越要暴露亏欠、软肋或关系裂痕。",
+            "胜利必须留下关系回声：感激、误解、亏欠、伤害、沉默或新的恐惧。",
+        ],
+        "taboo_cliches": [
+            "禁止连续使用遇敌-分析-爆发-取胜的单线模板。",
+            "禁止用长篇设定说明替代现场冲突。",
+            "禁止让配角只负责递线索、解释规则或衬托主角。",
+            "禁止高频使用1-3字短句断句制造伪沉重感。",
+            "禁止每章用身后/身前、迈步、未知的路等对称式安全锁收尾。",
+            "禁止用抽象概念堆叠替代具象生活细节和可见后果。",
+            "禁止把地图当成拿道具、升境界、过副本的清单；地点必须有风土人情、制度和生计差异。",
+            "禁止整章散文诗式复沓：同一段式、同一物象聚焦句、同一句作者判断不得反复变奏替代事件推进。",
+            "每章必须有一个可复述的不可逆动作，证明人物真正向前推进，而不是只营造氛围。",
+            "群像章节必须从多声部压力收束到主角独立行动；不能让主角只旁观配角推进。",
+            "关键证据、信物和信息必须有可追踪传递链：起点、转交、接收者理解、风险和最终用途。",
+            "反派暴露破绽后必须有冷处理策略：规矩、程序、威胁、交易、嫁祸或沉默，而不是只发怒。",
+            "跨地点和跨时间叙事必须用声音、光、脚步、物件到达、传话延迟或身体状态咬合。",
+            "禁止作者旁注式总结：不要替读者写'这一章真正往前挪'、'权力最怕的是'等读后感。",
+            "反派标志物或贯穿意象必须至少一次反照其旧事、软肋、亏欠或破绽，不能只做随身道具。",
+            "旧签押、旧证词或旧物证逼到反派时，必须出现一个半拍身体裂隙，再接冷处理策略。",
+            "章末关键证据、拓印、录音、钥匙或信物必须在前文预埋制作、藏匿、转交或瞥见动作。",
+            "墨印、拓片、副本、录音备份等复制型证据必须提前写出制作动作。",
+            "亲缘、父辈、旧痕或手势线索必须在章末关键动作中有微小回扣，形成情感闭合。",
+            "章节最后的关键动作之后必须留下短现场反应形成余韵，而不是动作一落就硬切。",
+        ],
+    }
+
+
+def _ensure_world_quality_bible(world: dict) -> bool:
+    if not isinstance(world.get("quality_bible"), dict):
+        world["quality_bible"] = _default_quality_bible(world)
+        return True
+    changed = False
+    defaults = _default_quality_bible(world)
+    for key in QUALITY_BIBLE_KEYS:
+        value = world["quality_bible"].get(key)
+        missing = (
+            not any(str(item).strip() for item in value)
+            if isinstance(value, list)
+            else not str(value or "").strip()
+        )
+        if missing:
+            world["quality_bible"][key] = defaults[key]
+            changed = True
+    return changed
+
+
+def _life_profile_issues(value, path: str) -> list[str]:
+    issues: list[str] = []
+    if not isinstance(value, dict):
+        return [f"{path}.life_profile 缺失或不是对象"]
+    vague_markers = ("复杂过去", "背负责任", "说不清", "难以言说", "某个人", "某件事")
+    for key in LIFE_PROFILE_KEYS:
+        field_path = f"{path}.life_profile.{key}"
+        item = value.get(key)
+        if key == "daily_habits":
+            if not isinstance(item, list) or not any(str(habit).strip() for habit in item):
+                issues.append(f"{field_path} 缺失或为空")
+            continue
+        text = str(item or "").strip()
+        if not text:
+            issues.append(f"{field_path} 缺失")
+        elif len(text) < 8:
+            issues.append(f"{field_path} 过短")
+        elif any(marker in text for marker in vague_markers):
+            issues.append(f"{field_path} 仍偏空泛")
     return issues
 
 
@@ -161,6 +286,7 @@ def _validate_characters_data(characters: dict) -> list[str]:
                     issues.append(f"{path}.aliases 缺失")
                 elif not isinstance(aliases, list):
                     issues.append(f"{path}.aliases 必须是数组")
+                issues.extend(_life_profile_issues(value.get("life_profile"), path))
             for key, child in value.items():
                 walk(child, f"{path}.{key}")
         elif isinstance(value, list):
@@ -222,6 +348,10 @@ def generate_world() -> bool:
         except Exception as exc:
             print(f"[Planner] world.json 无法读取: {exc}")
             return False
+        changed = _ensure_world_quality_bible(world_data) if isinstance(world_data, dict) else False
+        if changed:
+            WORLD_FILE.write_text(json.dumps(world_data, ensure_ascii=False, indent=2), encoding="utf-8")
+            print("[Planner] world.json 已补齐 quality_bible 质量圣经")
         issues = _validate_world_data(world_data) if isinstance(world_data, dict) else ["根节点不是对象"]
         if issues:
             print(f"[Planner] world.json 契约不合格: {'; '.join(issues[:8])}")
@@ -277,6 +407,14 @@ def generate_world() -> bool:
     "act1": "第一幕描述",
     "act2": "第二幕描述",
     "act3": "第三幕描述"
+  }},
+  "quality_bible": {{
+    "conflict_engine": "本书最稳定的冲突发动机：人物欲望、现实压力、势力博弈、主线秘密如何相互咬合",
+    "content_density_rules": ["每章内容密度规则：新信息/关系变化/代价/伏笔回收至少一项", "设定必须通过现场行动呈现"],
+    "scene_variety": ["场景多样性原则：不同阶层、职业、地理或制度空间如何轮换", "避免重复场景的具体禁令"],
+    "sensory_palette": ["本书专属感官词库和物象：气味、声音、旧物、工具、伤痕、账目等"],
+    "emotional_promises": ["本书承诺给读者的情绪回报：爽感、压迫、温情、悔恨、秘密揭开等"],
+    "taboo_cliches": ["本书必须避开的套路桥段或AI味表达：短句断句指纹、对称式收尾、抽象概念堆叠、打卡地图、散文诗式复沓等"]
   }}
 }}
 
@@ -286,7 +424,8 @@ def generate_world() -> bool:
 3. 势力设计要符合主角的底层起步设定
 4. 整体架构要支撑{CONFIG['total_chapters']}章的篇幅
 5. 如果 origin/ 中存在素材，必须优先吸收其中的设定、人物、风格和限制，不能与其冲突
-6. 必须输出合法的JSON，不要任何注释或额外文本"""
+6. quality_bible 必须可直接指导 Outliner/Writer：写清冲突发动机、内容密度、场景轮换、感官物象、情绪承诺和禁用套路，不能写空泛口号
+7. 必须输出合法的JSON，不要任何注释或额外文本"""
 
     print("[Planner] 正在生成世界观...")
     world_data = _generate_json_with_contract(
@@ -298,6 +437,7 @@ def generate_world() -> bool:
     )
     if world_data is None:
         return False
+    _ensure_world_quality_bible(world_data)
     WORLD_FILE.write_text(json.dumps(world_data, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[Planner] 世界观已保存到 {WORLD_FILE}")
     return True
@@ -313,6 +453,11 @@ def generate_characters() -> bool:
         issues = _validate_characters_data(chars_data) if isinstance(chars_data, dict) else ["根节点不是对象"]
         if issues:
             print(f"[Planner] characters.json 契约不合格: {'; '.join(issues[:8])}")
+            if any("life_profile" in issue for issue in issues):
+                print(
+                    "[Planner] 旧角色档案缺少人情味字段，建议先运行: "
+                    f'python "scripts/maintenance/backfill_humanity_fields.py" --project "{NOVELS_DIR}" --apply --backup'
+                )
             return False
         print("[Planner] characters.json 已存在且契约合格，跳过生成")
         return True
@@ -337,6 +482,14 @@ def generate_characters() -> bool:
     "description": "人物简介",
     "motivation": "核心动机",
     "character_arc": "起点状态→触发事件→成长方向",
+    "life_profile": {{
+      "family_ties": "家庭、亲缘或替代性亲密关系",
+      "livelihood_pressure": "谋生压力：工作、钱、债务、身份成本或现实困境",
+      "old_debts": "欠下的人情、旧恩旧怨或无法偿还的亏欠",
+      "soft_spot": "最容易被触动的软肋：具体到某个人、物件或场景",
+      "daily_habits": ["日常习惯或小动作1", "日常习惯或小动作2"],
+      "relationship_taboo": "最不愿说出口的话或最怕被看穿的关系真相"
+    }},
     "language_fingerprint": {{
       "speaking_style": "说话风格",
       "signature_words": ["高频用词1", "高频用词2"],
@@ -352,6 +505,14 @@ def generate_characters() -> bool:
       "motivation": "核心动机",
       "arc": "起点状态→触发事件→成长方向",
       "relationship_with_protagonist": "羁绊类型",
+      "life_profile": {{
+        "family_ties": "家庭、亲缘或替代性亲密关系",
+        "livelihood_pressure": "谋生压力或现实难处",
+        "old_debts": "与主角或他人的旧恩旧怨/亏欠",
+        "soft_spot": "最能显出人味的软肋或牵挂",
+        "daily_habits": ["日常习惯或小动作1", "日常习惯或小动作2"],
+        "relationship_taboo": "不愿说出口的真话"
+      }},
       "language_fingerprint": {{
         "speaking_style": "说话风格",
         "signature_words": ["高频用词1", "高频用词2"],
@@ -368,6 +529,14 @@ def generate_characters() -> bool:
       "arc": "反派弧线",
       "motivation": "核心动机",
       "charm_point": "魅力点或共情点",
+      "life_profile": {{
+        "family_ties": "其仍在乎或曾经在乎的人际关系",
+        "livelihood_pressure": "现实压力、权力成本或生存困境",
+        "old_debts": "推动其变坏/执念的旧恩旧怨",
+        "soft_spot": "让反派显出人性裂缝的软肋",
+        "daily_habits": ["日常习惯或小动作1", "日常习惯或小动作2"],
+        "relationship_taboo": "其绝不愿承认的真相"
+      }},
       "language_fingerprint": {{
         "speaking_style": "说话风格",
         "signature_words": ["高频用词1", "高频用词2"],
@@ -379,6 +548,20 @@ def generate_characters() -> bool:
     "prose_style": "全书文风基调",
     "signature_metaphors": ["标志性意象1", "标志性意象2"],
     "forbidden_expressions": ["禁用AI味表达1", "禁用AI味表达2"]
+  }},
+  "relationship_matrix": [
+    {{
+      "pair": ["角色A", "角色B"],
+      "surface_relation": "表面关系",
+      "hidden_debt": "未说出口的亏欠、秘密或误解",
+      "pressure_trigger": "什么事件会让关系恶化或质变",
+      "payoff_direction": "后续如何提供情感回报或撕裂"
+    }}
+  ],
+  "casting_plan": {{
+    "early_arc_roles": ["前50章必须承担叙事功能的角色及用途"],
+    "mid_arc_roles": ["中段负责制造反转、关系压力或世界扩展的角色"],
+    "late_arc_roles": ["后段负责终局兑现、背叛、牺牲或真相揭开的角色"]
   }}
 }}
 
@@ -394,7 +577,11 @@ def generate_characters() -> bool:
 9. 每个角色必须提供 aliases 数组，没有别名时使用空数组；正文可能使用的简称、尊称、曾用名都在此登记
 10. 必须输出合法JSON
 11. 为每个主要角色设计"语言指纹"：包含 speaking_style（说话风格：话多/话少/句式特征）、signature_words（口头禅/高频用词2-3个）、tone（语气基调：冷峻/热忱/阴鸷/洒脱等）
-12. 为整部小说设计 language_fingerprint：包含 prose_style（文风基调：如白描/华丽/简洁有力）、signature_metaphors（标志性比喻意象2-3个）、forbidden_expressions（应避免的AI味表达）"""
+12. 为每个主要角色设计 life_profile；它不是背景百科，而是后续章节制造烟火气、人情味和潜台词的素材库
+13. life_profile 必须具体，禁止写“有复杂过去”“背负责任”等空泛句；要落到谁、哪笔账、哪件旧物、哪种日常动作
+14. 为整部小说设计 language_fingerprint：包含 prose_style（文风基调：如白描/华丽/简洁有力）、signature_metaphors（标志性比喻意象2-3个）、forbidden_expressions（应避免的AI味表达）
+15. relationship_matrix 必须列出至少6组核心人物关系，每组都有 hidden_debt、pressure_trigger 和 payoff_direction，供 Outliner/Writer 制造关系推进
+16. casting_plan 必须说明早中后期角色承担的叙事功能，避免人物出场后闲置或工具化"""
 
     print("[Planner] 正在生成角色档案...")
     chars_data = _generate_json_with_contract(
@@ -428,17 +615,20 @@ def _default_media_prompts(world: dict, characters: dict) -> dict:
     return {
         "cover_prompt": (
             f"中文网络小说封面，书名《{title}》，{visual_core}。"
-            "电影级构图，强烈故事感，视觉风格必须贴合本书题材和时代背景，主角居中，背景展现核心世界观，"
-            "高细节，商业出版封面，避免现代广告字样和水印。"
+            "电影级构图，强烈故事感，视觉风格必须贴合本书题材和时代背景；主角居中但不要摆拍，"
+            "背景必须出现一个能识别本书核心矛盾的具体物件/地点/势力符号。高细节，商业出版封面，"
+            "避免现代广告字样、水印、纯氛围剪影和通用玄幻光效。"
         ),
         "video_prompt": (
             f"根据小说《{title}》世界观制作15秒电影感概念预告片：{visual_core}。"
-            "镜头从核心场景推进到主角背影，再展现关键规则、人物关系与主要冲突，"
-            "动态光影，题材氛围鲜明，无字幕，无水印。"
+            "镜头必须包含三段：生活/现实压力细节、核心规则或势力压迫、主角做出选择的瞬间；"
+            "从可触摸的物件推进到主角行动，再展现主要冲突。动态光影，题材氛围鲜明，无字幕，无水印，"
+            "禁止只有空镜、云海、火焰或抽象能量。"
         ),
         "song_prompt": (
             f"为中文网络小说《{title}》创作主题曲，贴合世界观：{world_desc[:300]}。"
-            "情绪从困境起步到关键抉择和阶段性爆发，适合小说宣传视频和阅读氛围。"
+            "情绪从困境起步到关系牵挂、关键抉择和阶段性爆发；旋律要有记忆点，"
+            "副歌体现主角的代价与不认命，适合小说宣传视频和阅读氛围。"
         ),
         "song_lyrics": (
             f"[Verse]\n长夜里踏过风霜，{protagonist_name}回望旧山河\n"

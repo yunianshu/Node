@@ -897,7 +897,16 @@ def _outline_book_review_report(rt) -> dict:
     return rt._load_json_file(report_path(rt.NOVELS_DIR, "outline_book_review") / "final_outline_review.json")
 
 
-def _global_outline_feedback(rt, chapter: int, issues: list[dict], round_no: int) -> Path:
+def _global_outline_feedback(
+    rt,
+    chapter: int,
+    issues: list[dict],
+    round_no: int,
+    *,
+    source: str = "outline_book_review",
+    path_prefix: str = "outline_book_feedback",
+    summary: str = "整本大纲总审要求修复跨章结构问题",
+) -> Path:
     relevant = [issue for issue in issues if isinstance(issue, dict)]
     repair_items = []
     for index, item in enumerate(relevant, start=1):
@@ -951,6 +960,7 @@ def _global_outline_feedback(rt, chapter: int, issues: list[dict], round_no: int
         str(chapter): {
             "chapter": chapter,
             "gate": "outline_book_review",
+            "source": source,
             "analysis_round": round_no,
             "repair_policy": (
                 "最早章节是已确认事实锚点。本章只能兼容锚点，"
@@ -971,13 +981,98 @@ def _global_outline_feedback(rt, chapter: int, issues: list[dict], round_no: int
                 "weaknesses": reasons[:6],
                 "suggestions": suggestions[:6],
                 "continuity_issues": reasons[:3],
-                "summary": "整本大纲总审要求修复跨章结构问题",
+                "summary": summary,
             }],
         }
     }
-    path = rt.LOGS_DIR / f"outline_book_feedback_ch{chapter:04d}_round{round_no}.json"
+    path = rt.LOGS_DIR / f"{path_prefix}_ch{chapter:04d}_round{round_no}.json"
     atomic_write_json(path, payload)
     return path
+
+
+def _target_chapters_from_text(*parts: str, total: int) -> list[int]:
+    chapters: list[int] = []
+    for text in parts:
+        for match in re.findall(r"(?:第\s*|ch(?:apter)?\s*)(\d+)\s*章?", str(text), flags=re.I):
+            chapter = int(match)
+            if 1 <= chapter <= total and chapter not in chapters:
+                chapters.append(chapter)
+    return sorted(chapters)
+
+
+def _relationship_repair_issues_from_book_review(report: dict, total: int, limit: int) -> dict[int, list[dict]]:
+    targets = report.get("relationship_repair_targets")
+    if not isinstance(targets, list):
+        return {}
+    assigned: dict[int, list[dict]] = {}
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        try:
+            chapter = int(target.get("target_chapter"))
+        except (TypeError, ValueError):
+            continue
+        if not 1 <= chapter <= total:
+            continue
+        pair = str(target.get("pair", "")).strip()
+        problem = str(target.get("problem", "")).strip()
+        evidence = str(target.get("evidence", "")).strip()
+        acceptance = str(target.get("acceptance", "")).strip()
+        if not problem and not acceptance:
+            continue
+        chapters = _target_chapters_from_text(problem, evidence, acceptance, total=total)
+        if chapter not in chapters:
+            chapters.append(chapter)
+        chapters = sorted(chapters)
+        assigned.setdefault(chapter, []).append({
+            "severity": "major",
+            "category": "relationship_repair",
+            "chapters": chapters,
+            "detail": f"{pair}: {problem}" if pair else problem,
+            "evidence": evidence,
+            "suggestion": acceptance,
+        })
+        if len(assigned) >= limit:
+            break
+    return {chapter: items[:1] for chapter, items in sorted(assigned.items())}
+
+
+def _human_warmth_repair_issues_from_local_scan(local_scan: dict, total: int, limit: int) -> dict[int, list[dict]]:
+    issues = local_scan.get("issues")
+    if not isinstance(issues, list):
+        return {}
+    assigned: dict[int, list[dict]] = {}
+    for issue in issues:
+        if not isinstance(issue, dict) or issue.get("category") != "human_warmth_streak":
+            continue
+        chapters = sorted({
+            value
+            for value in issue.get("chapters", [])
+            if isinstance(value, int) and 1 <= value <= total
+        })
+        if not chapters:
+            continue
+        # Keep the first chapter as the observed fact anchor; repair the later
+        # chapter where the pattern should be broken with a concrete human beat.
+        target = chapters[-1] if len(chapters) >= 2 else chapters[0]
+        detail = str(issue.get("detail", "")).strip()
+        evidence = str(issue.get("evidence", "")).strip()
+        suggestion = (
+            "本章必须补一个能打断连续空泛感的烟火气场景：至少包含可触摸生活物件、"
+            "一句带问句或试探意味的对白、一个配角主动选择；这些元素必须推动剧情或关系变化，"
+            "不能只作为环境描写。"
+        )
+        assigned.setdefault(target, []).append({
+            "severity": issue.get("severity", "major"),
+            "category": "human_warmth_streak_repair",
+            "chapters": chapters,
+            "detail": detail or "连续多章缺少烟火气触点",
+            "evidence": evidence,
+            "suggestion": suggestion,
+        })
+        if len(assigned) >= limit:
+            break
+    return {chapter: items[:1] for chapter, items in sorted(assigned.items())}
 
 
 def _assign_repair_issues(
@@ -1097,3 +1192,81 @@ def prepare_all_outlines_and_book_review(rt, end: int, force_review: bool = Fals
             rt.log("[Coordinator] 整本修复通过，已按最新单章事实刷新卷纲")
             return True
     return False
+
+
+def repair_book_relationship_targets(rt, round_no: int = 1) -> list[int]:
+    """Apply final book-review relationship repair targets to chapter outlines.
+
+    Returns the chapters whose outlines were repaired and whose text artifacts
+    should be regenerated on the next Coordinator pass.
+    """
+    report = rt._load_json_file(report_path(rt.NOVELS_DIR, "book_review") / "final_book_review.json")
+    if not report:
+        return []
+    total = int(rt.CONFIG["total_chapters"])
+    cfg = rt.CONFIG.get("book_reviewer", {}) if isinstance(rt.CONFIG.get("book_reviewer"), dict) else {}
+    default_limit = int(rt.CONFIG.get("outline_book_reviewer", {}).get("max_repair_chapters", 10) or 10)
+    limit = int(cfg.get("max_relationship_repair_chapters", default_limit) or default_limit)
+    assigned = _relationship_repair_issues_from_book_review(report, total=total, limit=max(1, limit))
+    targets = sorted(assigned)
+    if not targets:
+        return []
+
+    unlocked = unlock_chapters(rt.NOVELS_DIR, targets)
+    if unlocked:
+        rt.log(f"[Coordinator] 关系线终审修复前已解锁批次: {unlocked}")
+    rt.log(f"[Coordinator] 终审关系线问题回灌到大纲门: {targets}")
+    repaired: list[int] = []
+    for chapter in targets:
+        feedback = _global_outline_feedback(
+            rt,
+            chapter,
+            assigned.get(chapter, []),
+            round_no,
+            source="book_relationship_review",
+            path_prefix="book_relationship_feedback",
+            summary="整本终审要求修复人物关系欠账和人情味回声",
+        )
+        if not process_outline_gate(rt, chapter, push_on_failure=False, initial_feedback=feedback):
+            rt.log(f"[Coordinator] 第{chapter}章应用关系线终审反馈后仍未通过逐章大纲门")
+            break
+        rt._drop_text_artifacts(chapter, reason="整本终审关系线修复目标已回灌大纲，需重写正文")
+        repaired.append(chapter)
+    return repaired
+
+
+def repair_book_human_warmth_streaks(rt, round_no: int = 1) -> list[int]:
+    """Apply final local-scan human warmth streak issues to chapter outlines."""
+    local_scan = rt._load_json_file(report_path(rt.NOVELS_DIR, "book_review") / "local_full_scan.json")
+    if not local_scan:
+        return []
+    total = int(rt.CONFIG["total_chapters"])
+    cfg = rt.CONFIG.get("book_reviewer", {}) if isinstance(rt.CONFIG.get("book_reviewer"), dict) else {}
+    default_limit = int(rt.CONFIG.get("outline_book_reviewer", {}).get("max_repair_chapters", 10) or 10)
+    limit = int(cfg.get("max_human_warmth_repair_chapters", default_limit) or default_limit)
+    assigned = _human_warmth_repair_issues_from_local_scan(local_scan, total=total, limit=max(1, limit))
+    targets = sorted(assigned)
+    if not targets:
+        return []
+
+    unlocked = unlock_chapters(rt.NOVELS_DIR, targets)
+    if unlocked:
+        rt.log(f"[Coordinator] 烟火气连续性修复前已解锁批次: {unlocked}")
+    rt.log(f"[Coordinator] 终审烟火气连续性问题回灌到大纲门: {targets}")
+    repaired: list[int] = []
+    for chapter in targets:
+        feedback = _global_outline_feedback(
+            rt,
+            chapter,
+            assigned.get(chapter, []),
+            round_no,
+            source="book_human_warmth_scan",
+            path_prefix="book_human_warmth_feedback",
+            summary="整本终审本地扫描要求修复连续缺少烟火气和配角主动选择的问题",
+        )
+        if not process_outline_gate(rt, chapter, push_on_failure=False, initial_feedback=feedback):
+            rt.log(f"[Coordinator] 第{chapter}章应用烟火气连续性反馈后仍未通过逐章大纲门")
+            break
+        rt._drop_text_artifacts(chapter, reason="整本终审烟火气连续性修复目标已回灌大纲，需重写正文")
+        repaired.append(chapter)
+    return repaired

@@ -19,7 +19,7 @@ import re
 import time
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
-from core.novel_config import load_config, load_origin_materials, resolve_project_dir
+from core.novel_config import build_origin_fact_directive, load_config, load_origin_materials, resolve_project_dir
 from core.outline_constraints import format_outline_constraints
 from core.outline_memory import build_outline_memory, format_outline_memory
 from core.foreshadowing_ledger import (
@@ -28,6 +28,7 @@ from core.foreshadowing_ledger import (
     parse_foreshadowing_field,
     register_thread,
     resolve_thread,
+    claim_thread,
     save_ledger,
 )
 from core.outline_quality_gate import clean_char_name
@@ -127,7 +128,11 @@ def _update_ledger_from_new_chapters(chapters: list) -> None:
                             total_chapters=tc, thread_id=tid or None)
             changed = True
         for tid, note in parsed["resolved"]:
-            if tid and resolve_thread(ledger, tid, resolved_at=num, resolution=note):
+            # 大纲层只标 claimed（声称回收）；正文 writer 兑现后才升 resolved。
+            # 这样终审能区分"大纲写了回收但正文没写"的假回收。
+            if tid and claim_thread(ledger, tid, claimed_at=num, resolution=note):
+                changed = True
+            elif tid and resolve_thread(ledger, tid, resolved_at=num, resolution=note):
                 changed = True
     if changed:
         save_ledger(NOVELS_DIR, ledger)
@@ -426,12 +431,40 @@ def _flatten_project_text(*values, limit: int = 12000) -> str:
 
 
 def _story_payoff_profile(world: dict | None = None) -> dict:
-    """Return genre-aware payoff wording so prompts do not force every book into battle/upgrading."""
+    """Return genre-aware payoff wording so prompts do not force every book into battle/upgrading.
+
+    多标签题材识别：一本混合题材的书（如悬疑+修仙）不再被第一个命中的关键词锁死，
+    而是按命中数加权，给出融合的回报链 prompt，避免错配（修仙书被要求写"证据到手"）。
+    """
     world = world or _load_json(WORLD_FILE) if WORLD_FILE else {}
     text = _flatten_project_text(world, NOVEL_PREMISE).lower()
-    suspense_hits = ("悬疑", "案件", "调查", "记者", "证据", "真相", "追踪", "警方", "犯罪", "谜", "反转", "都市")
-    cultivation_hits = ("修仙", "武道", "玄幻", "境界", "灵气", "真气", "宗门", "神通", "法宝", "妖兽", "飞升", "修炼")
-    if any(key in text for key in suspense_hits):
+    genre_keywords = {
+        "suspense": ("悬疑", "案件", "调查", "记者", "证据", "真相", "追踪", "警方", "犯罪", "谜", "反转", "都市"),
+        "cultivation": ("修仙", "武道", "玄幻", "境界", "灵气", "真气", "宗门", "神通", "法宝", "妖兽", "飞升", "修炼"),
+    }
+    scores = {
+        genre: sum(1 for kw in kws if kw in text)
+        for genre, kws in genre_keywords.items()
+    }
+    is_suspense = scores["suspense"] > 0
+    is_cultivation = scores["cultivation"] > 0
+
+    # 混合题材：两条回报链融合，提示模型按场景选用
+    if is_suspense and is_cultivation:
+        return {
+            "label": "阅读回报（悬疑+成长双线）",
+            "chain": "期待→压迫/阻碍→线索反转+能力压制→代价兑现/局势推进",
+            "field_hint": "期待→阻碍→反转（线索或能力）→兑现/推进式阅读回报，15字以上",
+            "requirement": (
+                "payoff_design 必须写清读者期待如何被压迫、关键线索如何反转、主角如何用判断/"
+                "行动/代价（可含能力发挥）换来阶段性推进；悬疑线优先真相推进，成长线优先能力代价。"
+            ),
+            "extra": (
+                "本书含悬疑与成长双线：悬疑线回报可以是真相推进、证据到手、关系破局；"
+                "成长线回报可以是能力突破的代价与代价后的主动权；禁止硬塞单一模板。"
+            ),
+        }
+    if is_suspense:
         return {
             "label": "阅读回报",
             "chain": "期待→压迫/阻碍→线索反转→代价兑现/局势推进",
@@ -445,7 +478,7 @@ def _story_payoff_profile(world: dict | None = None) -> dict:
                 "逃出生天或代价后的主动权变化，禁止硬塞升级打脸桥段。"
             ),
         }
-    if any(key in text for key in cultivation_hits):
+    if is_cultivation:
         return {
             "label": "爽点链",
             "chain": "期待→压制→反转→兑现",
@@ -481,6 +514,7 @@ def _character_brief(item: dict) -> dict:
         "motivation",
         "character_arc",
         "relationship_with_protagonist",
+        "life_profile",
         "language_fingerprint",
     ):
         value = item.get(key)
@@ -490,11 +524,12 @@ def _character_brief(item: dict) -> dict:
             value = "；".join(f"{k}:{v}" for k, v in list(value.items())[:3])
         text = str(value or "").strip()
         if text:
-            fields.append(f"{key}:{text[:80]}")
+            limit = 140 if key == "life_profile" else 80
+            fields.append(f"{key}:{text[:limit]}")
     aliases = item.get("aliases")
     if isinstance(aliases, list) and aliases:
         fields.append("aliases:" + "、".join(str(a) for a in aliases[:4]))
-    return {"name": name, "brief": "；".join(fields)[:240]}
+    return {"name": name, "brief": "；".join(fields)[:360]}
 
 
 def _collect_character_briefs(value, *, limit: int = 10) -> list[dict]:
@@ -909,6 +944,8 @@ REQUIRED_CHAPTER_FIELDS = (
     "story_beat",
     "chapter_goal",
     "payoff_design",
+    "human_anchor",
+    "content_layers",
     # 推荐维度（对抗/时间/主线）
     "main_antagonist",
     "time_progression",
@@ -967,6 +1004,7 @@ PLACEHOLDER_TEXTS = {
     "结构功能",
     "章节目标",
     "爽点设计",
+    "内容层次",
     "主要对抗",
     "时间推进",
     "主线关联",
@@ -974,10 +1012,26 @@ PLACEHOLDER_TEXTS = {
 }
 
 
+PLACEHOLDER_PATTERNS = (
+    re.compile(r"此处(写|填|补|描述)"),
+    re.compile(r"在此(处)?(写|填|补|描述)"),
+    re.compile(r"请(在此)?(写|填|补|描述)"),
+    re.compile(r"第[一二三四五六七八九十\d]+(件事|个事件|项)"),
+    re.compile(r"\.{3,}|…{1,}"),  # 省略号占位
+    re.compile(r"待(补充|填写|完善)"),
+    re.compile(r"具体(剧情|内容|事件)(描述)?"),  # "具体剧情"本身是占位
+)
+
+
 def _has_placeholder(value) -> bool:
     if isinstance(value, str):
         text = value.strip()
-        return not text or text in PLACEHOLDER_TEXTS or "示例" in text or "占位" in text
+        if not text or text in PLACEHOLDER_TEXTS or "示例" in text or "占位" in text:
+            return True
+        # 模式匹配：捕获"此处写标题""第一件事"等变体占位
+        if any(pattern.search(text) for pattern in PLACEHOLDER_PATTERNS):
+            return True
+        return False
     if isinstance(value, list):
         return any(_has_placeholder(item) for item in value)
     return False
@@ -1091,6 +1145,24 @@ def _validate_chapter_outline(chapter: dict, expected_number: int | None = None)
         if _has_placeholder(value):
             issues.append(f"{field}仍是占位文本")
 
+    human_anchor = str(chapter.get("human_anchor", "")).strip()
+    if len(human_anchor) < 25:
+        issues.append("human_anchor不少于25字，需写清生活压力、关系牵挂、潜台词或生活物件")
+    if _has_placeholder(human_anchor):
+        issues.append("human_anchor仍是占位文本")
+
+    content_layers = chapter.get("content_layers")
+    if isinstance(content_layers, str):
+        parts = [item.strip() for item in re.split(r"[；;\n、]", content_layers) if item.strip()]
+        if parts:
+            chapter["content_layers"] = parts
+            content_layers = parts
+    layer_items = [str(item).strip() for item in content_layers if str(item).strip()] if isinstance(content_layers, list) else []
+    if len(layer_items) < 2:
+        issues.append("content_layers至少包含2层内容：外部事件推进 + 关系/生活压力/秘密代价/世界规则现场化等")
+    elif _has_placeholder(content_layers):
+        issues.append("content_layers包含占位文本")
+
     # 推荐字段：仅校验非空（对抗/时间/主线）
     for field in ("main_antagonist", "time_progression", "main_arc_link"):
         value = str(chapter.get(field, "")).strip()
@@ -1183,10 +1255,18 @@ def _outline_quality_contract() -> str:
   2. 信息反转钩子：抛出颠覆前文认知的关键信息
   3. 情感爆点钩子：人物关系发生剧烈撕裂或质变
 - 禁止以"平静收尾、总结现状、铺垫过渡"作为章末钩子。
+- 禁止对称式安全锁收尾：不得设计"身后……身前……""朝某方向迈步""一步，又一步""未知的路"等机械锚点句式。钩子必须来自具体现场：未完成动作、反常反应、物件暴露或关系裂变。
 
 ### 【情绪曲线·强制要求】
 - emotional_arc 字段必须描述本章的情绪变化轨迹，例如："压抑→紧张→短暂希望→绝望反转"。
 - 禁止一整章都是同一种情绪（如全程紧张或全程平淡）。
+
+### 【烟火气与人情味·强制要求】
+- human_anchor 字段必须写成本章的人情味锚点：具体生活压力 + 关系牵挂/亏欠 + 一句潜台词或一个生活物件，不能少于25字。
+- 本章必须设计至少一个贴近日常生计、家庭/邻里/同事关系、旧情分、亏欠、照料、面子或尊严的具体压力点，不能只有宏大危机、系统任务或抽象利益。
+- 至少一个关键事件必须让人物在"完成目标"与"照顾某个人/守住某段关系/保住体面"之间产生取舍；没有关系代价的胜利不算高质量回报。
+- 对白设计必须预留潜台词：人物不能把动机、背景和感情全说透，应有一句绕开真话、顾左右而言他或欲言又止的瞬间。
+- 场景必须有可触摸的生活细节：饭菜气味、旧物、账单、工位、楼道、雨棚、手上伤口、手机电量等，服务人物处境，不得堆砌风景。
 
 ### 【张力节点·强制要求】
 - tension_points 字段必须列出至少3个"让人无法停止阅读"的关键时刻，标注它们在章节中的大致位置（前/中/后）。
@@ -1197,12 +1277,31 @@ def _outline_quality_contract() -> str:
 - 禁止套路化设计：禁止"遇敌→分析→升级→打赢"的标准战斗流程，禁止"发现问题→查资料→解决"的标准解谜流程。
 - 每章必须产生有效的新进展：新信息、关系变化、风险升级、目标推进或旧伏笔回收至少一项；不强制新增人物或地点。
 
+### 【内容丰富度·强制要求】
+- 必须从 world.quality_bible 中选择至少一条内容密度规则或禁用套路落地到本章设计；不能只满足通用模板。
+- 本章至少包含两类内容层：外部事件推进 + 人物关系/生活压力/秘密代价/世界规则现场化中的一类。只有单线打斗、单线调查或单线赶路视为单薄。
+- 场景不得只是地点名，必须写出一个会影响人物选择的具体物件、制度、账目、伤势、天气后果、职业流程或生活噪声。
+- 如果 characters.relationship_matrix 中存在本章人物关系，本章必须推进其中一个 hidden_debt、pressure_trigger 或 payoff_direction；没有关系推进时，必须在 human_anchor 中说明原因和替代的人情味压力。
+- 若本章采用群像/多线协作，必须设计“从重奏到独步”的结构：前中段让多方行动形成压力或铺路，中后段收束为主角自己的判断、行动和代价，不能让主角只旁观配角推进。
+- 关键证据、信物、药包、账页、钥匙、录音等必须在 key_events 或 payoff_design 中写出传递链：起点、转交动作、接收者理解方式、风险、最终用途。
+- main_antagonist/payoff_design 必须写出反派遇到破绽后的应对方式：搬规矩、拖程序、威胁、交易、嫁祸或冷处理，不要只写反派发怒。
+- 如果反派有标志性物件或意象（灯笼、刀、戒指、手套、烟、车等），必须规划一次“物象反照内层”：该物件照出、碰到或遮住反派不愿面对的旧事、软肋、签押、伤痕或破绽。
+- 旧签押、旧证词、旧物证或熟人指认逼到反派时，必须规划一个极短身体裂隙（目光移开、指节发白、喉咙动、张口又咽回、手套按疤、灯柄轻响等），再让反派用规矩/程序/威胁冷处理，避免只有“猛地站起/脸色变了”。
+- 章末要使用的关键物/证据/拓印/录音/信物必须在 key_events 前段预埋制作、藏匿、转交或被角色瞥见的动作，避免结尾突然冒出。
+- 若章末出现墨印、拓片、副本、录音备份等复制型证据，key_events 必须提前写出复制动作：蘸墨、按压、拓下、晾干、夹入、换袋或藏入夹层。
+- 前文若出现亲缘旧痕、父亲字迹、旧称呼、手把手教过的动作等情感线索，chapter_hook 或 payoff_design 必须设计一个极小回扣，让字形、手势、触感或旧称呼在章末关键动作里返回。
+- chapter_hook 不得只停在主角动作本身；关键动作之后要设计1-2个短现场反应作为余韵，例如反派停顿、灯光偏移、旁人吸气、同伴松手或账本合上。
+- 多地点或跨时间段必须在 summary/key_events 中给出转场桥：声音、灯光、脚步、物件到达、传话延迟、时辰变化、伤口变化等，防止关键行动链跳步。
+- 禁止"打卡地图"：新地点不能只为拿道具、升境界或过副本服务；location/summary/key_events 必须体现当地风土人情、制度规则、生计结构、普通人压力或文化差异中的至少两项。
+- 禁止"抽象概念堆叠"：foreshadowing、power_progression、payoff_design 不能只写道意、本源、法则、共鸣、境界变化；必须说明它在身体、器物、环境、关系或现实成本上造成的具体后果。
+
 ### 【基础要求】
 - summary 必须写具体剧情链路：起因、冲突、转折、结果、章末钩子，不得写模板话。
 - key_events 至少 5 条，按发生顺序列出，每条必须包含行动、阻碍和结果。
 - foreshadowing 必须包含本章埋下或回收的具体伏笔，不能只写抽象评价。
 - power_progression 必须说明主角能力、资源、关系、情报或目标的具体变化。
 - 人物动机必须可执行、可理解，不能为了剧情强行行动。
+- 人物动机必须落到具体关系与具体处境：为谁、欠谁、怕谁失望、怕失去什么、眼前要解决哪件生活难题。
 - 每章必须有冲突升级和阅读回报，回报来自主角判断、能力、资源、关系或协作的实际发挥。
 - 回报应触及角色核心欲望、恐惧或当前阶段目标，不能只有表层事件堆叠。
 
@@ -1210,7 +1309,7 @@ def _outline_quality_contract() -> str:
 - power_progression 如果涉及主角金手指/外挂使用，建议体现有限制（代价/门槛）、有逻辑（自洽）、有成长（进化）、有融合（与世界观绑定）。
 
 ### 【设计硬门槛】
-- 四项硬门槛必须在章级尺度成立：明确欲望、产生真实代价的承诺或选择、中段改变行动方案、章末正在发生的强钩子。
+- 五项硬门槛必须在章级尺度成立：明确欲望、产生真实代价的承诺或选择、中段改变行动方案、一个可复述的不可逆动作、章末正在发生的强钩子。若是群像章节，还必须额外完成“群像铺压→主角独步”的转折。
 
 ### 【章节标题·建议】（title）
 - title 建议使用以下五种方法之一设计，避免平淡的"第X章"：
@@ -1385,7 +1484,11 @@ def _compact_review_feedback(review_feedback_data: dict, batch_start: int, batch
 
 
 def _get_direct_outline_edits(review_feedback_data: dict, chapter_no: int) -> list[dict]:
-    """从 review_feedback 中提取指定章节的字段级 edits。"""
+    """从 review_feedback 中提取指定章节的字段级 edits。
+
+    早期只取 edits[:1] 丢弃了其余修复点，导致关键问题（如 key_events）未修就回退到
+    模型重生成。改为返回全部 edits，但排除高风险的 key_events 整体替换（仍保留单条）。
+    """
     for key, value in review_feedback_data.items():
         if not isinstance(value, dict):
             continue
@@ -1394,7 +1497,8 @@ def _get_direct_outline_edits(review_feedback_data: dict, chapter_no: int) -> li
         latest = _best_valid_feedback_review(value, require_edits=True)
         edits = latest.get("edits")
         if isinstance(edits, list) and edits:
-            return edits[:1]
+            # 应用全部 edits，但每条校验；最多 5 条防失控
+            return list(edits)[:5]
     return []
 
 
@@ -1414,14 +1518,41 @@ def _get_direct_outline_source(review_feedback_data: dict, chapter_no: int) -> P
     return None
 
 
+def _chapter_signature(chapter_data: dict) -> tuple[str, str]:
+    """提取章节的内容指纹：summary + 拼接的 key_events。
+
+    用于相似度对比，忽略 title/time_progression 等可变字段，聚焦核心剧情。
+    """
+    summary = str(chapter_data.get("summary", "")).strip()
+    events = chapter_data.get("key_events", [])
+    if isinstance(events, list):
+        events_text = " ".join(str(e) for e in events)
+    else:
+        events_text = str(events or "")
+    return summary, events_text
+
+
+def _bigram_set(text: str) -> set[str]:
+    import re as _re
+    compact = _re.sub(r"[\W_]+", "", str(text), flags=_re.UNICODE)
+    return {compact[i:i + 2] for i in range(max(0, len(compact) - 1))}
+
+
+def _similarity(a: str, b: str) -> float:
+    sa, sb = _bigram_set(a), _bigram_set(b)
+    if not sa or not sb:
+        return 0.0
+    return len(sa & sb) / len(sa | sb)
+
+
 def _find_duplicate_candidate(candidate_file: Path, chapter_data: dict) -> Path | None:
+    """检测候选是否与历史候选实质雷同（summary/key_events 相似度≥0.8）。
+
+    早期实现用整章 JSON 字节级精确匹配，模型改个标点就绕过；改为内容相似度检测，
+    让 race 竞速真正选到不同的候选。
+    """
     candidate_root = candidate_file.parent.parent
-    fingerprint = json.dumps(
-        chapter_data,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    new_summary, new_events = _chapter_signature(chapter_data)
     for path in candidate_root.glob("round*_attempt*/candidate_*.json"):
         if path == candidate_file or path.name.endswith("_review.json"):
             continue
@@ -1429,15 +1560,135 @@ def _find_duplicate_candidate(candidate_file: Path, chapter_data: dict) -> Path 
             existing = _load_json(path)
         except Exception:
             continue
-        existing_fingerprint = json.dumps(
-            existing,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        if existing_fingerprint == fingerprint:
+        ex_summary, ex_events = _chapter_signature(existing)
+        # summary 或 key_events 任一高度相似即判雷同
+        if _similarity(new_summary, ex_summary) >= 0.8 or _similarity(new_events, ex_events) >= 0.8:
             return path
     return None
+
+
+def _pacing_guard_violations(outline_chapters: list, batch_end: int, *, max_run: int = 4) -> list[dict]:
+    """全局节奏守卫：检测写入新章节后是否产生连续注水段。
+
+    单章 story_beat 校验只能挡"标错值"，挡不住"内容注水但标 transition"。
+    本函数在写入后统计连续 transition/rising_action/setup 章数，超过阈值即报违规，
+    触发该批次重新生成。治"注水腰"——整本 pacing_curve 低分的根因。
+
+    只检查截至 batch_end 的已存在章节，复用 outline_quality_gate.detect_beat_runs 逻辑。
+    """
+    from core.outline_quality_gate import detect_beat_runs, normalize_beat
+    flat_beats = []
+    for ch in outline_chapters:
+        if not isinstance(ch, dict):
+            continue
+        num = int(ch.get("chapter_number", 0) or 0)
+        if num <= 0 or num > batch_end:
+            continue
+        beat = str(ch.get("story_beat", "")).strip()
+        if beat:
+            flat_beats.append((num, beat))
+    flat_beats.sort(key=lambda x: x[0])
+    # 注水 beat 集合：连续多章这类无转折节拍即注水腰
+    flat_beat_set = {"transition", "rising_action", "setup", "fun_and_games", "b_story"}
+    issues: list[dict] = []
+    # 自检连续注水 beat（detect_beat_runs 检测任意 beat，这里更严格针对注水 beat）
+    norm = [(ch, normalize_beat(b)) for ch, b in flat_beats]
+    i = 0
+    while i < len(norm):
+        j = i
+        while (
+            j + 1 < len(norm)
+            and norm[j + 1][0] == norm[j][0] + 1
+            and norm[j + 1][1] == norm[i][1]
+            and norm[i][1] in flat_beat_set
+        ):
+            j += 1
+        run_len = j - i + 1
+        if run_len > max_run and norm[i][1] in flat_beat_set:
+            chs = [norm[k][0] for k in range(i, j + 1)]
+            issues.append({
+                "type": "sagging_middle",
+                "chapters": chs,
+                "beat": norm[i][1],
+                "run_length": run_len,
+                "evidence": f"第{chs[0]}-{chs[-1]}章连续{run_len}章注水beat'{norm[i][1]}'，无转折，构成注水腰",
+            })
+        i = j + 1
+    # 同时用 detect_beat_runs 兜底任意 beat 的连续塌陷
+    issues.extend(detect_beat_runs(flat_beats, max_consecutive=max_run))
+    # 去重
+    seen = set()
+    deduped = []
+    for item in issues:
+        key = (item.get("type"), tuple(item.get("chapters", [])))
+        if key not in seen:
+            seen.add(key)
+            deduped.append(item)
+    return deduped
+
+
+def _volume_alignment_violations(
+    new_chapters: list[dict], batch_start: int, batch_end: int
+) -> list[str]:
+    """卷纲衔接校验：单章 story_beat 须服从所在卷的 turning_points 设计。
+
+    早期只校验卷纲自身完整性，不校验单章是否服从卷纲——卷纲说 ch50 是 midpoint，
+    但 ch50 写成 transition 也能过，卷纲成摆设。本函数读取 volume_outline，
+    对落在 turning_points/climax_chapter 的章节，校验其 story_beat 是否为转折类。
+    """
+    if not NOVELS_DIR:
+        return []
+    volume_path = NOVELS_DIR / "volume_outline.json"
+    if not volume_path.exists():
+        return []
+    volumes = _load_json(volume_path)
+    if isinstance(volumes, dict):
+        volumes = volumes.get("volumes", [])
+    if not isinstance(volumes, list):
+        return []
+
+    # 转折类 beat：卷纲的关键节点应该是这些
+    turning_beats = {
+        "catalyst", "midpoint", "all_is_lost", "dark_night",
+        "break_into_two", "break_into_three", "finale",
+    }
+    issues: list[str] = []
+    for ch in new_chapters:
+        if not isinstance(ch, dict):
+            continue
+        num = int(ch.get("chapter_number", 0) or 0)
+        beat = str(ch.get("story_beat", "")).strip()
+        if not num or not beat:
+            continue
+        # 找到该章所在卷
+        for vol in volumes:
+            if not isinstance(vol, dict):
+                continue
+            try:
+                vs = int(vol.get("start_chapter", 0) or 0)
+                ve = int(vol.get("end_chapter", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if not (vs <= num <= ve):
+                continue
+            # 该章是否是卷纲指定的转折点
+            is_turning = False
+            tps = vol.get("turning_points", [])
+            if isinstance(tps, list):
+                for tp in tps:
+                    if isinstance(tp, dict) and int(tp.get("chapter", 0) or 0) == num:
+                        is_turning = True
+                        break
+            climax_ch = int(vol.get("climax_chapter", 0) or 0)
+            if climax_ch == num:
+                is_turning = True
+            if is_turning and beat not in turning_beats:
+                issues.append(
+                    f"第{num}章是卷纲指定的转折点，story_beat 应为转折类"
+                    f"（catalyst/midpoint/all_is_lost/finale 等），实际为 '{beat}'"
+                )
+            break
+    return issues
 
 
 def _context_lines(outline: dict, batch_start: int, batch_end: int, rescue: bool = False) -> str:
@@ -1454,7 +1705,29 @@ def _context_lines(outline: dict, batch_start: int, batch_end: int, rescue: bool
     before.sort(key=lambda x: x.get("chapter_number", 0))
     after.sort(key=lambda x: x.get("chapter_number", 0))
     limit = 4 if rescue else 5
-    items = before[-limit:] + after[:limit]
+    items = list(before[-limit:]) + list(after[:limit])
+
+    # 动态补充远端关键事实锚点：±3 章窗口看不到更早的不可逆事件（死亡/身份揭露），
+    # 导致跨卷身份/生死被后章推翻。把更早章节中含伏笔埋设[埋]或能力重大变化的章拉进来。
+    def _is_fact_anchor(ch: dict) -> bool:
+        foreshadow = str(ch.get("foreshadowing", ""))
+        power = str(ch.get("power_progression", ""))
+        return "[埋]" in foreshadow or bool(foreshadow.strip() and ("F0" in foreshadow or "F1" in foreshadow)) or len(power) > 30
+
+    existing_nums = {ch.get("chapter_number") for ch in items}
+    extra_far: list[dict] = []
+    for ch in before[:-limit] if len(before) > limit else []:
+        if ch.get("chapter_number") in existing_nums:
+            continue
+        if _is_fact_anchor(ch):
+            extra_far.append(ch)
+    # 远端锚点最多补 3 个（取最近的几个关键事实章），避免 prompt 膨胀
+    for ch in extra_far[-3:]:
+        if ch.get("chapter_number") not in existing_nums:
+            items.append(ch)
+            existing_nums.add(ch.get("chapter_number"))
+    items.sort(key=lambda x: x.get("chapter_number", 0))
+
     if not items:
         return ""
 
@@ -1467,6 +1740,8 @@ def _context_lines(outline: dict, batch_start: int, batch_end: int, rescue: bool
             f"地点={str(ch.get('location', ''))[:80]}；"
             f"摘要={str(ch.get('summary', ''))[:260]}；"
             f"关键事件={json.dumps(ch.get('key_events', []), ensure_ascii=False)[:500]}；"
+            f"能力/资源状态={str(ch.get('power_progression', ''))[:140]}；"
+            f"伏笔状态={str(ch.get('foreshadowing', ''))[:140]}；"
             f"章末状态={str(ch.get('chapter_hook', ''))[:180]}"
         )
     return "\n".join(lines) + "\n"
@@ -1538,7 +1813,7 @@ def _build_rescue_prompt(
 - 只输出合法JSON，不要Markdown代码块，不要解释文字。
 - 只生成第{batch_start}章到第{batch_end}章，共{batch_end - batch_start + 1}个章节对象。
 - chapters 数组中每个对象的 chapter_number 必须严格落在 {batch_start}-{batch_end} 内；不得照抄反馈里的其它章节号。
-- 字段必须完整：chapter_number/title/summary/characters_involved/location/mood/key_events/foreshadowing/power_progression/word_count_target/chapter_hook/emotional_arc/tension_points/story_beat/chapter_goal/payoff_design/main_antagonist/time_progression/main_arc_link。
+- 字段必须完整：chapter_number/title/summary/characters_involved/location/mood/key_events/foreshadowing/power_progression/word_count_target/chapter_hook/emotional_arc/tension_points/story_beat/chapter_goal/payoff_design/human_anchor/content_layers/main_antagonist/time_progression/main_arc_link。
 - story_beat 必须取枚举值：opening_image/theme_stated/setup/catalyst/debate/break_into_two/b_story/fun_and_games/midpoint/bad_guys_close_in/all_is_lost/dark_night/break_into_three/finale/final_image/rising_action/transition。
 - summary 控制在150-220字，key_events 只写5-6条，每条不超过70字。
 - chapter_goal 写清主角想要什么+失败后果；payoff_design 写清题材适配的期待→阻碍/压迫→反转→兑现/推进。
@@ -1564,6 +1839,8 @@ JSON结构：
       "story_beat": "从枚举值选取，须呼应本章结构位置（如 catalyst/midpoint/all_is_lost/finale）",
       "chapter_goal": "主角本章具体想要什么+失败的后果（赌注），15字以上",
       "payoff_design": "{payoff_profile['field_hint']}",
+      "human_anchor": "本章烟火气锚点：具体生活压力、关系牵挂、潜台词或生活物件，25字以上",
+      "content_layers": ["外部事件推进层：本章现场行动和可见结果", "人物关系/生活压力层：谁与谁的压力、亏欠或潜台词被推进"],
       "main_antagonist": "本章主要对抗力量（人或势力或困境）",
       "time_progression": "本章相对前章的时间推进（如次日清晨/三天后/同一夜）",
       "main_arc_link": "本章如何推进全书主线（如揭示主线新线索/达成阶段目标）"
@@ -1595,6 +1872,7 @@ def generate_outline_range(
         "title": world.get("title", ""),
         "world_name": world.get("world_name", ""),
         "world_description": world.get("world_description", "")[:800],
+        "quality_bible": world.get("quality_bible", {}),
         "power_system": {
             "name": world.get("power_system", {}).get("name", ""),
             "description": world.get("power_system", {}).get("description", "")[:500],
@@ -1623,6 +1901,10 @@ def generate_outline_range(
         "signature_ability": protagonist.get("signature_ability", protagonist.get("abilities", "")),
     }
     chars_summary["key_characters"] = _collect_character_briefs(characters, limit=12)
+    if isinstance(characters.get("relationship_matrix"), list):
+        chars_summary["relationship_matrix"] = characters.get("relationship_matrix", [])[:8]
+    if isinstance(characters.get("casting_plan"), dict):
+        chars_summary["casting_plan"] = characters.get("casting_plan", {})
     chars_json = json.dumps(chars_summary, ensure_ascii=False, indent=2)
 
     # 读取审查意见
@@ -1785,7 +2067,7 @@ def generate_outline_range(
         rescue_mode = rescue or (
             chapter is not None
             and batch_start == batch_end
-            and _feedback_attempt_count(review_feedback_data, batch_start) >= 8
+            and _feedback_attempt_count(review_feedback_data, batch_start) >= 3
         )
 
         prev_context = _context_lines(outline, batch_start, batch_end, rescue=rescue_mode)
@@ -1825,6 +2107,7 @@ def generate_outline_range(
                 batch_end,
                 book_repair=book_repair,
             )
+            fact_directive = build_origin_fact_directive(prompt_origin, limit=8)
             prompt = f"""你正在为一部追求9分神作的中文网文设计单章大纲。下面是本次要生成的章节范围、世界观、角色设定和参考素材。
 
 ## ⚠️ 硬门槛（必须优先满足，否则视为不合格）
@@ -1847,6 +2130,7 @@ def generate_outline_range(
 ## origin/ 原始参考素材
 {prompt_origin}
 
+{fact_directive}
 ## 前序大纲全局压缩记忆
 以下记忆由此前全部单章大纲派生，用于保持长期主线、角色、能力和伏笔连续；不得机械重复其中事件：
 {long_memory}
@@ -1879,6 +2163,8 @@ story_beat 必须取枚举值之一：opening_image/theme_stated/setup/catalyst/
       "story_beat": "枚举值，须呼应本章在全卷结构中的位置（如卷首catalyst、卷中midpoint、卷末finale）",
       "chapter_goal": "主角本章具体想要什么+失败的后果（赌注），15字以上",
       "payoff_design": "{_story_payoff_profile()['field_hint']}",
+      "human_anchor": "本章烟火气锚点：具体生活压力、关系牵挂、潜台词或生活物件，25字以上",
+      "content_layers": ["外部事件推进层：本章现场行动和可见结果", "人物关系/生活压力层：谁与谁的压力、亏欠或潜台词被推进"],
       "main_antagonist": "本章主要对抗力量（具体人或势力或困境）",
       "time_progression": "本章相对前章的时间推进（如次日清晨/三天后/同一夜）",
       "main_arc_link": "本章如何推进全书主线（如揭示主线新线索/达成阶段目标）"
@@ -1894,19 +2180,34 @@ story_beat 必须取枚举值之一：opening_image/theme_stated/setup/catalyst/
 2. story_beat 必须与本章实际剧情结构相符，且要考虑全卷/全书节奏曲线——催化事件(catalyst)、中点(midpoint)、谷底(all_is_lost)、高潮(finale)等关键节拍要落在合理位置，禁止中段连续多章 transition 造成注水腰
 3. chapter_goal 必须是本章可推进的具体目标，不能是全书级宏大目标；必须写清失败后果（赌注）
 4. payoff_design 必须设计完整阅读回报链：{_story_payoff_profile()['chain']}，回报来自主角判断、行动、资源、关系或能力的真实发挥
-5. 情节要有起伏，有高潮有低谷，有符合本书题材的阶段性回报
-6. 主角的能力、资源、关系、情报或目标要有具体变化，不能原地踏步
-7. 伏笔要前后呼应，与前一批大纲自然衔接
-8. main_antagonist 和 payoff_design 要体现明确阻碍、压力来源和阶段性兑现；不要硬塞强敌轻视或战力碾压桥段
-9. 探索不同场景时要展现环境差异和世界多样性
-10. 如果 origin/ 中存在素材，必须参考其中的设定、人物关系、历史事件和风格约束，不能与其冲突
-11. summary 必须是具体剧情摘要，不能写“200字详细摘要”等占位内容
-12. foreshadowing 和 power_progression 必须有具体内容，不能缺失或留空
-13. 必须输出合法JSON，总共{batch_end - batch_start + 1}个章节对象，chapter_number 必须严格落在 {batch_start}-{batch_end} 内
-14. 单章大纲整体保持紧凑，避免长段解释；必须优先保证JSON闭合和所有必填字段完整
-15. 若本批次包含多章，必须把它们设计成连续状态机：前章章末的人物、地点、时间、伤势、证据和关系状态，必须原样成为后章开场事实
-16. 死亡、被捕、身份揭露、关键证据取得、营救成功和公开直播均属于不可逆事件，同一事件全书只能发生一次
-17. 每章必须有独占的核心场景和核心动作链；不得把同一追逐、对峙、取证、营救或直播拆成两章重复叙述"""
+5. human_anchor 必须具体说明本章的人情味锚点，至少包含生活压力、关系牵挂、潜台词或生活物件中的三类
+6. content_layers 必须至少两条，明确本章除了外部事件推进之外，还推进了人物关系、生活压力、秘密代价或世界规则现场化中的哪一层
+7. 本章必须设计一个可复述的不可逆动作：签下/撕毁/交出/藏起/公开/背叛/救下/放弃/承认/误伤/暴露等，不能只用氛围和意象表达“往前挪”
+8. 若本章有群像/多线协作，必须写出“从重奏到独步”：配角如何铺路或施压，主角最终如何独自做出不可逆动作
+9. 关键证据/信息/信物必须有清楚传递链，不能只写“传出去/大家知道了”；接收者必须有可理解暗语或现场反应
+10. 反派遇到证据、质问或民意压力时必须有冷处理策略（规矩、程序、威胁、交易、嫁祸），不能只写发怒
+11. 反派标志物/贯穿意象必须有一次反照内层或旧事的设计，不能只做随身道具
+12. 旧案证据逼到反派时必须设计一个半拍身体裂隙，再接冷处理策略
+13. 章末关键道具/证据必须在前文预埋一次制作、藏匿、转交或瞥见的动作
+14. 墨印/拓片/副本/录音备份等复制型证据必须提前写出复制动作，不能结尾突然出现
+15. 父辈/亲缘/旧痕线索必须在章末关键动作中有微小回扣
+16. 章末关键动作后必须设计1-2个现场反应形成余韵，不能动作一落就截断
+17. 跨地点、跨时辰、并行动作必须有转场桥，保证读者知道同一时间各线如何咬合
+18. 情节要有起伏，有高潮有低谷，有符合本书题材的阶段性回报
+19. 主角的能力、资源、关系、情报或目标要有具体变化，不能原地踏步
+20. 伏笔要前后呼应，与前一批大纲自然衔接
+21. main_antagonist 和 payoff_design 要体现明确阻碍、压力来源和阶段性兑现；不要硬塞强敌轻视或战力碾压桥段
+22. 探索不同场景时要展现环境差异和世界多样性
+23. 地图切换必须有因果和代价：若本章进入新地点，必须写出当地风土人情/制度规则/生计结构/文化差异，不能只把地点当通关清单
+24. 抽象概念必须落地：修炼、规则、科技或神秘体系变化必须转化为身体代价、器物变化、环境后果、旁人反应或关系成本
+25. 如果 origin/ 中存在素材，必须参考其中的设定、人物关系、历史事件和风格约束，不能与其冲突；若存在 origin/facts，本章 key_events、summary 或 human_anchor 必须落地 1-2 条事实线索
+26. summary 必须是具体剧情摘要，不能写“200字详细摘要”等占位内容
+27. foreshadowing 和 power_progression 必须有具体内容，不能缺失或留空
+28. 必须输出合法JSON，总共{batch_end - batch_start + 1}个章节对象，chapter_number 必须严格落在 {batch_start}-{batch_end} 内
+29. 单章大纲整体保持紧凑，避免长段解释；必须优先保证JSON闭合和所有必填字段完整
+30. 若本批次包含多章，必须把它们设计成连续状态机：前章章末的人物、地点、时间、伤势、证据和关系状态，必须原样成为后章开场事实
+31. 死亡、被捕、身份揭露、关键证据取得、营救成功和公开直播均属于不可逆事件，同一事件全书只能发生一次
+32. 每章必须有独占的核心场景和核心动作链；不得把同一追逐、对峙、取证、营救或直播拆成两章重复叙述"""
 
         import time as _time
         semantic_retries = max(
@@ -1976,6 +2277,42 @@ story_beat 必须取枚举值之一：opening_image/theme_stated/setup/catalyst/
                             _update_ledger_from_new_chapters(new_chapters)
                         except Exception as _le:
                             print(f"[Outliner] 台账更新失败（不影响大纲）: {_le}")
+                        # 卷纲衔接校验：转折点章节的 story_beat 须为转折类
+                        align_issues = _volume_alignment_violations(new_chapters, batch_start, batch_end)
+                        if align_issues:
+                            detail = "; ".join(align_issues[:3])
+                            print(f"[Outliner] ⚠️ 卷纲衔接校验失败：{detail}")
+                            for ch in new_chapters:
+                                num = int(ch.get("chapter_number", 0) or 0)
+                                if num:
+                                    f = outline_dir(NOVELS_DIR) / f"chapter_{num:04d}.json"
+                                    if f.exists():
+                                        f.unlink()
+                            raise ValueError(f"卷纲衔接：转折点章节 story_beat 与卷纲冲突。{detail}")
+                        # G-节奏守卫：写入后检测是否产生连续注水段（>4章同注水beat）。
+                        # 单章生成时 chapter 模式下跨章上下文不足，跳过；仅批次/连续生成时检查。
+                        if chapter is None and len(new_chapters) > 1:
+                            try:
+                                pacing_issues = _pacing_guard_violations(
+                                    list_outline_chapters(NOVELS_DIR), batch_end, max_run=4
+                                )
+                                if pacing_issues:
+                                    detail = "; ".join(
+                                        item.get("evidence", "")[:120] for item in pacing_issues[:3]
+                                    )
+                                    print(f"[Outliner] ⚠️ 节奏守卫触发：{detail}")
+                                    # 回滚本批次新章节，强制下一轮语义重试时带反馈重生成
+                                    for ch in new_chapters:
+                                        num = int(ch.get("chapter_number", 0) or 0)
+                                        if num:
+                                            f = outline_dir(NOVELS_DIR) / f"chapter_{num:04d}.json"
+                                            if f.exists():
+                                                f.unlink()
+                                    raise ValueError(f"节奏守卫：检测到注水腰，需重新设计转折节拍。{detail}")
+                            except ValueError:
+                                raise
+                            except Exception as _pe:
+                                print(f"[Outliner] 节奏守卫检查异常（忽略）: {_pe}")
                     batch_succeeded = True
                     break
                 except Exception as e:

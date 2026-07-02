@@ -91,12 +91,39 @@ def _has_cover_image() -> bool:
     )
 
 
+def _enrich_media_prompt(prompt: str, asset_type: str) -> str:
+    """Append non-generic quality constraints without mutating world.json."""
+    prompt = str(prompt or "").strip()
+    if not prompt:
+        return ""
+    common = (
+        "质量要求：必须呈现本书专属人物、核心矛盾、具体地点或物件；"
+        "避免通用网文模板、纯氛围空镜、抽象能量、廉价广告感、文字水印和无意义装饰。"
+    )
+    if asset_type == "cover":
+        detail = (
+            "封面必须有可识别的主视觉焦点和前中后景层次；"
+            "背景至少包含一个能暗示主线秘密、势力压迫或人物代价的细节。"
+        )
+    elif asset_type == "video":
+        detail = (
+            "视频镜头必须形成小叙事：生活压力细节→冲突升级→主角选择或反转；"
+            "不要只生成风景、云海、火焰、城市空镜或角色站立摆拍。"
+        )
+    else:
+        detail = (
+            "音乐要有清晰情绪弧线和副歌记忆点，体现困境、牵挂、选择代价与阶段性爆发；"
+            "避免通用史诗配乐描述。"
+        )
+    return f"{prompt}\n\n{common}{detail}"
+
+
 def generate_cover(media_prompts: dict) -> bool:
     assert NOVELS_DIR is not None and CONFIG is not None
     if _has_cover_image():
         log("[Media] cover 已存在，跳过")
         return True
-    prompt = str(media_prompts.get("cover_prompt", "")).strip()
+    prompt = _enrich_media_prompt(media_prompts.get("cover_prompt", ""), "cover")
     if not prompt:
         log("[Media] cover_prompt 为空，跳过")
         return False
@@ -127,7 +154,7 @@ def generate_video(media_prompts: dict) -> bool:
     if target.exists():
         log("[Media] world_video.mp4 已存在，跳过")
         return True
-    prompt = str(media_prompts.get("video_prompt", "")).strip()
+    prompt = _enrich_media_prompt(media_prompts.get("video_prompt", ""), "video")
     if not prompt:
         log("[Media] video_prompt 为空，跳过")
         return False
@@ -155,7 +182,7 @@ def generate_song(media_prompts: dict) -> bool:
     if target.exists():
         log(f"[Media] {target.name} 已存在，跳过")
         return True
-    prompt = str(media_prompts.get("song_prompt", "")).strip()
+    prompt = _enrich_media_prompt(media_prompts.get("song_prompt", ""), "song")
     lyrics = str(media_prompts.get("song_lyrics", "")).strip()
     if not prompt:
         log("[Media] song_prompt 为空，跳过")

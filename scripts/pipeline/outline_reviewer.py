@@ -394,7 +394,7 @@ def review_outline(
 ## 【高质量单章大纲评分标准】
 - 10分：大纲足以支撑传世级神作。悬念密集，情感冲击强烈，信息新鲜，章末钩子让人失眠，Writer据此必能写出让人欲罢不能的章节。
 - 9-9.9分：优秀大纲。悬念设计到位，情绪曲线清晰，反套路，有新鲜感，足以支撑9分正文。
-- 8-8.9分：良好到优秀。结构完整、有明确冲突和钩子；达到{min_score}分且四项设计门通过即可进入后续全书审查。
+- 8-8.9分：良好到优秀。结构完整、有明确冲突和钩子；达到{min_score}分且六项设计门通过即可进入后续全书审查。
 - 7-7.9分：平庸大纲。有明显套路、重复、动机牵强或缺乏钩子的问题。
 - 低于7分：不合格，存在严重设计缺陷。
 
@@ -478,6 +478,11 @@ def review_outline(
       "field": "chapter_hook",
       "action": "replace",
       "value": "修改后的章末钩子"
+    }},
+    {{
+      "field": "human_anchor",
+      "action": "replace",
+      "value": "修改后的烟火气锚点：生活压力、关系牵挂、潜台词或生活物件"
     }}
   ],
   "strengths": ["优点1，80字以内"],
@@ -485,12 +490,14 @@ def review_outline(
     "core_desire": {{"passed": true, "evidence": "主角本章具体想得到或保护什么，60字以内"}},
     "irreversible_choice": {{"passed": true, "evidence": "本章不可撤销的选择、损失或暴露，60字以内"}},
     "midpoint_reversal": {{"passed": true, "evidence": "中段如何改变原行动方案，60字以内"}},
+    "human_warmth": {{"passed": true, "evidence": "本章具体生活压力、关系牵挂或潜台词如何参与剧情，60字以内"}},
+    "content_richness": {{"passed": true, "evidence": "本章除外部事件外，至少哪一层关系/生活/秘密/规则内容被推进，60字以内"}},
     "strong_hook": {{"passed": true, "evidence": "章末正在发生的具体危机或反转，60字以内"}}{repair_gate_schema}
   }}
 }}
 
 【9分神作大纲核心审查清单】
-请在给出评分前按以下核心项快速自检。四项 design_gates 是硬门槛；其余项目用于综合评分。若存在多个问题，只输出最影响通过的一项：
+请在给出评分前按以下核心项快速自检。六项 design_gates 是硬门槛；其余项目用于综合评分。若存在多个问题，只输出最影响通过的一项：
 1. chapter_hook字段是否明确写出了一个让人心跳加速的强力钩子（危机升级/信息反转/情感爆点）？
 2. chapter_hook是否禁止了平静收尾、总结现状、铺垫过渡？
 3. emotional_arc是否描述了清晰的情绪起伏（如压抑→紧张→希望→绝望），而非全程单一情绪？
@@ -498,19 +505,38 @@ def review_outline(
 5. 本章是否带来有效的新进展（新信息、新关系变化、新风险或旧伏笔回收），不要求每章强行新增人物或地点？
 6. 是否存在套路化设计（标准战斗流程、标准解谜流程、配角当解说员）？
 7. 本章回报是否触及角色核心欲望、恐惧或明确阶段目标，而非只有表层事件堆叠？
-8. 如果Writer严格按这个大纲写，能否产出一章让人读完立刻想打开下一章的内容？
-9. story_beat是否名实相符？标注的结构功能（如catalyst/midpoint/all_is_lost/finale）是否在剧情中真正兑现？与全卷节奏曲线是否衔接？
-10. chapter_goal是否是本章可推进的具体目标（非全书口号）？失败后果是否触及核心利益？
-11. {payoff_profile['check']}
-12. 与上下文各章相比，是否重复了同一核心场景、追逐、对峙、取证、营救或直播动作链？
-13. 人物身份、阵营、生死、伤势、被捕/获救状态是否与前后章一致？不可逆事件是否只发生一次？
-14. 时间是否单调推进？跨日、等待、移动和地点切换是否有明确过渡？
-15. 本章新埋伏笔在后续接口中是否有承接；前章已回收信息是否被错误地再次当成未知？
-16. 问题归属遵循“最早事实为锚点”：若冲突由后章推翻前章事实造成，只在 continuity_issues 中指出应修改的后章，不得因此压低本章分数或判本章不通过。
+8. human_anchor 是否具体写出了生活压力、关系牵挂、潜台词或生活物件，且这些内容会参与剧情推进？
+9. 本章是否有具体生活压力、关系牵挂、旧情分、亏欠、照料、面子或尊严参与剧情推进？
+10. content_layers 是否至少包含两层，并且不是复述同一个外部事件？是否明确推进了关系、生活压力、秘密代价或世界规则现场化？
+11. 是否有打卡地图风险：地点只为拿道具/升境界/过副本服务，缺少风土人情、制度、生计和文化差异？
+12. 是否有抽象概念堆叠风险：道意、本源、法则、共鸣、境界等概念没有身体/器物/环境/关系后果？
+13. chapter_hook 是否避开“身后……身前……”“一步又一步”“未知的路”等机械对称收尾？
+14. 是否避免散文诗式复沓：不是用十几段同一物象聚焦/同一作者判断替代事件推进？
+15. 是否设计了一个可复述的不可逆动作，而不是只用氛围说明人物“往前挪”？
+16. 若是群像/多线章节，是否设计了“从重奏到独步”：群像铺压或递火，最终收束成主角自己的独立选择？
+17. 关键证据/信息/信物的传递链是否清楚：起点、转交、接收者理解方式、风险、最终用途是否都能复述？
+18. 反派是否有层次：面对破绽时会用规矩、程序、威胁、交易、嫁祸或冷处理稳住场面，而不是只变脸或发怒？
+19. 跨地点/跨时辰/并行动作是否有明确转场桥，避免Writer写成突兀跳切？
+20. 反派标志物或贯穿意象是否被设计成反照反派内层、旧事、软肋或破绽，而不是只做道具？
+21. 旧证据逼到反派时是否设计了一个半拍身体裂隙，再接规矩/程序/威胁等冷处理？
+22. 章末关键道具/证据是否在前文预埋了制作、拓印、藏匿、转手或瞥见动作？
+23. 墨印/拓片/副本/录音备份等复制型证据是否提前设计了复制动作？
+24. 父辈/亲缘/旧痕线索是否在 chapter_hook 或 payoff_design 中有章末微回扣？
+25. chapter_hook 是否包含关键动作后的1-2个现场微反应，形成余韵而不是动作一落就截断？
+26. 是否设计了至少一句有潜台词的对白或欲言又止的瞬间，而不是把动机和情绪全说透？
+27. 如果Writer严格按这个大纲写，能否产出一章让人读完立刻想打开下一章的内容？
+28. story_beat是否名实相符？标注的结构功能（如catalyst/midpoint/all_is_lost/finale）是否在剧情中真正兑现？与全卷节奏曲线是否衔接？
+29. chapter_goal是否是本章可推进的具体目标（非全书口号）？失败后果是否触及核心利益？
+30. {payoff_profile['check']}
+31. 与上下文各章相比，是否重复了同一核心场景、追逐、对峙、取证、营救或直播动作链？
+32. 人物身份、阵营、生死、伤势、被捕/获救状态是否与前后章一致？不可逆事件是否只发生一次？
+33. 时间是否单调推进？跨日、等待、移动和地点切换是否有明确过渡？
+34. 本章新埋伏笔在后续接口中是否有承接；前章已回收信息是否被错误地再次当成未知？
+35. 问题归属遵循“最早事实为锚点”：若冲突由后章推翻前章事实造成，只在 continuity_issues 中指出应修改的后章，不得因此压低本章分数或判本章不通过。
 
 要求：
-1. 评分要客观可复现。9分代表单章设计突出；达到{min_score}分且四项设计门通过，代表足以进入全书层级审查。
-2. 重点审查：悬念密度、钩子强度、情绪曲线、信息新鲜度、反套路程度、结构功能合理性、目标赌注、{payoff_profile['label']}。这些维度比字段完整性更重要。
+1. 评分要客观可复现。9分代表单章设计突出；达到{min_score}分且六项设计门通过，代表足以进入全书层级审查。
+2. 重点审查：悬念密度、钩子强度、情绪曲线、烟火气与人情味、内容层次、不可逆动作、地图真实感、概念落地、信息新鲜度、反套路程度、结构功能合理性、目标赌注、{payoff_profile['label']}。这些维度比字段完整性更重要。
 3. 剧情是否有真正的冲突和转折，而非流水账
 4. {payoff_profile['design']}
 5. 人物动机是否合理，是否与角色设定一致
@@ -522,7 +548,7 @@ def review_outline(
 11. 如低于{min_score}分必须标记为需重写
 12. 必须输出合法JSON，不要Markdown，不要长篇解释
 13. 任一由本章引入或应由本章承担修复责任的 critical 跨章矛盾（重复不可逆事件、身份/生死冲突、时间倒退、相邻章核心动作链重复）都必须判定为不通过；若责任在更晚章节，本章保留为事实锚点并正常评分
-14. **必须输出 edits 数组**：如果 verdict 不是"通过"，只能给出1条最关键字段级 edit（field/action/value），让 Outliner 定点修改 JSON 而不是整章重生成。action 可选 replace/append/replace_index/delete_index。小问题优先改 chapter_hook、key_events、summary 等字段。
+14. **必须输出 edits 数组**：如果 verdict 不是"通过"，只能给出1条最关键字段级 edit（field/action/value），让 Outliner 定点修改 JSON 而不是整章重生成。action 可选 replace/append/replace_index/delete_index。小问题优先改 chapter_hook、key_events、human_anchor、summary 等字段。
 15. 如果 edit 修改 story_beat，value 只能取以下枚举之一：opening_image/theme_stated/setup/catalyst/debate/break_into_two/b_story/fun_and_games/midpoint/bad_guys_close_in/all_is_lost/dark_night/break_into_three/finale/final_image/rising_action/transition。不得发明 impossible_choice 等新标签。"""
 
     log(f"[OutlineReviewer] 正在审查第{chapter_number}章大纲...")
@@ -571,6 +597,8 @@ def review_outline(
         "core_desire",
         "irreversible_choice",
         "midpoint_reversal",
+        "human_warmth",
+        "content_richness",
         "strong_hook",
     )
     if repair_requirements:
@@ -746,6 +774,9 @@ def review_outline(
                 "core_goal": "core_desire",
                 "irreversible_decision": "irreversible_choice",
                 "midpoint": "midpoint_reversal",
+                "humanity": "human_warmth",
+                "human_touch": "human_warmth",
+                "human_warmth_gate": "human_warmth",
                 "strong_chapter_hook": "strong_hook",
             }
             for alias, canonical in gate_aliases.items():

@@ -121,6 +121,157 @@ def make_issue(severity: str, category: str, chapters: list[int], detail: str, e
     }
 
 
+def _keyword_hits(text: str, keywords: tuple[str, ...]) -> list[str]:
+    return [keyword for keyword in keywords if keyword and keyword in text]
+
+
+def _human_warmth_chapter_signals(text: str) -> dict:
+    """Extract cheap cross-chapter signals for lived-in storytelling."""
+    daily_object_keywords = (
+        "碗", "杯", "筷", "饭盒", "药", "药瓶", "账单", "零钱", "钥匙", "伞", "照片", "纸条",
+        "旧衣", "袖口", "鞋", "门", "灯", "手机", "屏幕", "毛巾", "茶", "粥", "面", "菜",
+        "伤口", "手心", "指节", "汗", "烟", "酒", "房租", "工资", "工钱",
+    )
+    side_choice_keywords = (
+        "拦住", "递给", "塞给", "替他", "替她", "挡在", "拉住", "扶住", "留下", "转身",
+        "摇头", "点头", "藏起", "拿出", "放下", "推开", "收回", "护住", "等你", "别怕",
+        "别告诉", "我来", "算了", "不用还", "先吃", "先走",
+    )
+    object_hits = _keyword_hits(text, daily_object_keywords)
+    side_choice_hits = _keyword_hits(text, side_choice_keywords)
+    question_count = len(re.findall(r"[？?]", text))
+    dialogue_markers = text.count("\u201c") + text.count('"') + text.count("：")
+    return {
+        "object_hits": object_hits[:10],
+        "object_hit_count": len(object_hits),
+        "question_count": question_count,
+        "dialogue_markers": dialogue_markers,
+        "side_choice_hits": side_choice_hits[:10],
+        "side_choice_hit_count": len(side_choice_hits),
+        "missing_object": len(object_hits) < 2,
+        "missing_question_dialogue": question_count < 1 or dialogue_markers < 4,
+        "missing_side_choice": len(side_choice_hits) < 1,
+    }
+
+
+def _human_warmth_streak_issues(chapter_signals: dict[int, dict], *, window: int = 3) -> list[dict]:
+    issues: list[dict] = []
+    checks = (
+        ("missing_object", "连续多章缺少可触摸生活物件", "生活物件命中不足"),
+        ("missing_question_dialogue", "连续多章缺少问句对白或互动密度", "问句对白/互动不足"),
+        ("missing_side_choice", "连续多章缺少配角主动选择", "配角主动动作不足"),
+    )
+    chapters = sorted(chapter_signals)
+    for key, detail, evidence_label in checks:
+        run: list[int] = []
+        previous: int | None = None
+        for chapter in chapters + [10**9]:
+            signal = chapter_signals.get(chapter, {})
+            contiguous = previous is None or chapter == previous + 1
+            if chapter != 10**9 and contiguous and signal.get(key) is True:
+                run.append(chapter)
+                previous = chapter
+                continue
+            if len(run) >= window:
+                selected = run[:window]
+                snippets = []
+                for value in selected:
+                    sig = chapter_signals.get(value, {})
+                    snippets.append(
+                        f"第{value}章 object={sig.get('object_hit_count', 0)} "
+                        f"question={sig.get('question_count', 0)} "
+                        f"side_choice={sig.get('side_choice_hit_count', 0)}"
+                    )
+                issues.append(make_issue(
+                    "major",
+                    "human_warmth_streak",
+                    selected,
+                    detail,
+                    f"{evidence_label}: " + "; ".join(snippets),
+                ))
+            run = [chapter] if chapter != 10**9 and signal.get(key) is True else []
+            previous = chapter if chapter != 10**9 else None
+    return issues[:12]
+
+
+def _excerpt_around_hits(text: str, hits: list[str], *, limit: int = 120) -> str:
+    clean = re.sub(r"\s+", "", str(text or ""))
+    if not clean:
+        return ""
+    positions = [clean.find(hit) for hit in hits if hit and clean.find(hit) >= 0]
+    center = min(positions) if positions else 0
+    start = max(0, center - limit // 3)
+    excerpt = clean[start:start + limit]
+    if start > 0:
+        excerpt = "..." + excerpt
+    if start + limit < len(clean):
+        excerpt += "..."
+    return excerpt
+
+
+def _human_warmth_exemplars(chapter_rows: list[dict], final_texts: dict[int, str] | None = None, *, limit: int = 5) -> dict:
+    """Rank chapters by cheap lived-in storytelling signals for human review."""
+    final_texts = final_texts or {}
+    ranked: list[dict] = []
+    for row in chapter_rows:
+        if not isinstance(row, dict):
+            continue
+        signals = row.get("human_warmth_signals")
+        if not isinstance(signals, dict):
+            continue
+        object_count = int(signals.get("object_hit_count", 0) or 0)
+        question_count = int(signals.get("question_count", 0) or 0)
+        side_choice_count = int(signals.get("side_choice_hit_count", 0) or 0)
+        dialogue_markers = int(signals.get("dialogue_markers", 0) or 0)
+        score = (
+            min(object_count, 5) * 2
+            + min(question_count, 3) * 2
+            + min(side_choice_count, 4) * 3
+            + min(dialogue_markers, 8)
+        )
+        missing = [
+            label
+            for key, label in (
+                ("missing_object", "生活物件不足"),
+                ("missing_question_dialogue", "问句对白不足"),
+                ("missing_side_choice", "配角主动选择不足"),
+            )
+            if signals.get(key)
+        ]
+        hit_terms = (signals.get("object_hits", [])[:3] or []) + (signals.get("side_choice_hits", [])[:3] or [])
+        chapter_no = int(row.get("chapter") or 0)
+        ranked.append({
+            "chapter": row.get("chapter"),
+            "title": row.get("title", ""),
+            "human_warmth_signal_score": score,
+            "review_score": row.get("review_score"),
+            "object_hits": signals.get("object_hits", [])[:5],
+            "side_choice_hits": signals.get("side_choice_hits", [])[:5],
+            "question_count": question_count,
+            "dialogue_markers": dialogue_markers,
+            "missing": missing,
+            "sample_excerpt": _excerpt_around_hits(final_texts.get(chapter_no, ""), hit_terms),
+        })
+    best = sorted(
+        ranked,
+        key=lambda item: (
+            item.get("human_warmth_signal_score", 0),
+            float(item.get("review_score") or 0),
+            -int(item.get("chapter") or 0),
+        ),
+        reverse=True,
+    )[:limit]
+    weakest = sorted(
+        ranked,
+        key=lambda item: (
+            item.get("human_warmth_signal_score", 0),
+            float(item.get("review_score") or 0),
+            int(item.get("chapter") or 0),
+        ),
+    )[:limit]
+    return {"most_lived_in": best, "most_flat": weakest}
+
+
 def local_full_scan(project: Path, total: int, min_score: float, start_ch: int = 1) -> dict:
     rules = load_quality_rules(project)
     statuses = scan_chapter_status(project, start_ch, total, use_cache=False)
@@ -129,6 +280,7 @@ def local_full_scan(project: Path, total: int, min_score: float, start_ch: int =
     hashes: dict[str, list[int]] = {}
     fingerprints: dict[int, set[str]] = {}
     final_texts: dict[int, str] = {}
+    human_warmth_signals: dict[int, dict] = {}
 
     for chapter in range(start_ch, total + 1):
         paths = chapter_paths(project, chapter)
@@ -149,6 +301,8 @@ def local_full_scan(project: Path, total: int, min_score: float, start_ch: int =
         digest = hashlib.sha256(compact_text(text).encode("utf-8")).hexdigest()
         hashes.setdefault(digest, []).append(chapter)
         fingerprints[chapter] = shingles(text)
+        human_warmth = _human_warmth_chapter_signals(text)
+        human_warmth_signals[chapter] = human_warmth
 
         if not ok:
             issues.append(make_issue("critical", "final_quality", [chapter], f"终稿本地质量门失败: {grade}", ", ".join(text_issues)))
@@ -177,6 +331,7 @@ def local_full_scan(project: Path, total: int, min_score: float, start_ch: int =
             "review_verdict": review.get("verdict"),
             "outline_score": outline_score,
             "text_issues": text_issues,
+            "human_warmth_signals": human_warmth,
         })
 
     for group in hashes.values():
@@ -204,6 +359,8 @@ def local_full_scan(project: Path, total: int, min_score: float, start_ch: int =
                     [chapter, chapter + 1],
                     f"前章结尾与后章开头疑似大段重复: {overlap:.3f}",
                 ))
+
+    issues.extend(_human_warmth_streak_issues(human_warmth_signals))
 
     scores = [float(row["review_score"]) for row in chapter_rows if isinstance(row.get("review_score"), (int, float))]
     words = [int(row["words"]) for row in chapter_rows]
@@ -238,6 +395,7 @@ def local_full_scan(project: Path, total: int, min_score: float, start_ch: int =
         "severity_counts": severity_counts,
         "issues": issues,
         "chapters": chapter_rows,
+        "human_warmth_exemplars": _human_warmth_exemplars(chapter_rows, final_texts),
     }
 
 
@@ -274,7 +432,7 @@ def chapter_review_context(project: Path, chapter: int) -> dict:
     }
 
 
-def select_key_chapters(project: Path, total: int, volumes: list[dict], max_full: int = 10) -> dict:
+def select_key_chapters(project: Path, total: int, volumes: list[dict], max_full: int = 16) -> dict:
     """选出终审需要喂【全文】的关键章节，其余只给摘要。
 
     真正的整本评审必须让 AI 读到关键节点的原文，而不是只看统计数字。选取规则按优先级：
@@ -288,7 +446,7 @@ def select_key_chapters(project: Path, total: int, volumes: list[dict], max_full
         project: 项目目录。
         total: 总章数。
         volumes: 卷级审查报告列表（来自 volume_review）。
-        max_full: 喂全文的章节数上限，控制 prompt 篇幅。
+        max_full: 喂全文的章节数上限（配置驱动，默认 16），控制 prompt 篇幅。
 
     Returns:
         {chapter_number: {"full": True, "role": "..."}}，仅包含选中的章节。
@@ -377,11 +535,327 @@ def _sample_outlines_for_final(project: Path, total: int, max_chars: int = 20000
     return compact
 
 
-def build_whole_book_context(project: Path, total: int, volumes: list[dict], local_scan: dict) -> dict:
+def _load_foreshadowing_ledger(project: Path, total: int) -> dict:
+    """从 reports/foreshadowing_ledger.json 读取权威伏笔台账，供终审判断回收情况。
+
+    优先用台账（包含 plant/resolve 章号、状态、类别），找不到则回退到空。
+    """
+    ledger_path = project / "reports" / "foreshadowing_ledger.json"
+    ledger = load_json(ledger_path)
+    if not ledger:
+        return {}
+    return ledger
+
+
+def _summarize_foreshadowing_ledger(ledger: dict, total: int) -> dict:
+    """把伏笔台账压缩成终审可读的结构化摘要（统计 + 悬空线程明细）。"""
+    threads = ledger.get("threads", [])
+    if not isinstance(threads, list):
+        threads = []
+    stats = ledger.get("stats", {}) if isinstance(ledger.get("stats"), dict) else {}
+    # 重新统计，确保准确（台账 stats 可能陈旧）
+    planted = [t for t in threads if isinstance(t, dict)]
+    resolved = [t for t in planted if str(t.get("status", "")).lower() in {"resolved", "paid_off", "closed"}]
+    dangling = [t for t in planted if str(t.get("status", "")).lower() in {"planted", "open", "dangling", ""}]
+    # 悬空线程中按优先级排序，取最重要的 30 条供终审核查
+    priority_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    dangling_sorted = sorted(
+        dangling,
+        key=lambda t: (priority_order.get(str(t.get("priority", "")).lower(), 9), int(t.get("planted_at", 9999))),
+    )
+    dangling_detail = []
+    for t in dangling_sorted[:30]:
+        dangling_detail.append({
+            "id": t.get("id", ""),
+            "planted_at": t.get("planted_at"),
+            "must_resolve_by": t.get("must_resolve_by"),
+            "category": t.get("category", ""),
+            "priority": t.get("priority", ""),
+            "setup": str(t.get("setup", ""))[:160],
+        })
+    return {
+        "planted_total": len(planted),
+        "resolved_total": len(resolved),
+        "dangling_total": len(dangling),
+        "dangling_detail": dangling_detail,
+        "ledger_stats": stats,
+    }
+
+
+def _load_pacing_ledgers(project: Path) -> dict:
+    """从 build_outline_ledgers.py 产物读取节奏/重复信号，供终审核查注水腰。
+
+    读取 reports/outline_reconstruction/ledgers/ 下的 repetition_blacklist 与 timeline。
+    不存在则返回空（终审退化为仅靠大纲骨架判断）。
+    """
+    base = project / "reports" / "outline_reconstruction" / "ledgers"
+    result: dict[str, Any] = {}
+    repetition = load_json(base / "repetition_blacklist.json")
+    if repetition:
+        items = repetition.get("items") or repetition.get("entries") or []
+        if isinstance(items, list):
+            result["repetition_issues"] = [
+                {"chapters": it.get("chapters", []), "phrase": str(it.get("phrase", it.get("text", "")))[:80], "count": it.get("count")}
+                for it in items[:20]
+                if isinstance(it, dict)
+            ]
+    return result
+
+
+def _relationship_pressure_text(item: dict[str, Any]) -> str:
+    return "；".join(
+        str(item.get(field, "") or "").strip()
+        for field in ("debt", "misunderstanding", "promise", "unsaid", "next_pressure")
+        if str(item.get(field, "") or "").strip()
+    )
+
+
+def _relationship_response_text(item: dict[str, Any]) -> str:
+    return "；".join(
+        str(item.get(field, "") or "").strip()
+        for field in ("change", "care_action")
+        if str(item.get(field, "") or "").strip()
+    )
+
+
+def _relationship_pressure_signature(item: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(
+        str(item.get(field, "") or "").strip()[:40]
+        for field in ("debt", "misunderstanding", "promise", "unsaid", "next_pressure")
+        if str(item.get(field, "") or "").strip()
+    )
+
+
+def _relationship_trajectory_evidence(pair: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+    chapters = [int(item.get("chapter", 0) or 0) for item in items]
+    pressure_items = [item for item in items if _relationship_pressure_text(item)]
+    response_items = [item for item in items if _relationship_response_text(item) or item.get("resolved")]
+    carried_over = [item for item in items if item.get("carried_over")]
+    signatures = {_relationship_pressure_signature(item) for item in pressure_items}
+    signatures.discard(())
+    first = items[0]
+    last = items[-1]
+    span = max(chapters) - min(chapters) + 1 if chapters else 0
+    resolved = any(item.get("resolved") is True for item in items)
+    response_count = len(response_items)
+    pressure_count = len(pressure_items)
+    stagnant = (
+        span >= 3
+        and pressure_count >= 2
+        and response_count == 0
+        and len(signatures) <= 1
+    )
+    open_without_payoff = (
+        span >= 5
+        and pressure_count >= 2
+        and not resolved
+        and response_count < 2
+    )
+    status = "resolved" if resolved else "active"
+    if stagnant:
+        status = "stagnant"
+    elif open_without_payoff:
+        status = "open_without_payoff"
+    return {
+        "pair": pair,
+        "chapters": chapters[:12],
+        "first_chapter": first.get("chapter"),
+        "last_chapter": last.get("chapter"),
+        "span": span,
+        "pressure_count": pressure_count,
+        "response_count": response_count,
+        "carried_over_count": len(carried_over),
+        "carried_over_ratio": round(len(carried_over) / len(items), 3) if items else 0.0,
+        "distinct_pressure_states": len(signatures),
+        "resolved": resolved,
+        "status": status,
+        "first_pressure": (_relationship_pressure_text(first) or str(first.get("change", "") or ""))[:160],
+        "latest_pressure": (_relationship_pressure_text(last) or str(last.get("change", "") or ""))[:160],
+        "latest_response": (_relationship_response_text(last) or ("resolved=true" if last.get("resolved") else ""))[:160],
+    }
+
+
+def _summarize_relationship_states(project: Path, total: int) -> dict:
+    """读取 relationship_states，压缩成人物温度曲线证据。"""
+    base = project / "chapters" / "relationship_states"
+    if not base.exists():
+        return {}
+    all_items: list[dict[str, Any]] = []
+    by_pair: dict[str, list[dict[str, Any]]] = {}
+    for chapter in range(1, total + 1):
+        path = base / f"chapter_{chapter:04d}.json"
+        data = load_json(path)
+        rels = data.get("relationships", []) if isinstance(data, dict) else []
+        if not isinstance(rels, list):
+            continue
+        for raw in rels:
+            if not isinstance(raw, dict):
+                continue
+            pair = str(raw.get("pair", "")).strip()
+            if not pair:
+                a = str(raw.get("from", "")).strip()
+                b = str(raw.get("to", "")).strip()
+                pair = f"{a}->{b}" if a or b else ""
+            if not pair:
+                continue
+            item = {
+                "chapter": chapter,
+                "pair": pair,
+                "change": str(raw.get("change", ""))[:80],
+                "debt": str(raw.get("debt", ""))[:80],
+                "misunderstanding": str(raw.get("misunderstanding", ""))[:80],
+                "promise": str(raw.get("promise", ""))[:80],
+                "care_action": str(raw.get("care_action", ""))[:80],
+                "unsaid": str(raw.get("unsaid", ""))[:80],
+                "next_pressure": str(raw.get("next_pressure", ""))[:120],
+                "resolved": raw.get("resolved") is True,
+                "carried_over": raw.get("carried_over") is True,
+            }
+            all_items.append(item)
+            by_pair.setdefault(pair, []).append(item)
+    if not all_items:
+        return {}
+
+    long_open: list[dict[str, Any]] = []
+    trajectories: list[dict[str, Any]] = []
+    trajectory_issues: list[dict[str, Any]] = []
+    for pair, items in by_pair.items():
+        items.sort(key=lambda x: int(x.get("chapter", 0) or 0))
+        open_items = [it for it in items if not it.get("resolved")]
+        first = items[0]
+        last = items[-1]
+        if open_items and int(last["chapter"]) - int(first["chapter"]) >= 5:
+            long_open.append({
+                "pair": pair,
+                "first_chapter": first["chapter"],
+                "last_chapter": last["chapter"],
+                "span": int(last["chapter"]) - int(first["chapter"]) + 1,
+                "latest_pressure": last.get("next_pressure") or last.get("debt") or last.get("unsaid"),
+            })
+        if len(items) >= 2:
+            trajectory = _relationship_trajectory_evidence(pair, items)
+            trajectories.append(trajectory)
+            if trajectory.get("status") in {"stagnant", "open_without_payoff"}:
+                trajectory_issues.append({
+                    "pair": pair,
+                    "status": trajectory.get("status"),
+                    "first_chapter": trajectory.get("first_chapter"),
+                    "last_chapter": trajectory.get("last_chapter"),
+                    "span": trajectory.get("span"),
+                    "evidence": (
+                        f"pressure_count={trajectory.get('pressure_count')} "
+                        f"response_count={trajectory.get('response_count')} "
+                        f"carried_over={trajectory.get('carried_over_count')}; "
+                        f"latest={trajectory.get('latest_pressure')}"
+                    )[:260],
+                })
+    long_open.sort(key=lambda x: (-int(x.get("span", 0)), x.get("first_chapter", 0)))
+    trajectories.sort(key=lambda x: (
+        0 if x.get("status") in {"stagnant", "open_without_payoff"} else 1,
+        -int(x.get("span", 0) or 0),
+        x.get("first_chapter", 0),
+    ))
+    trajectory_issues.sort(key=lambda x: (-int(x.get("span", 0) or 0), x.get("first_chapter", 0)))
+    return {
+        "relationship_event_total": len(all_items),
+        "pair_count": len(by_pair),
+        "carried_over_total": sum(1 for item in all_items if item.get("carried_over")),
+        "resolved_total": sum(1 for item in all_items if item.get("resolved")),
+        "long_open_threads": long_open[:20],
+        "trajectory_status_counts": {
+            "resolved": sum(1 for item in trajectories if item.get("status") == "resolved"),
+            "active": sum(1 for item in trajectories if item.get("status") == "active"),
+            "open_without_payoff": sum(1 for item in trajectories if item.get("status") == "open_without_payoff"),
+            "stagnant": sum(1 for item in trajectories if item.get("status") == "stagnant"),
+        },
+        "relationship_trajectory_issues": trajectory_issues[:20],
+        "sample_trajectories": trajectories[:20],
+    }
+
+
+def _relationship_repair_targets_from_context(context: dict, total: int) -> list[dict]:
+    """Build deterministic repair targets from long-open relationship debts."""
+    signals = context.get("relationship_signals")
+    if not isinstance(signals, dict):
+        return []
+    long_open = signals.get("long_open_threads")
+    if not isinstance(long_open, list):
+        long_open = []
+    trajectory_issues = signals.get("relationship_trajectory_issues")
+    if not isinstance(trajectory_issues, list):
+        trajectory_issues = []
+
+    targets: list[dict] = []
+    for item in long_open:
+        if not isinstance(item, dict):
+            continue
+        pair = str(item.get("pair", "")).strip()
+        first = item.get("first_chapter")
+        last = item.get("last_chapter")
+        span = item.get("span")
+        try:
+            first_chapter = int(first)
+            last_chapter = int(last)
+        except (TypeError, ValueError):
+            continue
+        if not pair or first_chapter <= 0 or last_chapter <= 0:
+            continue
+
+        target_chapter = min(max(last_chapter, 1), max(total, 1))
+        latest_pressure = str(item.get("latest_pressure", "")).strip()
+        problem = f"{pair} 从第{first_chapter}章到第{last_chapter}章持续承压，但缺少可见回声或收束"
+        evidence = latest_pressure or f"关系跨度约 {span} 章，终审关系台账仍显示未解决压力"
+        targets.append({
+            "target_chapter": target_chapter,
+            "pair": pair,
+            "problem": problem,
+            "evidence": evidence[:220],
+            "acceptance": (
+                "在目标章或其后相邻章节补一次明确的关系动作：选择、照料、摊牌、误会解除或代价兑现；"
+                "正文中必须有可触摸物件/生活压力和潜台词对白，不能只用内心总结交代。"
+            ),
+        })
+    existing = {
+        (str(item.get("pair", "")).strip(), int(item.get("target_chapter", 0) or 0))
+        for item in targets
+        if isinstance(item, dict)
+    }
+    for item in trajectory_issues:
+        if not isinstance(item, dict):
+            continue
+        pair = str(item.get("pair", "")).strip()
+        try:
+            first_chapter = int(item.get("first_chapter"))
+            last_chapter = int(item.get("last_chapter"))
+        except (TypeError, ValueError):
+            continue
+        if not pair or first_chapter <= 0 or last_chapter <= 0:
+            continue
+        target_chapter = min(max(last_chapter, 1), max(total, 1))
+        key = (pair, target_chapter)
+        if key in existing:
+            continue
+        status = str(item.get("status", "")).strip()
+        evidence = str(item.get("evidence", "")).strip()
+        targets.append({
+            "target_chapter": target_chapter,
+            "pair": pair,
+            "problem": f"{pair} 第{first_chapter}-{last_chapter}章关系轨迹状态为 {status}，缺少欠账后的回声或收束",
+            "evidence": evidence[:220] or f"关系轨迹跨度约 {item.get('span')} 章，终审本地轨迹扫描判定为 {status}",
+            "acceptance": (
+                "补出这条关系的轨迹节点：至少一次具体照料/回避/补偿/摊牌动作，"
+                "并让 next_pressure 发生变化或 resolved=true，不能继续只 carried_over 同一笔欠账。"
+            ),
+        })
+        existing.add(key)
+    return targets[:10]
+
+
+def build_whole_book_context(project: Path, total: int, volumes: list[dict], local_scan: dict, *, max_full: int = 16) -> dict:
     """构建终审所需的"全书内容"上下文，让 AI 真正读到小说而不是只看统计数字。
 
     这是本次重构的核心：把 world.json 的主线/三幕结构、关键章节原文、全书大纲采样、
-    伏笔清单整合在一起，供终审 AI 做基于阅读体验的整本评分。
+    【权威伏笔台账】、【节奏重复信号】整合在一起，供终审 AI 做基于阅读体验的整本评分。
     """
     world = load_json(project / "world.json")
 
@@ -402,8 +876,8 @@ def build_whole_book_context(project: Path, total: int, volumes: list[dict], loc
         if isinstance(levels, list):
             world_arc["power_system_levels"] = [str(lv)[:60] for lv in levels[:15]]
 
-    # 关键章节原文
-    key_chapters_map = select_key_chapters(project, total, volumes)
+    # 关键章节原文（max_full 由配置驱动，默认 16 章，让终审能验证更多结构节点）
+    key_chapters_map = select_key_chapters(project, total, volumes, max_full=max_full)
     key_chapters_fulltext: list[dict] = []
     for chapter in sorted(key_chapters_map):
         info = key_chapters_map[chapter]
@@ -422,24 +896,35 @@ def build_whole_book_context(project: Path, total: int, volumes: list[dict], loc
     # 全书大纲采样（控制篇幅）
     all_outlines_compact = _sample_outlines_for_final(project, total)
 
-    # 伏笔清单（从每章 foreshadowing 字段聚合，用于让 AI 判断回收情况）。
-    # 全量聚合在大书上可达上千条、上百k字，超出 prompt 容量；这里先统计总数，
-    # 再均匀采样出代表性的伏笔条目喂给 AI（数量已在 final_review prompt 中二次截断到 60）。
-    foreshadowing_inventory: list[dict] = []
-    foreshadowing_total = 0
-    sample_step = max(1, total // 120)  # 与大纲采样同步，目标 ≤120 条
-    for chapter in range(1, total + 1):
-        outline = load_json(chapter_paths(project, chapter)["outline"])
-        setup = str(outline.get("foreshadowing", "")).strip()
-        if not setup:
-            continue
-        foreshadowing_total += 1
-        if (chapter - 1) % sample_step != 0:
-            continue
-        foreshadowing_inventory.append({
-            "planted_at": chapter,
-            "setup": setup[:200],
-        })
+    # 权威伏笔台账：优先用 reports/foreshadowing_ledger.json（含 plant/resolve 状态），
+    # 这是让终审能"按 ID 核查回收"的关键。回退到大纲聚合仅作兜底。
+    ledger = _load_foreshadowing_ledger(project, total)
+    if ledger and ledger.get("threads"):
+        foreshadowing_summary = _summarize_foreshadowing_ledger(ledger, total)
+        foreshadowing_inventory: list[dict] = []
+        foreshadowing_total = foreshadowing_summary["planted_total"]
+    else:
+        # 兜底：从每章 foreshadowing 字段聚合（无 resolve 状态，质量较差）
+        foreshadowing_inventory = []
+        foreshadowing_total = 0
+        sample_step = max(1, total // 120)
+        for chapter in range(1, total + 1):
+            outline = load_json(chapter_paths(project, chapter)["outline"])
+            setup = str(outline.get("foreshadowing", "")).strip()
+            if not setup:
+                continue
+            foreshadowing_total += 1
+            if (chapter - 1) % sample_step != 0:
+                continue
+            foreshadowing_inventory.append({
+                "planted_at": chapter,
+                "setup": setup[:200],
+            })
+        foreshadowing_summary = None
+
+    # 节奏/重复信号：接入 build_outline_ledgers.py 产物，让终审能定位注水腰
+    pacing_signals = _load_pacing_ledgers(project)
+    relationship_signals = _summarize_relationship_states(project, total)
 
     # 统计指标作为辅助参考（不再是主依据）
     score_distribution = {
@@ -449,12 +934,36 @@ def build_whole_book_context(project: Path, total: int, volumes: list[dict], loc
             "average_review_score", "median_review_score", "review_pass_rate", "severity_counts",
         )
     }
+    human_warmth_scan = {
+        "streak_issues": [
+            issue
+            for issue in local_scan.get("issues", [])
+            if isinstance(issue, dict) and issue.get("category") == "human_warmth_streak"
+        ][:20],
+        "weak_chapters": [
+            {
+                "chapter": row.get("chapter"),
+                "object_hit_count": signals.get("object_hit_count"),
+                "question_count": signals.get("question_count"),
+                "side_choice_hit_count": signals.get("side_choice_hit_count"),
+            }
+            for row in local_scan.get("chapters", [])
+            if isinstance(row, dict)
+            for signals in [row.get("human_warmth_signals")]
+            if isinstance(signals, dict)
+            and (
+                signals.get("missing_object")
+                or signals.get("missing_question_dialogue")
+                or signals.get("missing_side_choice")
+            )
+        ][:40],
+        "exemplars": local_scan.get("human_warmth_exemplars", {}),
+    }
 
-    return {
+    context = {
         "world_arc": world_arc,
         "key_chapters_fulltext": key_chapters_fulltext,
         "all_outlines_compact": all_outlines_compact,
-        "foreshadowing_inventory": foreshadowing_inventory,
         "foreshadowing_total": foreshadowing_total,
         "volume_findings": [
             {
@@ -466,8 +975,18 @@ def build_whole_book_context(project: Path, total: int, volumes: list[dict], loc
             for v in volumes if isinstance(v, dict)
         ],
         "score_distribution": score_distribution,
+        "human_warmth_scan": human_warmth_scan,
         "key_chapter_count": len(key_chapters_fulltext),
     }
+    if foreshadowing_summary:
+        context["foreshadowing_ledger"] = foreshadowing_summary
+    else:
+        context["foreshadowing_inventory"] = foreshadowing_inventory
+    if pacing_signals:
+        context["pacing_signals"] = pacing_signals
+    if relationship_signals:
+        context["relationship_signals"] = relationship_signals
+    return context
 
 
 def ai_call(project: Path, config: dict, system: str, prompt: str, raw_name: str) -> dict:
@@ -575,11 +1094,19 @@ issues最多10条，只保留影响整卷结构的问题；所有字符串保持
     return result
 
 
-def final_review(project: Path, config: dict, local_scan: dict, volumes: list[dict], output: Path) -> dict:
+def final_review(project: Path, config: dict, local_scan: dict, volumes: list[dict], output: Path, *, force: bool = False) -> dict:
+    # 缓存复用：终审输出已存在且 force=False 时直接复用，避免每次都跑 3 轮 LLM
+    if output.exists() and not force:
+        cached = load_json(output)
+        if cached.get("status") == "completed" and cached.get("score") is not None:
+            log(project, "终审已有缓存且未要求 force，直接复用")
+            return cached
     total = int(local_scan.get("total_chapters", 0)) or int(config.get("total_chapters", 0))
+    review_cfg = config.get("book_reviewer", {})
+    max_full = int(review_cfg.get("max_full_chapters", 16) or 16)
     # 构建真正的"全书内容"上下文：主线、关键章节原文、大纲采样、伏笔清单。
     # 这是本次重构的核心——让终审 AI 读到小说，而不是只看统计数字。
-    context = build_whole_book_context(project, total, volumes, local_scan)
+    context = build_whole_book_context(project, total, volumes, local_scan, max_full=max_full)
 
     system = """你是长篇中文网络小说的终审总编。你刚刚通读了全书的关键章节原文、全书大纲摘要和伏笔清单。
 你的评分必须基于【整本阅读体验】，绝不等于逐章评分的平均值——单章审查口径严格，逐章均分被低分章拉低，
@@ -604,10 +1131,37 @@ def final_review(project: Path, config: dict, local_scan: dict, volumes: list[di
 
 ## 全书剧情骨架（逐章大纲摘要采样，字段：ch=章号/t=标题/s=摘要/f=伏笔/b=结构功能节拍）
 {json.dumps(context["all_outlines_compact"], ensure_ascii=False)}
-
+"""
+    # 权威伏笔台账（含悬空线程明细）优先于旧式采样清单
+    if context.get("foreshadowing_ledger"):
+        ledger = context["foreshadowing_ledger"]
+        prompt += f"""
+## 全书伏笔台账（权威数据，含回收状态与悬空明细）
+全书共 {ledger['planted_total']} 条伏笔，已回收 {ledger['resolved_total']} 条，悬空 {ledger['dangling_total']} 条。
+悬空线程明细（按优先级，已截断到 30 条，请逐条判断是否构成烂尾）：
+{json.dumps(ledger['dangling_detail'], ensure_ascii=False)}
+"""
+    else:
+        prompt += f"""
 ## 全书伏笔清单（全书共 {context["foreshadowing_total"]} 条，此处为均匀采样，请判断哪些已回收、哪些悬空）
-{json.dumps(context["foreshadowing_inventory"][:60], ensure_ascii=False)}
-
+{json.dumps(context.get("foreshadowing_inventory", [])[:60], ensure_ascii=False)}
+"""
+    if context.get("pacing_signals"):
+        prompt += f"""
+## 节奏/重复信号（来自大纲 ledger 重建，用于定位注水腰与原地踏步）
+{json.dumps(context["pacing_signals"], ensure_ascii=False)}
+"""
+    if context.get("relationship_signals"):
+        prompt += f"""
+## 人物温度与关系欠账轨迹（来自 chapters/relationship_states，用于判断人情味是否跨章延续）
+{json.dumps(context["relationship_signals"], ensure_ascii=False)}
+"""
+    if context.get("human_warmth_scan"):
+        prompt += f"""
+## 烟火气连续性本地扫描（生活物件/问句对白/配角主动选择的连续缺失信号）
+{json.dumps(context["human_warmth_scan"], ensure_ascii=False)}
+"""
+    prompt += f"""
 ## 卷级审查发现（结构参考，非评分主依据）
 {json.dumps(context["volume_findings"], ensure_ascii=False)}
 
@@ -622,11 +1176,13 @@ def final_review(project: Path, config: dict, local_scan: dict, volumes: list[di
 4. pacing_curve 节奏曲线（权重15%）：高潮分布是否合理？是否存在注水腰/烂尾？
 5. world_consistency 世界观自洽（权重10%）：力量体系/规则/设定前后是否矛盾？
 6. ending_satisfaction 结局满意度（权重10%）：是否兑现读者期待？有无强行收束？
-7. emotional_resonance 情感共鸣（权重10%）：整本情感张力？是否有记忆点？
+7. emotional_resonance 情感共鸣（权重10%）：整本情感张力？关系欠账是否有回声和收束？是否连续缺少生活物件、问句对白或配角主动选择？是否有记忆点？
 8. overall_readability 整体可读性（权重5%）：通读体验？是否有大量水文？
 
 最终 score 是 8 维度的【加权综合分】（不是简单平均），请自行按权重计算。
 【重要】score 不要参考 score_distribution 中的逐章均分——那是单章审查口径，不是整本质量。
+【重要】若伏笔台账显示悬空线程已被回收（在关键章节原文或大纲中找到兑现），应判定为已回收而非悬空——
+不要因台账 status 字段未更新就盲目扣分，以正文/大纲实际证据为准。
 
 只输出：
 {{
@@ -639,7 +1195,7 @@ def final_review(project: Path, config: dict, local_scan: dict, volumes: list[di
     "pacing_curve": {{"score": 0到10, "rationale": "依据，指出注水腰位置"}},
     "world_consistency": {{"score": 0到10, "rationale": "依据"}},
     "ending_satisfaction": {{"score": 0到10, "rationale": "依据"}},
-    "emotional_resonance": {{"score": 0到10, "rationale": "依据"}},
+    "emotional_resonance": {{"score": 0到10, "rationale": "依据，引用关系欠账/人物反应/章节"}},
     "overall_readability": {{"score": 0到10, "rationale": "依据"}}
   }},
   "verdict": "通过发布/修订后发布/不建议发布",
@@ -651,6 +1207,10 @@ def final_review(project: Path, config: dict, local_scan: dict, volumes: list[di
     "payoff_quality": "回收质量评价"
   }},
   "character_arc_analysis": "主角从X到Y的成长/转变分析",
+  "relationship_arc_analysis": "关键关系欠账是否持续发酵、产生回声并收束；若缺失则指出章节范围",
+  "relationship_repair_targets": [
+    {{"target_chapter": 章节号, "pair": "人物A->人物B", "problem": "关系线问题", "evidence": "章节证据", "acceptance": "修复后必须满足的验收标准"}}
+  ],
   "strengths": ["整本优势"],
   "unresolved_threads": ["未回收伏笔或支线"],
   "issues": [{{"severity": "critical/major/minor", "chapters": [章节号], "category": "类别", "detail": "问题", "evidence": "证据", "suggestion": "修订建议"}}],
@@ -662,6 +1222,13 @@ issues最多15条，只保留最重要且有全书证据的问题；不要把格
     # 兜底：若 AI 未返回 dimension_scores，补一个空结构，保证下游 schema 稳定
     if isinstance(result, dict) and "score" in result and not result.get("dimension_scores"):
         result["dimension_scores"] = {}
+    if isinstance(result, dict):
+        fallback_targets = _relationship_repair_targets_from_context(context, total)
+        targets = result.get("relationship_repair_targets")
+        if not isinstance(targets, list):
+            result["relationship_repair_targets"] = fallback_targets
+        elif fallback_targets and not targets:
+            result["relationship_repair_targets"] = fallback_targets
     atomic_json(output, result)
     return result
 
@@ -742,6 +1309,64 @@ def write_markdown_report(project: Path, local_scan: dict, segments: list[dict],
     if arc_analysis:
         lines.extend(["## 人物弧线分析", "", str(arc_analysis), ""])
 
+    relationship_arc = final.get("relationship_arc_analysis")
+    if relationship_arc:
+        lines.extend(["## 关系欠账与人物温度", "", str(relationship_arc), ""])
+
+    relationship_signals = _summarize_relationship_states(project, int(local_scan.get("total_chapters", 0) or 0))
+    trajectory_issues = relationship_signals.get("relationship_trajectory_issues") if isinstance(relationship_signals, dict) else []
+    if isinstance(trajectory_issues, list) and trajectory_issues:
+        lines.extend(["## 本地关系轨迹问题", ""])
+        for item in trajectory_issues[:10]:
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                f"- {item.get('pair', '未指定关系')}：第{item.get('first_chapter')}-{item.get('last_chapter')}章，"
+                f"状态 `{item.get('status')}`，{item.get('evidence', '')}"
+            )
+        lines.append("")
+
+    relationship_targets = final.get("relationship_repair_targets")
+    if isinstance(relationship_targets, list) and relationship_targets:
+        lines.extend(["## 关系线修复目标", ""])
+        for index, target in enumerate(relationship_targets, 1):
+            if not isinstance(target, dict):
+                continue
+            lines.extend([
+                f"### {index}. 第{target.get('target_chapter', 'N/A')}章：{target.get('pair', '未指定关系')}",
+                "",
+                f"- 问题：{target.get('problem', '')}",
+                f"- 证据：{target.get('evidence', '')}",
+                f"- 验收：{target.get('acceptance', '')}",
+                "",
+            ])
+
+    exemplars = local_scan.get("human_warmth_exemplars")
+    if isinstance(exemplars, dict) and (exemplars.get("most_lived_in") or exemplars.get("most_flat")):
+        lines.extend(["## 烟火气章节样例（本地信号）", ""])
+        lived_in = exemplars.get("most_lived_in") if isinstance(exemplars.get("most_lived_in"), list) else []
+        flat = exemplars.get("most_flat") if isinstance(exemplars.get("most_flat"), list) else []
+        if lived_in:
+            lines.extend(["### 最有人味章节样例", "", "| 章节 | 标题 | 信号分 | 物件/动作命中 | 摘录 |", "|---:|---|---:|---|---|"])
+            for item in lived_in[:5]:
+                hits = "、".join((item.get("object_hits") or [])[:3] + (item.get("side_choice_hits") or [])[:3])
+                excerpt = str(item.get("sample_excerpt", "")).replace("|", "｜")
+                lines.append(
+                    f"| {item.get('chapter')} | {str(item.get('title', '')).replace('|', '｜')} | "
+                    f"{item.get('human_warmth_signal_score')} | {hits or 'N/A'} | {excerpt or 'N/A'} |"
+                )
+            lines.append("")
+        if flat:
+            lines.extend(["### 最空泛章节样例", "", "| 章节 | 标题 | 信号分 | 缺口 | 摘录 |", "|---:|---|---:|---|---|"])
+            for item in flat[:5]:
+                missing = "、".join(item.get("missing") or [])
+                excerpt = str(item.get("sample_excerpt", "")).replace("|", "｜")
+                lines.append(
+                    f"| {item.get('chapter')} | {str(item.get('title', '')).replace('|', '｜')} | "
+                    f"{item.get('human_warmth_signal_score')} | {missing or 'N/A'} | {excerpt or 'N/A'} |"
+                )
+            lines.append("")
+
     lines.extend([
         "## 完整性与本地质量门",
         "",
@@ -792,6 +1417,7 @@ def main() -> int:
     parser.add_argument("--project", "-p", default=os.getenv("NOVEL_PROJECT_DIR", ""))
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--local-only", action="store_true")
+    parser.add_argument("--force", action="store_true", help="忽略缓存并强制重新终审")
     parser.add_argument("--start", type=int, default=0, help="起始章节（默认1，用于小批量验证）")
     parser.add_argument("--end", type=int, default=0, help="结束章节（默认读config.total_chapters，用于小批量验证）")
     args = parser.parse_args()
@@ -872,7 +1498,7 @@ def main() -> int:
     volume_list = [volumes[start] for start, _ in volume_ranges]
 
     final_path = reports / "final_book_review.json"
-    final = final_review(project, config, local_scan, volume_list, final_path)
+    final = final_review(project, config, local_scan, volume_list, final_path, force=args.force)
     write_markdown_report(project, local_scan, segment_list, volume_list, final, reports / "final_book_review.md")
     manifest = {
         "status": "completed" if final.get("status") == "completed" else "incomplete",

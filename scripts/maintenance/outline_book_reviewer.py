@@ -420,6 +420,12 @@ def local_scan(project: Path, total: int, chapter_min_score: float) -> dict:
 
 
 def source_fingerprint(project: Path, total: int) -> str:
+    """基于文件【内容】的指纹，而非 mtime。
+
+    早期实现用 st_mtime_ns，导致任何评审文件被重写（即使内容不变）就使整本缓存失效，
+    触发整本终审全量重跑。改为内容哈希后，只有大纲/评审实际变化才会重审，
+    大幅减少 outline_book_reviewer 在修复循环中的重复 LLM 调用。
+    """
     digest = hashlib.sha256()
     for chapter in range(1, total + 1):
         for path in (
@@ -430,8 +436,10 @@ def source_fingerprint(project: Path, total: int) -> str:
             if not path.exists():
                 digest.update(b"missing")
                 continue
-            stat = path.stat()
-            digest.update(f"{stat.st_size}:{stat.st_mtime_ns}".encode("ascii"))
+            try:
+                digest.update(path.read_bytes())
+            except Exception:
+                digest.update(b"unreadable")
     return digest.hexdigest()
 
 
@@ -544,7 +552,13 @@ def final_review(
     output: Path,
     *,
     preflight: bool = False,
+    force: bool = False,
 ) -> dict:
+    # 缓存复用：终审输出已存在且 force=False 时直接复用，避免每次重跑 review_rounds 轮 LLM
+    if output.exists() and not force:
+        cached = load_json(output)
+        if cached.get("status") == "completed" and cached.get("score") is not None:
+            return cached
     world = load_json(project / "world.json")
     min_score = float(config.get("outline_book_reviewer", {}).get("min_score", 9.0))
     compact_evidence = [compact_evidence_report(report) for report in evidence_reports]
@@ -797,6 +811,7 @@ def main() -> int:
         evidence_reports,
         reports / "final_outline_review.json",
         preflight=args.preflight,
+        force=force,
     )
     atomic_write_json(reports / "manifest.json", {
         "status": "completed",

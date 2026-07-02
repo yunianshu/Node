@@ -9,6 +9,7 @@ REQUIRED_DESIGN_GATES = (
     "core_desire",
     "irreversible_choice",
     "midpoint_reversal",
+    "human_warmth",
     "strong_hook",
 )
 

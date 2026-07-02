@@ -138,6 +138,193 @@ def _split_sentences(text: str) -> list[str]:
     return [s.strip() for s in parts if s.strip()]
 
 
+def _detect_short_sentence_fragmentation(text: str) -> list[dict]:
+    """高频1-3字断句：如“快。滚。”“走。了。结。”。"""
+    sents = _split_sentences(text)
+    if len(sents) < 20:
+        return []
+    short_flags = [
+        1 if 1 <= sum(1 for c in sent if "\u4e00" <= c <= "\u9fff") <= 3 else 0
+        for sent in sents
+    ]
+    short_count = sum(short_flags)
+    max_run = 0
+    current = 0
+    for flag in short_flags:
+        if flag:
+            current += 1
+            max_run = max(max_run, current)
+        else:
+            current = 0
+    density = short_count / max(1, len(sents))
+    forced = re.search(r"(?:[\u4e00-\u9fff]{1,3}[。！？]){3,}", text)
+    if max_run >= 4 or (forced and density >= 0.18) or density >= 0.28:
+        evidence = forced.group(0)[:60] if forced else f"短句占比 {density:.0%}，最长连续 {max_run} 句"
+        return [{
+            "type": "short_sentence_fragmentation",
+            "severity": "major",
+            "evidence": evidence,
+            "suggestion": "禁止用句号硬拆主谓宾制造沉重感；改用动作、对白潜台词和段落节奏承载情绪",
+        }]
+    return []
+
+
+def _detect_symmetric_anchor_ending(text: str) -> list[dict]:
+    """机械化“身后困境/身前方向/一步又一步”式章末安全锁。"""
+    tail = text[-500:] if len(text) > 500 else text
+    patterns = [
+        r"身后[^。！？]{0,45}[。！？]\s*身前",
+        r"身前[^。！？]{0,45}[。！？]\s*身后",
+        r"一步[，,、 ]*又一步",
+        r"朝着[^。！？]{1,30}[，,]?\s*迈开[了的]?步",
+        r"未知的路",
+    ]
+    hits = []
+    for pat in patterns:
+        match = re.search(pat, tail)
+        if match:
+            hits.append(match.group(0))
+    if len(hits) >= 2:
+        return [{
+            "type": "symmetric_anchor_ending",
+            "severity": "major",
+            "evidence": "；".join(hits[:3])[:100],
+            "suggestion": "章末不要机械打包“身后困境+身前方向+迈步决心”；改成未解决的现场动作、关系反应或具体反转",
+        }]
+    return []
+
+
+def _detect_abstract_concept_pileup(text: str) -> list[dict]:
+    """抽象修炼/概念名词替代落地描写。"""
+    concept_terms = [
+        "道意之核", "共鸣圈", "踏天之境", "正邪合一", "本源", "法则", "道意",
+        "天命", "命格", "气运", "神魂", "真意", "因果", "轮回", "大道",
+        "灵气", "经脉", "丹田", "识海", "境界", "共鸣",
+    ]
+    hits = sum(text.count(term) for term in concept_terms)
+    suffix_hits = len(re.findall(r"[\u4e00-\u9fff]{1,6}之(?:核|境|力|门|心|道|意|源)", text))
+    total_hits = hits + suffix_hits
+    density = _count_per_kanji(text, total_hits)
+    concrete_terms = [
+        "饭", "碗", "门", "鞋", "袖口", "账", "药", "汗", "血", "泥", "雨棚",
+        "灯", "窗", "桌", "椅", "手机", "票", "墙", "井", "炉", "摊", "街",
+    ]
+    concrete_hits = sum(text.count(term) for term in concrete_terms)
+    if density >= 4.0 and concrete_hits < max(3, total_hits // 3):
+        return [{
+            "type": "abstract_concept_pileup",
+            "severity": "major",
+            "evidence": f"抽象修炼/概念词密度 {density:.1f}/千字（约{total_hits}处），具象生活物件偏少",
+            "suggestion": "把概念变化落到可见代价、身体反应、器物变化、旁人误解或环境后果上",
+        }]
+    return []
+
+
+def _normalize_refrain_sentence(sentence: str) -> str:
+    sentence = re.sub(r"[，,；;：:\s]+", "", sentence)
+    sentence = re.sub(r"[\u4e00-\u9fff]{1,3}", lambda m: m.group(0), sentence)
+    return sentence[:42]
+
+
+def _detect_formal_refrain_stagnation(text: str) -> list[dict]:
+    """Detect prose-poem style repeated paragraph frames that freeze narrative time."""
+    paras = _split_paragraphs(text)
+    if len(paras) < 8:
+        return []
+    issues: list[dict] = []
+
+    frame_hits = 0
+    frame_examples: list[str] = []
+    for para in paras:
+        head = para[:80]
+        if re.search(r"^[^。！？]{1,24}(?:边|里|外|下|旁|处|前|后)?[，,][^。！？]{1,24}被[^。！？]{1,30}衬得格外扎眼", head):
+            frame_hits += 1
+            if len(frame_examples) < 2:
+                frame_examples.append(head[:60])
+    if frame_hits >= 5 or frame_hits / len(paras) >= 0.35:
+        issues.append({
+            "type": "formal_refrain_stagnation",
+            "severity": "major",
+            "evidence": f"重复段式 {frame_hits}/{len(paras)} 段：" + " / ".join(frame_examples),
+            "suggestion": "打散散文诗式段落模板；每段改为新的行动、反应、阻碍或信息变化，而不是同一聚焦句式变奏",
+        })
+
+    sentence_counts: dict[str, tuple[int, str]] = {}
+    for sent in re.split(r"[。！？!?]", text):
+        sent = sent.strip()
+        cjk_len = sum(1 for c in sent if "\u4e00" <= c <= "\u9fff")
+        if cjk_len < 18:
+            continue
+        key = _normalize_refrain_sentence(sent)
+        if len(key) < 18:
+            continue
+        count, sample = sentence_counts.get(key, (0, sent[:80]))
+        sentence_counts[key] = (count + 1, sample)
+    repeated = [(count, sample) for count, sample in sentence_counts.values() if count >= 4]
+    if repeated:
+        count, sample = max(repeated, key=lambda item: item[0])
+        issues.append({
+            "type": "repeated_authorial_judgment",
+            "severity": "major",
+            "evidence": f"判断句重复 {count} 次：{sample}",
+            "suggestion": "删除反复替读者下判断的锚点句；用一次不可逆动作或一句潜台词让读者自己感到重量",
+        })
+
+    action_verbs = (
+        "推", "拉", "递", "藏", "抢", "追", "逃", "打", "砸", "撕", "签", "跪",
+        "喊", "问", "答", "拦", "挡", "掀", "翻", "塞", "合", "摔", "拔", "照",
+        "抓", "放", "取", "交", "烧", "封", "开", "关", "走", "跑",
+    )
+    static_markers = ("扎眼", "格外", "像", "仿佛", "沉默", "雨", "衬得")
+    static_like = 0
+    low_action = 0
+    for para in paras:
+        action_count = sum(para.count(v) for v in action_verbs)
+        marker_count = sum(para.count(v) for v in static_markers)
+        if marker_count >= 2 and action_count <= 2:
+            static_like += 1
+        if action_count <= 1:
+            low_action += 1
+    if len(paras) >= 12 and static_like / len(paras) >= 0.45 and low_action / len(paras) >= 0.35:
+        issues.append({
+            "type": "static_lyrical_scene",
+            "severity": "major",
+            "evidence": f"静态意象段偏多 {static_like}/{len(paras)}，低行动段 {low_action}/{len(paras)}",
+            "suggestion": "把静态意象改成历时事件：目标受阻、人物行动、关系反应、信息变化和不可逆后果",
+        })
+    return issues
+
+
+def _detect_authorial_aside(text: str) -> list[dict]:
+    """Detect high-confidence author commentary that explains the chapter's meaning."""
+    patterns = [
+        r"这一章[^。！？]{0,24}(?:往前挪|真正|意味着|象征|核心|关键)",
+        r"这就是(?:小说|故事|本章)[^。！？]{0,24}(?:应该|要做|想要)",
+        r"读者(?:终于|能|会|应该|可以)[^。！？]{0,30}(?:看见|明白|知道|感到|意识到)",
+        r"权力最怕的不是[^。！？]{4,80}是[^。！？]{4,80}",
+        r"真正让[^。！？]{1,30}(?:立住|成立|改变|推进)的[^。！？]{0,50}是",
+        r"他终于知道自己[^。！？]{0,30}往前挪[^。！？]{0,30}是什么",
+    ]
+    hits: list[str] = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, text):
+            sample = match.group(0).strip()
+            if sample and sample not in hits:
+                hits.append(sample[:90])
+            if len(hits) >= 3:
+                break
+        if len(hits) >= 3:
+            break
+    if not hits:
+        return []
+    return [{
+        "type": "authorial_aside",
+        "severity": "major",
+        "evidence": " / ".join(hits),
+        "suggestion": "删除作者旁注式总结；把判断交给动作、物件、对白和他人反应，让读者自行得出结论",
+    }]
+
+
 def _detect_simile(text: str, lex: dict) -> list[dict]:
     """比喻标记（仿佛/宛如/如同…）过密。比喻本身合法，只在密度过高时报。"""
     words = lex.get("simile_markers", [])
@@ -251,7 +438,7 @@ def _detect_sentence_uniformity(text: str) -> list[dict]:
         return [{
             "type": "sentence_uniformity", "severity": "minor",
             "evidence": f"句长变异系数 {cv:.2f}（句子长度过于均匀）",
-            "suggestion": "长短句交替：用1-3字的短句打断，再接长句铺陈，制造节奏起伏",
+            "suggestion": "调整句长起伏，但不要高频使用1-3字断句；用动作、对白和段落结构制造节奏",
         }]
     return []
 
@@ -280,6 +467,11 @@ def detect_ai_flavor(text: str, project: Path | None = None) -> dict:
         + _detect_adjective_pileup(text, lex)
         + _detect_meta(text, lex)
         + _detect_telling(text, lex)
+        + _detect_short_sentence_fragmentation(text)
+        + _detect_symmetric_anchor_ending(text)
+        + _detect_abstract_concept_pileup(text)
+        + _detect_formal_refrain_stagnation(text)
+        + _detect_authorial_aside(text)
         + _detect_low_variance(text)
         + _detect_simile(text, lex)
         + _detect_micro_expressions(text, lex)
@@ -326,6 +518,29 @@ def _selftest() -> None:
         "他想说点什么，最终只是把外套披在她肩上。\n\n门外的脚步声停了。"
     )
     assert r3["ai_flavor_score"] >= 7.5, r3
+    fractured = "他。没有，哭。走。了。结。快。滚。" * 4 + "门外有人敲门，杯子在桌沿晃了一下。"
+    r4 = detect_ai_flavor(fractured)
+    assert "short_sentence_fragmentation" in {i["type"] for i in r4["issues"]}, r4
+    symmetric = "他把信塞进袖口，推门出去。" * 20 + "身后，追兵逼近。身前，是未知的路。他朝着东方，迈开了步。一步，又一步。"
+    r5 = detect_ai_flavor(symmetric)
+    assert "symmetric_anchor_ending" in {i["type"] for i in r5["issues"]}, r5
+    concept = "道意之核在共鸣圈中震动，踏天之境的本源法则牵动神魂经脉。" * 20
+    r6 = detect_ai_flavor(concept)
+    assert "abstract_concept_pileup" in {i["type"] for i in r6["issues"]}, r6
+    refrain = "\n\n".join(
+        f"井亭边，旧物{i}被雨声衬得格外扎眼。沈砚没有把话说满，他只看了一眼苏雯。这里不是给他升级的秘境，是一条街的药钱和旧案压出来的窄路。"
+        for i in range(12)
+    )
+    r7 = detect_ai_flavor(refrain)
+    types7 = {i["type"] for i in r7["issues"]}
+    assert "formal_refrain_stagnation" in types7, r7
+    assert "repeated_authorial_judgment" in types7, r7
+    aside = (
+        "沈砚把墨印推到案中央。读者终于能看见他真正往前挪了一步。"
+        "权力最怕的不是一个少年逞强，是一条街忽然都记起自己看见过什么。"
+    )
+    r8 = detect_ai_flavor(aside)
+    assert "authorial_aside" in {i["type"] for i in r8["issues"]}, r8
     print("ai_flavor_detector selftest OK")
 
 

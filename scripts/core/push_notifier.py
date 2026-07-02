@@ -47,6 +47,131 @@ def _send(webhook_url: str, content: str) -> bool:
         return False
 
 
+def _load_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _latest_existing_mtime(paths: list[Path]) -> tuple[float, Path | None]:
+    latest = 0.0
+    latest_path: Path | None = None
+    for path in paths:
+        try:
+            if not path.exists() or not path.is_file():
+                continue
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime > latest:
+            latest = mtime
+            latest_path = path
+    return latest, latest_path
+
+
+def _story_flow_input_files(project: Path) -> list[Path]:
+    files = [
+        project / "premise.txt",
+        project / "world.json",
+        project / "characters.json",
+        project / "reports" / "book_review" / "final_book_review.json",
+        project / "reports" / "book_review" / "local_full_scan.json",
+        project / "reports" / "book_review" / "repair_manifest.json",
+    ]
+    for rel, pattern in (
+        ("origin", "*"),
+        ("chapters/outline", "chapter_*.json"),
+        ("chapters/outline_review", "chapter_*_review.json"),
+        ("chapters/draft", "chapter_*.txt"),
+        ("chapters/review", "chapter_*_review.json"),
+        ("chapters/final", "chapter_*.txt"),
+        ("chapters/relationship_states", "chapter_*.json"),
+    ):
+        base = project / rel
+        if base.exists():
+            files.extend(path for path in base.rglob(pattern) if path.is_file())
+    return files
+
+
+def story_flow_audit_state(project: str | Path) -> dict:
+    """Return parse and freshness state for reports/story_flow_audit.json."""
+    project_path = Path(project)
+    report = project_path / "reports" / "story_flow_audit.json"
+    if not report.exists():
+        return {"exists": False, "valid": False, "stale": False}
+
+    data = _load_json(report)
+    if not data:
+        return {"exists": True, "valid": False, "stale": False, "path": str(report)}
+
+    report_mtime = 0.0
+    try:
+        report_mtime = report.stat().st_mtime
+    except OSError:
+        pass
+    latest_input_mtime, latest_input_path = _latest_existing_mtime(_story_flow_input_files(project_path))
+    stale = bool(report_mtime and latest_input_mtime > report_mtime + 1.0)
+    latest_rel = ""
+    if latest_input_path is not None:
+        try:
+            latest_rel = str(latest_input_path.relative_to(project_path))
+        except ValueError:
+            latest_rel = str(latest_input_path)
+    return {
+        "exists": True,
+        "valid": True,
+        "stale": stale,
+        "status": str(data.get("overall_status", "") or "unknown").strip(),
+        "generated_at": str(data.get("generated_at", "") or "").strip(),
+        "gaps": data.get("gaps") if isinstance(data.get("gaps"), list) else [],
+        "stage_statuses": data.get("stage_statuses") if isinstance(data.get("stage_statuses"), dict) else {},
+        "latest_input_path": latest_rel,
+        "report_mtime": report_mtime,
+        "latest_input_mtime": latest_input_mtime,
+    }
+
+
+def story_flow_audit_note(project: str | Path) -> str:
+    """Return a compact non-ok or stale story-flow audit note for progress pushes."""
+    state = story_flow_audit_state(project)
+    if not state.get("exists"):
+        return ""
+    if not state.get("valid"):
+        return "流程审计 invalid: 报告不可解析"
+    if state.get("stale"):
+        latest = str(state.get("latest_input_path", "") or "").strip()
+        detail = f"报告早于 {latest}" if latest else "报告早于关键产物"
+        return f"流程审计 stale: {detail}，需重跑"
+
+    status = str(state.get("status", "") or "").strip()
+    if not status or status == "ok":
+        return ""
+
+    labels: list[str] = []
+    stages = state.get("stage_statuses")
+    if isinstance(stages, dict):
+        for stage in stages.values():
+            if not isinstance(stage, dict) or stage.get("status") == "ok":
+                continue
+            label = str(stage.get("label", "") or "").strip()
+            if label and label not in labels:
+                labels.append(label)
+            if len(labels) >= 3:
+                break
+    if not labels:
+        gaps = state.get("gaps")
+        if isinstance(gaps, list):
+            labels = [str(item).strip() for item in gaps if str(item).strip()][:3]
+    detail = "；".join(labels)
+    if detail:
+        return f"流程审计 {status}: {detail}"
+    return f"流程审计 {status}"
+
+
 def build_progress_message(
     *,
     title: str,
@@ -62,6 +187,7 @@ def build_progress_message(
     avg_score: float | None = None,
     pass_rate: float | None = None,
     status_note: str = "",
+    audit_note: str = "",
     eta_text: str = "",
 ) -> str:
     """构建统一的定期进度报告文本。
@@ -90,6 +216,8 @@ def build_progress_message(
         lines.append(score_line)
     if status_note:
         lines.append(f"📍 当前: {status_note[:180]}")
+    if audit_note:
+        lines.append(f"🧭 审计: {audit_note[:180]}")
     if active_writers > 0:
         lines.append(f"🤖 活跃进程: {active_writers}")
     lines.append(_SEPARATOR)
@@ -112,6 +240,7 @@ def push_progress(
     avg_score: float | None = None,
     pass_rate: float | None = None,
     status_note: str = "",
+    audit_note: str = "",
     eta_text: str = "",
 ) -> bool:
     """推送定期进度报告。"""
@@ -129,6 +258,7 @@ def push_progress(
         avg_score=avg_score,
         pass_rate=pass_rate,
         status_note=status_note,
+        audit_note=audit_note,
         eta_text=eta_text,
     )
     return _send(_get_webhook(config), msg)

@@ -21,7 +21,14 @@ import time
 from pathlib import Path
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
-from core.novel_config import configure_stdio, load_config, load_origin_materials, resolve_project_dir
+from core.novel_config import (
+    configure_stdio,
+    extract_origin_fact_clauses,
+    extract_origin_fact_terms,
+    load_config,
+    load_origin_materials,
+    resolve_project_dir,
+)
 from core.ai_flavor_detector import detect_ai_flavor
 # 微信推送已禁用，改由 coordinator 统一推送进度
 # from core.push_notifier import push_stage_complete
@@ -88,6 +95,233 @@ def analyze_chapter_text(chapter_content: str) -> dict:
         "dialogue_marker_count": dialogue_count,
         "issues": issues,
         "local_ok": not issues,
+    }
+
+
+def _keyword_hits(text: str, keywords: tuple[str, ...]) -> list[str]:
+    return [keyword for keyword in keywords if keyword and keyword in text]
+
+
+def _anchor_terms(anchor: str) -> list[str]:
+    terms: list[str] = []
+    for chunk in re.findall(r"[\u4e00-\u9fff]{2,}", str(anchor or "")):
+        if chunk in {"生活压力", "关系牵挂", "潜台词", "生活物件", "本章", "具体"}:
+            continue
+        if len(chunk) <= 6:
+            terms.append(chunk)
+            continue
+        for size in (4, 3, 2):
+            for index in range(0, max(0, len(chunk) - size + 1), size):
+                terms.append(chunk[index:index + size])
+    seen: list[str] = []
+    for term in terms:
+        if term and term not in seen:
+            seen.append(term)
+    return seen[:12]
+
+
+def detect_origin_fact_reference(chapter_content: str, origin_materials: str) -> dict:
+    """Detect whether a chapter touches concrete terms from origin/facts.
+
+    Non-blocking evidence: not every chapter must cite origin facts, but this
+    lets Reviewer and later gates distinguish fact adherence from style mimicry.
+    """
+    terms = extract_origin_fact_terms(origin_materials, limit=40)
+    clauses = extract_origin_fact_clauses(origin_materials, limit=20)
+    if not terms and not clauses:
+        return {
+            "required": False,
+            "matched_terms": [],
+            "missing_terms_sample": [],
+            "matched_fact_clauses": [],
+            "missing_fact_clauses_sample": [],
+            "reference_hit_rate": None,
+            "needs_attention": False,
+        }
+    text = chapter_content or ""
+    matched = [term for term in terms if term in text]
+    hit_rate = round(len(matched) / len(terms), 3) if terms else 0.0
+    matched_clauses = []
+    missing_clauses = []
+    for clause in clauses:
+        clause_terms = [
+            term for term in extract_origin_fact_terms(f"## origin/facts\n{clause}", limit=12)
+            if len(term) >= 2
+        ]
+        clause_terms = list(dict.fromkeys(clause_terms))
+        clause_hits = [term for term in clause_terms if term in text]
+        required_hits = 1 if len(clause_terms) <= 2 else 2
+        if clause_hits and (len(clause_hits) >= required_hits or clause in text):
+            matched_clauses.append({"clause": clause, "matched_terms": clause_hits[:8]})
+        else:
+            missing_clauses.append({"clause": clause, "expected_terms": clause_terms[:8]})
+    nominal_only_hit = bool(matched) and bool(clauses) and not matched_clauses
+    return {
+        "required": True,
+        "fact_terms_sample": terms[:20],
+        "matched_terms": matched[:20],
+        "missing_terms_sample": [term for term in terms if term not in matched][:20],
+        "fact_clauses_sample": clauses[:8],
+        "matched_fact_clauses": matched_clauses[:8],
+        "missing_fact_clauses_sample": missing_clauses[:8],
+        "reference_hit_rate": hit_rate,
+        "nominal_only_hit": nominal_only_hit,
+        "needs_attention": len(matched) == 0 or nominal_only_hit,
+    }
+
+
+def detect_human_warmth(chapter_content: str, chapter_outline: dict) -> dict:
+    """本地启发式检查：正文是否兑现了 human_anchor 与基本人情味元素。
+
+    这是保守门禁，不评价文笔，只挡明显"只有事件没有人"的章节。
+    """
+    text = chapter_content or ""
+    anchor = str(chapter_outline.get("human_anchor", "")).strip() if isinstance(chapter_outline, dict) else ""
+    livelihood_keywords = (
+        "饭", "菜", "粥", "面", "茶", "烟", "酒", "药", "病", "医院", "诊所", "房租", "租金",
+        "工资", "工钱", "欠", "债", "账", "钱", "银行卡", "手机", "电量", "楼道", "门口",
+        "工位", "班", "老板", "同事", "邻居", "家里", "厨房", "旧衣", "袖口", "伤口",
+    )
+    relationship_keywords = (
+        "妈", "娘", "爹", "爸", "父亲", "母亲", "孩子", "女儿", "儿子", "妻子", "丈夫",
+        "兄弟", "姐姐", "妹妹", "师父", "徒弟", "朋友", "同事", "邻居", "恩", "亏欠",
+        "照顾", "等你", "别告诉", "别怕", "对不起", "谢谢", "沉默", "没说", "欲言又止",
+    )
+    object_keywords = (
+        "碗", "杯", "筷", "门", "灯", "伞", "钥匙", "纸条", "照片", "旧", "裂", "磨白",
+        "袖口", "手心", "指节", "汗", "药味", "饭盒", "手机", "屏幕", "账单", "零钱",
+    )
+    dialogue_markers = text.count("\u201c") + text.count('"') + text.count("：")
+
+    livelihood_hits = _keyword_hits(text, livelihood_keywords)
+    relationship_hits = _keyword_hits(text, relationship_keywords)
+    object_hits = _keyword_hits(text, object_keywords)
+    anchor_terms = _anchor_terms(anchor)
+    anchor_hits = [term for term in anchor_terms if term in text]
+    category_hit_count = len(livelihood_hits) + len(relationship_hits) + len(object_hits)
+
+    score = 10
+    issues: list[str] = []
+    anchor_soft_match = bool(anchor_hits) and category_hit_count >= 4
+    if anchor and not anchor_soft_match and len(anchor_hits) < max(1, min(3, len(anchor_terms) // 3)):
+        score -= 3
+        issues.append("正文未充分兑现大纲 human_anchor")
+    if len(livelihood_hits) < 2:
+        score -= 2
+        issues.append("缺少具体生活压力或日常处境细节")
+    if len(relationship_hits) < 2:
+        score -= 2
+        issues.append("缺少关系牵挂、亏欠或人的反应")
+    if len(object_hits) < 2:
+        score -= 1
+        issues.append("缺少可触摸的生活物件或身体细节")
+    if dialogue_markers < 4:
+        score -= 1
+        issues.append("对话互动偏少，潜台词承载不足")
+
+    score = max(0, min(10, score))
+    return {
+        "human_warmth_score": score,
+        "passed": score >= 7,
+        "issues": issues,
+        "anchor": anchor[:160],
+        "anchor_terms": anchor_terms,
+        "anchor_hits": anchor_hits[:8],
+        "livelihood_hits": livelihood_hits[:10],
+        "relationship_hits": relationship_hits[:10],
+        "object_hits": object_hits[:10],
+        "category_hit_count": category_hit_count,
+        "dialogue_markers": dialogue_markers,
+    }
+
+
+def _relationship_terms(value: str) -> list[str]:
+    terms: list[str] = []
+    for chunk in re.findall(r"[\u4e00-\u9fff]{2,}", str(value or "")):
+        if chunk in {"后续压力", "未说出口", "误会", "隐瞒", "亏欠", "人情", "承诺", "照料行为"}:
+            continue
+        if len(chunk) <= 5:
+            terms.append(chunk)
+        else:
+            for size in (4, 3, 2):
+                for index in range(0, max(0, len(chunk) - size + 1), size):
+                    terms.append(chunk[index:index + size])
+    seen: list[str] = []
+    for term in terms:
+        if term and term not in seen:
+            seen.append(term)
+    return seen[:12]
+
+
+def detect_relationship_obligation(chapter_content: str, chapter_number: int) -> dict:
+    """Check whether the Writer's selected relationship obligation has basic textual evidence."""
+    if not NOVELS_DIR or chapter_number <= 1:
+        return {"required": False, "passed": True, "reason": "无上一章关系状态"}
+    try:
+        from core.relationship_state import latest_relationships_before, select_relationship_obligation
+        prev = latest_relationships_before(NOVELS_DIR, chapter_number)
+        obligation = select_relationship_obligation(prev)
+    except Exception as exc:
+        return {"required": False, "passed": True, "reason": f"关系任务读取失败: {exc}"}
+    if not obligation:
+        return {"required": False, "passed": True, "reason": "无未解决关系任务"}
+
+    text = chapter_content or ""
+    pair = str(obligation.get("pair", "")).strip()
+    names = [part.strip() for part in re.split(r"->|→|/|、|和", pair) if part.strip()]
+    name_hits = [name for name in names if name and name in text]
+    pressure_text = "；".join(str(v) for v in (obligation.get("pressure_fields") or {}).values())
+    pressure_terms = _relationship_terms(pressure_text)
+    pressure_hits = [term for term in pressure_terms if term in text]
+    subtext_hits = _keyword_hits(text, (
+        "没说", "沉默", "欲言又止", "别告诉", "对不起", "谢谢", "别怕", "算了",
+        "问", "追问", "低声", "停了一下", "没看", "移开目光",
+    ))
+    action_hits = _keyword_hits(text, (
+        "递", "扶", "护", "挡", "还", "补", "等", "送", "替", "拉住", "放下",
+        "收起", "塞给", "攥住", "避开", "回头",
+    ))
+    outcome_hits = _keyword_hits(text, (
+        "亏欠", "误会", "和解", "原谅", "答应", "承诺", "更沉", "松了口气",
+        "不再", "终于", "仍然", "欠", "还清",
+    ))
+
+    score = 0
+    issues: list[str] = []
+    if len(name_hits) >= min(2, max(1, len(names))):
+        score += 3
+    else:
+        issues.append("关系任务对象在正文中出现不足")
+    if len(pressure_hits) >= 2:
+        score += 3
+    else:
+        issues.append("未解决关系压力缺少正文关键词回声")
+    if subtext_hits:
+        score += 2
+    else:
+        issues.append("缺少承载关系压力的潜台词对白")
+    if action_hits:
+        score += 1
+    else:
+        issues.append("缺少照料、回避、补偿或保护动作")
+    if outcome_hits:
+        score += 1
+    else:
+        issues.append("缺少关系变化结果")
+
+    return {
+        "required": True,
+        "passed": score >= 6,
+        "score": score,
+        "pair": pair,
+        "pressure": str(obligation.get("pressure", ""))[:220],
+        "name_hits": name_hits,
+        "pressure_terms": pressure_terms,
+        "pressure_hits": pressure_hits[:8],
+        "subtext_hits": subtext_hits[:8],
+        "action_hits": action_hits[:8],
+        "outcome_hits": outcome_hits[:8],
+        "issues": issues,
     }
 
 
@@ -333,6 +567,15 @@ def review_chapter(
     local_analysis["character_presence"] = _character_presence_issues(
         chapter_content, chapter_outline, characters
     )
+    local_analysis["human_warmth_detection"] = detect_human_warmth(
+        chapter_content, chapter_outline
+    )
+    local_analysis["origin_fact_reference_detection"] = detect_origin_fact_reference(
+        chapter_content, ORIGIN_MATERIALS
+    )
+    local_analysis["relationship_obligation_detection"] = detect_relationship_obligation(
+        chapter_content, chapter_number
+    )
 
     content_sample = chapter_content[:1500]
     mid_start = max(0, len(chapter_content) // 2 - 500)
@@ -428,9 +671,11 @@ def review_chapter(
     "outline_adherence": "大纲遵循度（0-10）",
     "pacing": "节奏把控（0-10。是否存在平铺直叙超过1500字？中段是否有小高潮？）",
     "emotional_impact": "情感冲击力（0-10。是否触及角色核心恐惧/欲望？是否有刺点？）",
+    "human_warmth": "烟火气与人情味（0-10。是否有具体生活压力、关系牵挂、潜台词和人的反应？）",
     "hook_strength": "章末钩子强度（0-10。最后200字是否让人心跳加速、必须读下一章？）",
     "suspense_density": "悬念密度（0-10。每800-1200字是否有新信息/冲突升级/意外转折？）",
     "information_freshness": "信息新鲜度（0-10。是否带来至少一个此前从未出现过的新元素？有无重复已知信息？）",
+    "content_richness": "内容丰富度/层次感（0-10。外部事件之外，是否同时推进人物关系、生活压力、秘密代价或世界规则现场化？）",
     "anti_cliche": "反套路程度（0-10。是否存在标准升级流/打怪流/解谜流模板？是否有意外和不可预测性？）",
     "read_desire": "读下去的欲望（0-10。假设你是第一次读的读者，读完这章后有多想立刻打开下一章？）",
     "ai_flavor": "去AI味程度（0-10。越高越自然。参考 local_analysis.ai_flavor_detection 的本地证据）",
@@ -474,12 +719,30 @@ def review_chapter(
 4. 本章是否给读者带来至少一个"此前从未出现过的新元素"？
 5. 心理描写是否展现了真实的情感波动，而不是代码化/分析化的流水账？
 6. 冲突是否触及角色核心恐惧或核心欲望，而非表层利害计算？
-7. 是否存在套路化描写（标准战斗模板、标准解谜流程、配角当解说员）？
-8. 如果我是第一次读这本书的读者，读完这章后会不会立刻想打开下一章？
+7. 本章是否有具体生活压力或人际牵挂参与剧情，而不是只有宏大危机和任务推进？
+8. 关键对白是否有潜台词，配角是否有自己的难处、善意、恐惧或小算盘？
+9. 爽点/破局后是否有人产生真实反应、关系变化或亏欠回声？
+10. 本章是否兑现大纲 content_layers，除外部事件外至少还有一层关系、生活压力、秘密代价或世界规则现场化发生真实变化？
+11. 是否出现AI指纹：高频1-3字短句断句、身后/身前/一步又一步式对称收尾、抽象概念堆叠、地图打卡、散文诗式重复段式？
+12. 是否存在形式感压过叙事的问题：多个段落只是同一瞬间的物象变奏，而没有新的行动、阻碍、选择、反应或信息变化？
+13. 本章是否有一个可复述的不可逆动作，让读者看见人物真的“往前挪了半寸”？
+14. 若本章有群像/多线协作，是否完成“从重奏到独步”的转折：群像压力最终收束为主角自己的判断、行动和代价？
+15. 关键证据/信息/信物的传递链是否清楚：谁拿到、如何转交、接收者如何理解、风险在哪里、最后如何使用？
+16. 反派在露出破绽后是否有更冷的应对（规则、程序、威胁、交易、嫁祸），而不是只脸色一变或发怒？
+17. 跨地点/跨时间转场是否有声音、光、脚步、物件、时辰或伤口变化作为桥接，避免读者脑补关键链路？
+18. 反派标志物或贯穿意象是否照出了反派内层、旧事、软肋或破绽，而不是只作为“某人的灯笼/刀/戒指”存在？
+19. 旧签押、旧证词、旧物证逼到反派时，是否有半拍身体裂隙（目光移开、指节发白、喉咙动、张口又咽回、灯柄轻响等）再接冷处理？
+20. 章末关键道具/证据是否在前文有可见预埋动作（制作、拓印、藏匿、转手、瞥见），避免“作者需要它现在出现”？
+21. 墨印/拓片/副本/录音备份等复制型证据是否写出了制作动作，而非结尾突然出现？
+22. 父辈/亲缘/旧痕线索是否在章末关键动作中被微小回扣，而不是中途放下？
+23. 结尾关键动作后是否有1-2个现场微反应形成余韵（反派停顿、旁人吸气、同伴松手、标志物光线变化），而不是动作一落就截断？
+24. 是否有作者旁注式总结（“读者能看见”“这一章往前挪”“权力最怕的是”等）替代现场动作？
+25. 是否存在套路化描写（标准战斗模板、标准解谜流程、配角当解说员）？
+26. 如果我是第一次读这本书的读者，读完这章后会不会立刻想打开下一章？
 
 要求：
 1. 评分要冷酷客观。不要给辛苦分，不要给"还行"分。9分意味着"非常想读下一章"，8分意味着"看完了，还行"。
-2. 重点审查：悬念密度、情感冲击、信息新鲜度、反套路程度、读下去的欲望。这五个维度比文笔更重要。
+2. 重点审查：悬念密度、情感冲击、烟火气与人情味、内容丰富度、信息新鲜度、反套路程度、读下去的欲望。这些维度比文笔更重要。
 3. 剧情推进是否自然，有无逻辑漏洞或突兀转折
 4. 对话是否有潜台词，是否符合角色身份，是否避免了解说员式长篇大论
 5. 必须给出具体的修改建议，不能泛泛而谈，且只给最关键1条
@@ -489,7 +752,11 @@ def review_chapter(
 9. 必须输出合法JSON，不要Markdown，不要长篇解释
 10. **必须输出 edits 数组**：如果 verdict 不是"通过"，只能给出1条最关键、最可定位的 edit ops（replace/insert/delete），用于定点修改而不是全文重写。edit 的 old/after 字段必须引用原文真实片段，长度 30-200 字。
 11. 若 local_analysis.ai_flavor_detection.ai_flavor_score < 7，verdict 不得为"通过"，只挑最严重的一处AI味问题在 edits 中定点重写。
-12. 若 local_analysis.character_presence.absent 非空，verdict 不得为"通过"，只挑最关键缺失角色在 continuity_issues 和 edits 中处理。"""
+12. 若 local_analysis.ai_flavor_detection.issues 出现 short_sentence_fragmentation、symmetric_anchor_ending、abstract_concept_pileup、formal_refrain_stagnation、repeated_authorial_judgment、authorial_aside 或 static_lyrical_scene，verdict 不得为"通过"，必须优先定点重写对应段落。
+13. 若 local_analysis.character_presence.absent 非空，verdict 不得为"通过"，只挑最关键缺失角色在 continuity_issues 和 edits 中处理。
+14. 若 local_analysis.human_warmth_detection.passed=false，verdict 不得为"通过"，必须优先修正文中未兑现 human_anchor、缺少生活压力或关系牵挂的问题。
+15. 若 local_analysis.relationship_obligation_detection.required=true 且 passed=false，verdict 不得为"通过"，必须优先修复上一章延续下来的关系任务：让对应人物、压力、潜台词对白、照料/回避/补偿动作和关系结果进入正文。
+16. 若 local_analysis.origin_fact_reference_detection.needs_attention=true，说明正文没有命中 origin/facts 事实素材；这不是单独硬门槛，但应优先在 weaknesses/suggestions 中指出，避免只模仿 style 风格而不遵守事实。"""
 
     log(f"[Reviewer] 正在审查第{chapter_number}章...")
     start_time = time.time()
@@ -547,9 +814,47 @@ def review_chapter(
         ai_flavor_score = (local_analysis.get("ai_flavor_detection") or {}).get("ai_flavor_score")
         if isinstance(ai_flavor_score, (int, float)) and ai_flavor_score < 7:
             hard_gate_reasons.append("本地去AI味评分低于7")
+        ai_issues = (local_analysis.get("ai_flavor_detection") or {}).get("issues")
+        if isinstance(ai_issues, list):
+            fingerprint_types = {
+                "short_sentence_fragmentation": "短句断句AI指纹",
+                "symmetric_anchor_ending": "对称式章节结尾AI指纹",
+                "abstract_concept_pileup": "抽象概念堆叠AI指纹",
+                "formal_refrain_stagnation": "散文诗式重复段式",
+                "repeated_authorial_judgment": "重复作者判断句",
+                "authorial_aside": "作者旁注式总结",
+                "static_lyrical_scene": "静态意象堆叠导致叙事停滞",
+            }
+            found = [
+                fingerprint_types.get(str(item.get("type")))
+                for item in ai_issues
+                if isinstance(item, dict) and str(item.get("type")) in fingerprint_types
+            ]
+            if found:
+                hard_gate_reasons.append("本地AI指纹检测未通过：" + "、".join(dict.fromkeys(found)))
         absent = (local_analysis.get("character_presence") or {}).get("absent")
         if isinstance(absent, list) and absent:
             hard_gate_reasons.append("大纲要求角色在正文缺失：" + "、".join(str(item) for item in absent[:3]))
+        human_warmth = local_analysis.get("human_warmth_detection") or {}
+        if isinstance(human_warmth, dict) and human_warmth.get("passed") is False:
+            issues = human_warmth.get("issues")
+            if isinstance(issues, list) and issues:
+                hard_gate_reasons.append("本地人情味检测未通过：" + "、".join(str(item) for item in issues[:3]))
+            else:
+                hard_gate_reasons.append("本地人情味检测未通过")
+        relationship_obligation = local_analysis.get("relationship_obligation_detection") or {}
+        if (
+            isinstance(relationship_obligation, dict)
+            and relationship_obligation.get("required") is True
+            and relationship_obligation.get("passed") is False
+        ):
+            issues = relationship_obligation.get("issues")
+            pair = str(relationship_obligation.get("pair", "")).strip()
+            prefix = f"关系任务未兑现({pair})" if pair else "关系任务未兑现"
+            if isinstance(issues, list) and issues:
+                hard_gate_reasons.append(prefix + "：" + "、".join(str(item) for item in issues[:3]))
+            else:
+                hard_gate_reasons.append(prefix)
 
         if isinstance(score, (int, float)):
             if hard_gate_reasons and score >= review_min_score:

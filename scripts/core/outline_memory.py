@@ -39,7 +39,14 @@ def build_outline_memory(
             "range": f"{group[0]['chapter_number']}-{group[-1]['chapter_number']}",
             "start": str(group[0].get("summary", ""))[:180],
             "end": str(group[-1].get("summary", ""))[:220],
+            # 中段浓缩：抽取组内 power/伏笔/地点，避免中段细节全丢导致注水腰
             "power_progression": _items(group[-1].get("power_progression"), 2),
+            "group_foreshadowing": [
+                {"ch": item.get("chapter_number"), "f": str(item.get("foreshadowing", ""))[:120]}
+                for item in group
+                if str(item.get("foreshadowing", "")).strip()
+            ][:4],
+            "key_events_tail": _items(group[-1].get("key_events"), 3),
             "locations": list(dict.fromkeys(
                 str(item.get("location", "")).strip()
                 for item in group

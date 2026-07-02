@@ -15,7 +15,7 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 from core.novel_config import load_config, resolve_project_dir
-from core.push_notifier import push_progress
+from core.push_notifier import push_progress, story_flow_audit_note
 from core.workflow_state import aggregate_review_scores, outline_completed_count, scan_chapter_status
 
 
@@ -157,6 +157,7 @@ def push_once(project: Path, config: dict) -> bool:
     pass_rate = score_metrics["pass_rate"] if scores else None
     status_note = current_status_note(statuses)
     eta_text = estimate_remaining_time(project, total, final)
+    audit_note = story_flow_audit_note(project)
     return push_progress(
         config=config,
         title=book_title(project),
@@ -172,6 +173,7 @@ def push_once(project: Path, config: dict) -> bool:
         avg_score=avg_score,
         pass_rate=pass_rate,
         status_note=status_note,
+        audit_note=audit_note,
         eta_text=eta_text,
     )
 
