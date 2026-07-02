@@ -161,6 +161,16 @@ def _validate_world_data(world: dict) -> list[str]:
                     issues.append(f"quality_bible.{field} 缺失或为空")
             elif not str(value or "").strip():
                 issues.append(f"quality_bible.{field} 缺失")
+        palette = quality_bible.get("sensory_palette")
+        if isinstance(palette, list):
+            issues.append("quality_bible.sensory_palette 仍是旧版列表，需迁移为分类对象")
+        elif not isinstance(palette, dict):
+            issues.append("quality_bible.sensory_palette 缺失或不是对象")
+        else:
+            for cat in SENSORY_PALETTE_CATEGORIES:
+                cat_value = palette.get(cat)
+                if not isinstance(cat_value, list) or not any(str(v).strip() for v in cat_value):
+                    issues.append(f"quality_bible.sensory_palette.{cat} 缺失或为空")
     return issues
 
 
@@ -186,10 +196,13 @@ def _default_quality_bible(world: dict) -> dict:
             "场景轮换要体现阶层、职业、地理或制度差异，避免所有冲突都发生在同类空间。",
             "每个重要场景必须有一个可触摸的物件、气味、声音或身体细节服务人物处境。",
         ],
-        "sensory_palette": [
-            "优先使用与题材绑定的物象、工具、账目、伤痕、旧物、空间压迫和生活噪声。",
-            "少用空泛宏大形容词，避免把氛围写成通用影视预告片。",
-        ],
+        "sensory_palette": {
+            "indoor": ["工位", "厨房灶台", "楼道灯", "账单", "药柜", "旧沙发", "饭桌", "煤炉"],
+            "outdoor": ["街市叫卖", "雨棚滴水", "巷口阴影", "野风", "尘土", "市集摊位"],
+            "body": ["指节伤口", "汗渍", "旧疤", "磨白袖口", "冻红的手", "干裂嘴唇", "黑眼圈"],
+            "object": ["裂屏手机", "铜钥匙", "旧饭盒", "褪色照片", "磨钝的笔", "缺角瓷碗"],
+            "sound_smell": ["药味", "饭香", "钟声", "楼道灯嗡嗡", "铁锈味", "潮气", "远处犬吠"],
+        },
         "emotional_promises": [
             f"围绕{themes or '核心主题'}制造选择代价：人物越接近目标，越要暴露亏欠、软肋或关系裂痕。",
             "胜利必须留下关系回声：感激、误解、亏欠、伤害、沉默或新的恐惧。",
@@ -219,6 +232,39 @@ def _default_quality_bible(world: dict) -> dict:
     }
 
 
+SENSORY_PALETTE_CATEGORIES = ("indoor", "outdoor", "body", "object", "sound_smell")
+
+
+def _migrate_sensory_palette(world: dict) -> bool:
+    """把旧版列表型 sensory_palette 迁移为五类对象；已分类则补齐缺失类别。"""
+    bible = world.get("quality_bible")
+    if not isinstance(bible, dict):
+        return False
+    palette = bible.get("sensory_palette")
+    defaults = _default_quality_bible(world)["sensory_palette"]
+    if isinstance(palette, list):
+        # 旧列表迁移：整体塞进 indoor + object，其余用默认补齐
+        items = [str(item).strip() for item in palette if str(item).strip()]
+        bible["sensory_palette"] = {
+            "indoor": items[:4] if items else defaults["indoor"],
+            "outdoor": defaults["outdoor"],
+            "body": defaults["body"],
+            "object": items[4:8] if len(items) > 4 else defaults["object"],
+            "sound_smell": defaults["sound_smell"],
+        }
+        return True
+    if not isinstance(palette, dict):
+        bible["sensory_palette"] = defaults
+        return True
+    changed = False
+    for cat in SENSORY_PALETTE_CATEGORIES:
+        value = palette.get(cat)
+        if not isinstance(value, list) or not any(str(v).strip() for v in value):
+            palette[cat] = defaults[cat]
+            changed = True
+    return changed
+
+
 def _ensure_world_quality_bible(world: dict) -> bool:
     if not isinstance(world.get("quality_bible"), dict):
         world["quality_bible"] = _default_quality_bible(world)
@@ -235,6 +281,8 @@ def _ensure_world_quality_bible(world: dict) -> bool:
         if missing:
             world["quality_bible"][key] = defaults[key]
             changed = True
+    if _migrate_sensory_palette(world):
+        changed = True
     return changed
 
 
@@ -412,7 +460,13 @@ def generate_world() -> bool:
     "conflict_engine": "本书最稳定的冲突发动机：人物欲望、现实压力、势力博弈、主线秘密如何相互咬合",
     "content_density_rules": ["每章内容密度规则：新信息/关系变化/代价/伏笔回收至少一项", "设定必须通过现场行动呈现"],
     "scene_variety": ["场景多样性原则：不同阶层、职业、地理或制度空间如何轮换", "避免重复场景的具体禁令"],
-    "sensory_palette": ["本书专属感官词库和物象：气味、声音、旧物、工具、伤痕、账目等"],
+    "sensory_palette": {{
+      "indoor": ["室内物象：工位、厨房、楼道、账单、药柜等"],
+      "outdoor": ["室外物象：街市、野外、雨棚、天气等"],
+      "body": ["身体细节：伤口、汗、指节、旧疤、冻红的手等"],
+      "object": ["随身物件：旧衣、裂屏手机、钥匙、饭盒、褪色照片等"],
+      "sound_smell": ["声音气味：药味、饭香、钟声、楼道灯嗡嗡、铁锈味等"]
+    }},
     "emotional_promises": ["本书承诺给读者的情绪回报：爽感、压迫、温情、悔恨、秘密揭开等"],
     "taboo_cliches": ["本书必须避开的套路桥段或AI味表达：短句断句指纹、对称式收尾、抽象概念堆叠、打卡地图、散文诗式复沓等"]
   }}
