@@ -18,8 +18,11 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 from core.json_repair import fix_inner_quotes, fix_truncated_json
-from core.mmx_client import MmxError, call_mmx
-from core.novel_config import load_config, resolve_project_dir
+from core.novel_config import (
+    load_config,
+    resolve_project_dir,
+)
+from core.review_ai_client import ReviewAIError, call_review_ai
 from core.outline_batch_lock import lock_batch
 from core.outline_quality_gate import detect_adjacent_event_repetition
 from core.workflow_state import (
@@ -78,22 +81,20 @@ def ai_call(project: Path, config: dict, prompt: str, raw_name: str) -> dict:
     result = {"status": "failed", "error": "no_response"}
     for semantic_attempt in range(semantic_retries + 1):
         try:
-            raw = call_mmx(
+            raw = call_review_ai(
+                config,
+                project,
+                "outline_book_reviewer",
                 "你是长篇中文网络小说的总编。只依据输入证据审查，输出合法紧凑JSON，不使用Markdown。",
                 prompt,
-                model=config["model"],
-                mmx_path=config["mmx_path"],
                 max_tokens=int(cfg.get("max_tokens", 4096)),
                 temperature=float(cfg.get("temperature", 0.2)),
-                retries=int(cfg.get("retries", 2)),
-                retry_delay=float(cfg.get("retry_delay", 5.0)),
                 timeout=int(cfg.get("timeout_seconds", 300)),
-                log_dir=project / "logs" / "raw_responses",
                 raw_name=f"{raw_name}_semantic{semantic_attempt}",
-                qps=float(config.get("api_qps", 5.0)),
-                rate_state_dir=project / "logs" / "rate_limit",
+                fallback_retries=int(cfg.get("retries", 2)),
+                fallback_retry_delay=float(cfg.get("retry_delay", 5.0)),
             )
-        except MmxError as exc:
+        except ReviewAIError as exc:
             result = {"status": "failed", "error": str(exc)}
             continue
         result = parse_json(raw)

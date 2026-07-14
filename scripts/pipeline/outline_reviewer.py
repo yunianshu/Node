@@ -18,8 +18,13 @@ import re
 import time
 from pathlib import Path
 
-from core.mmx_client import MmxError, call_mmx as call_mmx_client
-from core.novel_config import configure_stdio, load_config, load_origin_materials, resolve_project_dir
+from core.novel_config import (
+    configure_stdio,
+    load_config,
+    load_origin_materials,
+    resolve_project_dir,
+)
+from core.review_ai_client import ReviewAIError, call_review_ai
 from core.workflow_state import (
     load_outline_chapter,
     load_outline_review_status,
@@ -91,22 +96,20 @@ def call_mmx(system_prompt: str, user_prompt: str, max_tokens: int = 4096, tempe
     try:
         cfg = CONFIG.get("outline_reviewer", {})
         fallback = CONFIG.get("writer", {})
-        return call_mmx_client(
+        return call_review_ai(
+            CONFIG,
+            NOVELS_DIR,
+            "outline_reviewer",
             system_prompt,
             user_prompt,
-            model=CONFIG["model"],
-            mmx_path=CONFIG["mmx_path"],
-            max_tokens=cfg.get("max_tokens", max_tokens),
-            temperature=cfg.get("temperature", temperature),
-            retries=cfg.get("max_retries", cfg.get("retries", fallback.get("max_retries", 3))),
-            retry_delay=cfg.get("retry_delay", fallback.get("retry_delay", 5.0)),
-            log_dir=NOVELS_DIR / "logs" / "raw_responses",
+            max_tokens=int(cfg.get("max_tokens", max_tokens) or max_tokens),
+            temperature=float(cfg.get("temperature", temperature)),
             raw_name="outline_reviewer",
-            qps=CONFIG["api_qps"],
-            rate_state_dir=NOVELS_DIR / "logs" / "rate_limit",
+            fallback_retries=int(fallback.get("max_retries", 3)),
+            fallback_retry_delay=float(fallback.get("retry_delay", 5.0)),
         )
-    except MmxError as e:
-        log(f"[ERROR] mmx调用失败: {e}")
+    except ReviewAIError as e:
+        log(f"[ERROR] 审查AI调用失败: {e}")
         return ""
 
 
@@ -536,10 +539,12 @@ def review_outline(
 33. 时间是否单调推进？跨日、等待、移动和地点切换是否有明确过渡？
 34. 本章新埋伏笔在后续接口中是否有承接；前章已回收信息是否被错误地再次当成未知？
 35. 问题归属遵循“最早事实为锚点”：若冲突由后章推翻前章事实造成，只在 continuity_issues 中指出应修改的后章，不得因此压低本章分数或判本章不通过。
+36. 【人物辨识度】大纲是否为每个有戏份角色设计了体现性格的动作/抉择/台词方向？主角的关键抉择是否"只有他会这么干"？是否设计了至少一处性格反差作为人物弧线一步？不同角色是否预留了可分辨的说话方式差异？
+37. 【因果链】本章转折/破局是否都可追溯到前文原因（人物选择/信息/物件/伏笔）？是否禁止"恰好/凑巧"破局？主角回报是否来自自身判断/能力/资源/布局而非天降？信息传递是否闭环？时间/伤势/资源是否与前章一致承接？
 
 要求：
 1. 评分要客观可复现。9分代表单章设计突出；达到{min_score}分且六项设计门通过，代表足以进入全书层级审查。
-2. 重点审查：悬念密度、钩子强度、情绪曲线、烟火气与人情味、内容层次、不可逆动作、地图真实感、概念落地、信息新鲜度、反套路程度、结构功能合理性、目标赌注、{payoff_profile['label']}。这些维度比字段完整性更重要。
+2. 重点审查：人物辨识度、因果链、悬念密度、钩子强度、情绪曲线、烟火气与人情味、内容层次、不可逆动作、地图真实感、概念落地、信息新鲜度、反套路程度、结构功能合理性、目标赌注、{payoff_profile['label']}。这些维度比字段完整性更重要。
 3. 剧情是否有真正的冲突和转折，而非流水账
 4. {payoff_profile['design']}
 5. 人物动机是否合理，是否与角色设定一致

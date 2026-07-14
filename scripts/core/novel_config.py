@@ -18,6 +18,17 @@ DEFAULT_CONFIG = {
     "mmx_path": "C:/Users/59290/AppData/Roaming/npm/node_modules/mmx-cli/dist/mmx.mjs",
     "webhook_url": "",
     "api_qps": 5.0,
+    "review_ai": {
+        "provider": "",
+        "model": "",
+        "mmx_path": "",
+        "base_url": "",
+        "api_key_env": "",
+        "api_key": "",
+        "api_qps": None,
+        "timeout_seconds": None,
+        "extra_body": {},
+    },
     "writer": {
         "max_tokens": 8192,
         "temperature": 0.7,
@@ -466,6 +477,103 @@ def resolve_mmx_path(config: dict, project_dir: Path) -> str:
 
     expanded = _expand_path_text(explicit)
     return expanded or str(DEFAULT_CONFIG["mmx_path"])
+
+
+def _env_section_name(section: str) -> str:
+    return re.sub(r"[^A-Z0-9]+", "_", str(section or "").upper()).strip("_")
+
+
+def _first_env_value(names: list[str] | tuple[str, ...]) -> str:
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _resolve_tool_path(value: str, project_dir: Path) -> str:
+    text = _expand_path_text(value)
+    if not text:
+        return ""
+    for candidate in _path_candidates(text, project_dir):
+        if candidate.exists():
+            return str(candidate)
+    found = shutil.which(text)
+    if found:
+        return found
+    return text
+
+
+def resolve_agent_model(
+    config: dict,
+    section: str,
+    *,
+    shared_section: str | None = "review_ai",
+    env_aliases: tuple[str, ...] = (),
+) -> str:
+    """Resolve a stage-specific model with shared review-ai fallback."""
+    env_names = [f"NOVEL_{_env_section_name(section)}_MODEL", *env_aliases]
+    if shared_section:
+        env_names.append(f"NOVEL_{_env_section_name(shared_section)}_MODEL")
+    env_value = _first_env_value(env_names)
+    if env_value:
+        return env_value
+
+    section_cfg = config.get(section, {})
+    if isinstance(section_cfg, dict) and str(section_cfg.get("model", "") or "").strip():
+        return str(section_cfg["model"]).strip()
+
+    shared_cfg = config.get(shared_section, {}) if shared_section else {}
+    if isinstance(shared_cfg, dict) and str(shared_cfg.get("model", "") or "").strip():
+        return str(shared_cfg["model"]).strip()
+
+    return str(config.get("model", DEFAULT_CONFIG["model"]) or DEFAULT_CONFIG["model"])
+
+
+def resolve_agent_mmx_path(
+    config: dict,
+    project_dir: Path,
+    section: str,
+    *,
+    shared_section: str | None = "review_ai",
+    env_aliases: tuple[str, ...] = (),
+) -> str:
+    """Resolve a stage-specific CLI/adapter path with shared review-ai fallback."""
+    env_names = [f"NOVEL_{_env_section_name(section)}_MMX_PATH", *env_aliases]
+    if shared_section:
+        env_names.append(f"NOVEL_{_env_section_name(shared_section)}_MMX_PATH")
+    explicit = _first_env_value(env_names)
+    if explicit:
+        return _resolve_tool_path(explicit, project_dir)
+
+    section_cfg = config.get(section, {})
+    if isinstance(section_cfg, dict) and str(section_cfg.get("mmx_path", "") or "").strip():
+        return _resolve_tool_path(str(section_cfg["mmx_path"]), project_dir)
+
+    shared_cfg = config.get(shared_section, {}) if shared_section else {}
+    if isinstance(shared_cfg, dict) and str(shared_cfg.get("mmx_path", "") or "").strip():
+        return _resolve_tool_path(str(shared_cfg["mmx_path"]), project_dir)
+
+    return str(config.get("mmx_path") or resolve_mmx_path(config, project_dir))
+
+
+def resolve_agent_qps(
+    config: dict,
+    section: str,
+    *,
+    shared_section: str | None = "review_ai",
+) -> float:
+    for cfg_name in (section, shared_section):
+        cfg = config.get(cfg_name, {}) if cfg_name else {}
+        if isinstance(cfg, dict) and cfg.get("api_qps") not in (None, ""):
+            try:
+                return float(cfg["api_qps"])
+            except (TypeError, ValueError):
+                pass
+    try:
+        return float(config.get("api_qps", DEFAULT_CONFIG["api_qps"]))
+    except (TypeError, ValueError):
+        return float(DEFAULT_CONFIG["api_qps"])
 
 
 def resolve_project_dir(value: str | os.PathLike | None = None) -> Path:

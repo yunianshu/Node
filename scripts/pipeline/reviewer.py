@@ -20,7 +20,6 @@ import sys
 import time
 from pathlib import Path
 
-from core.mmx_client import MmxError, call_mmx as call_mmx_client
 from core.novel_config import (
     configure_stdio,
     extract_origin_fact_clauses,
@@ -29,6 +28,7 @@ from core.novel_config import (
     load_origin_materials,
     resolve_project_dir,
 )
+from core.review_ai_client import ReviewAIError, call_review_ai
 from core.ai_flavor_detector import detect_ai_flavor
 # 微信推送已禁用，改由 coordinator 统一推送进度
 # from core.push_notifier import push_stage_complete
@@ -391,22 +391,20 @@ def call_mmx(system_prompt: str, user_prompt: str, max_tokens: int = 4096, tempe
     try:
         cfg = CONFIG.get("reviewer", {})
         fallback = CONFIG.get("writer", {})
-        return call_mmx_client(
+        return call_review_ai(
+            CONFIG,
+            NOVELS_DIR,
+            "reviewer",
             system_prompt,
             user_prompt,
-            model=CONFIG["model"],
-            mmx_path=CONFIG["mmx_path"],
-            max_tokens=cfg.get("max_tokens", max_tokens),
-            temperature=cfg.get("temperature", temperature),
-            retries=cfg.get("max_retries", cfg.get("retries", fallback.get("max_retries", 3))),
-            retry_delay=cfg.get("retry_delay", fallback.get("retry_delay", 5.0)),
-            log_dir=NOVELS_DIR / "logs" / "raw_responses",
+            max_tokens=int(cfg.get("max_tokens", max_tokens) or max_tokens),
+            temperature=float(cfg.get("temperature", temperature)),
             raw_name="reviewer",
-            qps=CONFIG["api_qps"],
-            rate_state_dir=NOVELS_DIR / "logs" / "rate_limit",
+            fallback_retries=int(fallback.get("max_retries", 3)),
+            fallback_retry_delay=float(fallback.get("retry_delay", 5.0)),
         )
-    except MmxError as e:
-        log(f"[ERROR] mmx调用失败: {e}")
+    except ReviewAIError as e:
+        log(f"[ERROR] 审查AI调用失败: {e}")
         return ""
 
 
@@ -722,6 +720,8 @@ def review_chapter(
     "writing_quality": "文笔流畅度（0-10）",
     "plot_coherence": "剧情连贯性（0-10）",
     "character_consistency": "人物一致性（0-10）",
+    "character_voice": "人物辨识度（0-10。遮住角色名字能否认出是谁？主角是否有鲜明性格锋芒、价值取向、标志动作或说话腔调？是否有性格反差让人物立体？不同角色台词是否可分辨？）",
+    "causal_logic": "因果逻辑（0-10。每个转折/破局是否可追溯到前文原因？是否禁止巧合解围？信息传递是否闭环？动机-行为-结果是否自洽？时间/伤情/资源是否连续？）",
     "scene_description": "场景氛围感（0-10。不是画面多清晰，而是氛围多压迫/诡异/震撼）",
     "dialogue_quality": "对话质量（0-10。是否有潜台词？是否推动情节？是否避免了解说员式对话？）",
     "outline_adherence": "大纲遵循度（0-10）",
@@ -733,6 +733,7 @@ def review_chapter(
     "information_freshness": "信息新鲜度（0-10。是否带来至少一个此前从未出现过的新元素？有无重复已知信息？）",
     "content_richness": "内容丰富度/层次感（0-10。外部事件之外，是否同时推进人物关系、生活压力、秘密代价或世界规则现场化？）",
     "anti_cliche": "反套路程度（0-10。是否存在标准升级流/打怪流/解谜流模板？是否有意外和不可预测性？）",
+    "payoff_intensity": "爽点与反差强度（0-10。每2000-3000字是否有明确爽点？是否有充分的压抑→爆发反差？打脸/扮猪吃虎是否写到位而非无脑碾压？本章读起来爽不爽、有没有让人拍腿的瞬间？）",
     "read_desire": "读下去的欲望（0-10。假设你是第一次读的读者，读完这章后有多想立刻打开下一章？）",
     "ai_flavor": "去AI味程度（0-10。越高越自然。参考 local_analysis.ai_flavor_detection 的本地证据）",
     "world_consistency": "世界观/设定一致性（0-10。本章涉及的力量体系/势力关系/地理/经济/规则是否与世界观设定自洽？有无设定矛盾或吃书？）"
@@ -796,10 +797,13 @@ def review_chapter(
 25. 是否存在套路化描写（标准战斗模板、标准解谜流程、配角当解说员）？
 26. 如果我是第一次读这本书的读者，读完这章后会不会立刻想打开下一章？
 27. 本章是否按大纲 scenes 逐场兑现：每个场景的 sensory_anchor（可触摸物象）、subtext_beat（潜台词）、exit_hook（出口钩子）是否在正文中落地？兑现率过低视为内容单薄。
+28. 【人物辨识度】遮住名字能否认出谁在说话、谁在行动？主角是否有"只有他会这么干"的鲜明性格锋芒、价值取向或标志反应？是否有性格反差让人物从扁平变立体？不同角色台词是否可分辨？
+29. 【因果逻辑】每个转折/破局是否可追溯到前文某个人物选择、信息或伏笔？是否禁止"恰好/刚好/凑巧"替主角解决问题？角色掌握的信息是否有合理来源？动机-行为-结果是否自洽？时间/伤情/资源是否连续承接？
+30. 【爽点与反差】本章爽点密度够吗（每2000-3000字一个）？是否有"压抑→爆发"的反差设计？打脸/扮猪吃虎是写到位了（铺垫足、反转有因果）还是无脑碾压？整章读下来有没有让人想拍腿叫好的瞬间，还是只有铺垫和憋屈？
 
 要求：
 1. 评分要冷酷客观。不要给辛苦分，不要给"还行"分。9分意味着"非常想读下一章"，8分意味着"看完了，还行"。
-2. 重点审查：悬念密度、情感冲击、烟火气与人情味、内容丰富度、信息新鲜度、反套路程度、读下去的欲望。这些维度比文笔更重要。
+2. 重点审查：人物辨识度、因果逻辑、爽点与反差、悬念密度、情感冲击、烟火气与人情味、内容丰富度、信息新鲜度、反套路程度、读下去的欲望。这些维度比文笔更重要。**人物辨识度、因果逻辑或爽点与反差任一低于8分，overall_score 不得给到9分及以上；任一低于7分直接判"需修改"。**
 3. 剧情推进是否自然，有无逻辑漏洞或突兀转折
 4. 对话是否有潜台词，是否符合角色身份，是否避免了解说员式长篇大论
 5. 必须给出具体的修改建议，不能泛泛而谈，且只给最关键1条
@@ -1003,9 +1007,20 @@ def review_chapter(
                 "reported_overall_score",
                 review_data.get("overall_score"),
             )
-            review_data["overall_score"] = None
+            # M3 等模型偶发输出字段不全（edit 锚点不命中原文、漏 suggestions/weaknesses 等）
+            # 触发契约失败，但其给出的分数仍有效。salvage 真实分数，避免整候选作废、压低通过率。
+            # 本地硬门禁失败时镜像正常路径降分到 min_score-0.1，防止带硬伤的章节因 salvage 误过。
+            _reported = review_data.get("reported_overall_score")
+            if isinstance(_reported, (int, float)) and 0 <= float(_reported) <= 10:
+                _salvaged = round(float(_reported), 2)
+                if hard_gate_reasons and _salvaged >= review_min_score:
+                    _salvaged = round(review_min_score - 0.1, 2)
+                review_data["overall_score"] = _salvaged
+                review_data["status"] = "invalid_review_salvaged"
+            else:
+                review_data["overall_score"] = None
+                review_data["status"] = "invalid_review"
             review_data["verdict"] = "需修改"
-            review_data["status"] = "invalid_review"
             review_data["review_contract_errors"] = contract_errors
     except Exception as e:
         log(f"[Reviewer] JSON解析失败: {e}")

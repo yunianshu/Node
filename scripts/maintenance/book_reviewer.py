@@ -19,9 +19,12 @@ TOOLS_ROOT = Path(__file__).resolve().parents[1]
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
-from core.mmx_client import MmxError, call_mmx
 from core.json_repair import fix_inner_quotes, fix_truncated_json
-from core.novel_config import load_config, resolve_project_dir
+from core.novel_config import (
+    load_config,
+    resolve_project_dir,
+)
+from core.review_ai_client import ReviewAIError, call_review_ai
 from core.workflow_state import aggregate_review_scores, analyze_chapter_text, load_quality_rules, scan_chapter_status
 
 
@@ -992,22 +995,20 @@ def build_whole_book_context(project: Path, total: int, volumes: list[dict], loc
 def ai_call(project: Path, config: dict, system: str, prompt: str, raw_name: str) -> dict:
     review_cfg = config.get("book_reviewer", {})
     try:
-        raw = call_mmx(
+        raw = call_review_ai(
+            config,
+            project,
+            "book_reviewer",
             system,
             prompt,
-            model=config["model"],
-            mmx_path=config["mmx_path"],
             max_tokens=int(review_cfg.get("max_tokens", 4096)),
             temperature=float(review_cfg.get("temperature", 0.2)),
-            retries=int(review_cfg.get("retries", 2)),
-            retry_delay=float(review_cfg.get("retry_delay", 5.0)),
             timeout=int(review_cfg.get("timeout_seconds", 240)),
-            log_dir=project / "logs" / "raw_responses",
             raw_name=raw_name,
-            qps=float(config.get("api_qps", 5.0)),
-            rate_state_dir=project / "logs" / "rate_limit",
+            fallback_retries=int(review_cfg.get("retries", 2)),
+            fallback_retry_delay=float(review_cfg.get("retry_delay", 5.0)),
         )
-    except MmxError as exc:
+    except ReviewAIError as exc:
         return {"status": "failed", "error": str(exc)}
     data = parse_json_response(raw)
     data.setdefault("status", "completed" if data.get("status") not in {"parse_error", "invalid_shape"} else data.get("status"))

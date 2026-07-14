@@ -17,11 +17,13 @@ import json
 import mimetypes
 import os
 import sys
+import threading
+import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, unquote
 
-from core.workflow_state import list_outline_chapters
+from core.workflow_state import list_outline_chapters, outline_dir
 
 DEFAULT_NOVELS_PARENT_DIR = Path(__file__).resolve().parents[2] / "projects"
 NOVELS_PARENT = None
@@ -353,6 +355,33 @@ body {
   font-size: 13px;
 }
 
+/* ========== 章节大纲 ========== */
+.outline-wrap {
+  margin-top: 40px;
+  padding: 24px;
+  background: var(--sidebar-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.outline-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.outline-title { font-size: 18px; font-weight: bold; color: var(--accent); }
+.outline-section { margin-bottom: 16px; }
+.outline-section:last-child { margin-bottom: 0; }
+.outline-section h4 { font-size: 14px; color: var(--accent); margin-bottom: 6px; text-indent: 0; }
+.outline-section p { text-indent: 0; font-size: 14px; line-height: 1.7; text-align: left; margin-bottom: 4px; }
+.outline-section ul { padding-left: 20px; }
+.outline-section li { text-indent: 0; font-size: 14px; line-height: 1.7; text-align: left; margin-bottom: 4px; }
+.outline-section .ol-label { font-weight: bold; color: var(--accent); }
+.outline-scene { background: var(--bg); border-left: 3px solid var(--accent); padding: 10px 14px; margin: 8px 0; border-radius: 4px; }
+.outline-scene .scene-pos { font-size: 12px; color: var(--accent); font-weight: bold; margin-bottom: 6px; }
+
 /* 底部导航 */
 #bottom-nav {
   display: flex;
@@ -474,6 +503,7 @@ body {
         <div id="toolbar-right">
           <button class="btn" id="btn-music" title="背景音乐">音乐</button>
           <button class="btn" id="btn-lyrics" title="歌词">歌词</button>
+          <button class="btn" id="btn-outline" title="本章大纲">大纲</button>
           <button class="btn" id="btn-tts" title="语音朗读">朗读</button>
           <button class="btn" id="btn-settings">设置</button>
         </div>
@@ -483,6 +513,13 @@ body {
         <img id="chapter-image" alt="章节配图">
         <div id="chapter-title">加载中...</div>
         <div id="chapter-body">正在加载章节内容...</div>
+        <div id="chapter-outline" class="outline-wrap" style="display:none;">
+          <div class="outline-header">
+            <span class="outline-title">本章大纲</span>
+            <button class="btn" id="btn-outline-close" style="padding:2px 10px;font-size:12px;">收起</button>
+          </div>
+          <div id="outline-body"></div>
+        </div>
       </div>
 
       <div id="lyrics-panel">
@@ -732,6 +769,7 @@ async function loadChapter(n) {
     // 处理媒体
     currentMedia = data.media || {};
     renderMedia();
+    renderOutline(data.outline);
   } catch (e) {
     document.getElementById('chapter-body').textContent = '加载失败: ' + e.message;
     currentMedia = {};
@@ -842,6 +880,68 @@ function toggleLyrics() {
   document.getElementById('lyrics-panel').classList.toggle('show');
 }
 
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function renderOutline(outline) {
+  const body = document.getElementById('outline-body');
+  if (!outline || typeof outline !== 'object' || Object.keys(outline).length === 0) {
+    body.innerHTML = '<p style="text-indent:0;color:var(--sidebar-text);">本章无大纲数据</p>';
+    return;
+  }
+  const sections = [];
+  const field = (label, val) => {
+    if (val !== undefined && val !== null && String(val).trim()) {
+      sections.push('<div class="outline-section"><h4>' + label + '</h4><p>' + escapeHtml(String(val)) + '</p></div>');
+    }
+  };
+  const listField = (label, arr) => {
+    if (Array.isArray(arr) && arr.length) {
+      const items = arr.map(it => '<li>' + escapeHtml(String(it)) + '</li>').join('');
+      sections.push('<div class="outline-section"><h4>' + label + '</h4><ul>' + items + '</ul></div>');
+    }
+  };
+  field('本章概要', outline.summary);
+  field('章节目标', outline.chapter_goal);
+  listField('关键事件', outline.key_events);
+  listField('出场人物', outline.characters_involved);
+  field('地点', outline.location);
+  field('时间', outline.time_progression);
+  field('情绪基调', outline.mood);
+  field('情绪弧线', outline.emotional_arc);
+  listField('张力点', outline.tension_points);
+  field('伏笔', outline.foreshadowing);
+  field('章节钩子', outline.chapter_hook);
+  field('兑现设计', outline.payoff_design);
+  field('人性锚点', outline.human_anchor);
+  listField('内容层次', outline.content_layers);
+  field('主要对手', outline.main_antagonist);
+  field('主线关联', outline.main_arc_link);
+  if (Array.isArray(outline.scenes) && outline.scenes.length) {
+    const pair = (l, v) => (v !== undefined && v !== null && String(v).trim()) ? '<p><span class="ol-label">' + l + '</span>' + escapeHtml(String(v)) + '</p>' : '';
+    const scenesHtml = outline.scenes.map(sc => {
+      const parts = [];
+      if (sc.position) parts.push('<div class="scene-pos">' + escapeHtml(sc.position) + '</div>');
+      parts.push(pair('目标：', sc.objective));
+      parts.push(pair('冲突：', sc.conflict));
+      parts.push(pair('感官锚：', sc.sensory_anchor));
+      parts.push(pair('潜台词：', sc.subtext_beat));
+      parts.push(pair('退场钩：', sc.exit_hook));
+      return '<div class="outline-scene">' + parts.join('') + '</div>';
+    }).join('');
+    sections.push('<div class="outline-section"><h4>场景设计</h4>' + scenesHtml + '</div>');
+  }
+  body.innerHTML = sections.join('') || '<p style="text-indent:0;color:var(--sidebar-text);">本章无大纲数据</p>';
+}
+function toggleOutline() {
+  const wrap = document.getElementById('chapter-outline');
+  const btn = document.getElementById('btn-outline');
+  const shown = wrap.style.display === 'block';
+  wrap.style.display = shown ? 'none' : 'block';
+  btn.classList.toggle('active', !shown);
+  if (!shown) wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 // TTS 进度更新
 ttsAudio.ontimeupdate = () => {
   if (!ttsAudio.duration) return;
@@ -888,6 +988,11 @@ document.getElementById('search-input').oninput = (e) => renderChapterList(e.tar
 document.getElementById('btn-music').onclick = toggleMusic;
 document.getElementById('btn-tts').onclick = toggleTts;
 document.getElementById('btn-lyrics').onclick = toggleLyrics;
+document.getElementById('btn-outline').onclick = toggleOutline;
+document.getElementById('btn-outline-close').onclick = () => {
+  document.getElementById('chapter-outline').style.display = 'none';
+  document.getElementById('btn-outline').classList.remove('active');
+};
 
 document.getElementById('btn-settings').onclick = () => {
   document.getElementById('settings-panel').classList.toggle('show');
@@ -921,6 +1026,8 @@ document.onkeydown = (e) => {
   if (e.key === 'Escape') {
     document.getElementById('settings-panel').classList.remove('show');
     document.getElementById('lyrics-panel').classList.remove('show');
+    document.getElementById('chapter-outline').style.display = 'none';
+    document.getElementById('btn-outline').classList.remove('active');
     closeVideo();
   }
 };
@@ -959,6 +1066,55 @@ MIME_MAP = {
     ".lrc": "text/plain; charset=utf-8",
 }
 
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+
+
+def load_book_title(book_dir):
+    """从 world.json 读取书名，缺失时回退到目录名"""
+    w = book_dir / "world.json"
+    if w.exists():
+        try:
+            d = json.loads(w.read_text(encoding="utf-8"))
+            title = d.get("title")
+            if title and str(title).strip():
+                return str(title).strip()
+        except Exception:
+            pass
+    return book_dir.name
+
+
+def find_cover_url(media_dir, book_name):
+    """查找封面图 URL，兼容 media/cover.* 与 media/images/cover*.*"""
+    for ext in IMAGE_EXTS:
+        if (media_dir / f"cover{ext}").exists():
+            return f"/media/{book_name}/cover{ext}"
+    images_dir = media_dir / "images"
+    if images_dir.exists():
+        for ext in IMAGE_EXTS:
+            if (images_dir / f"cover{ext}").exists():
+                return f"/media/{book_name}/images/cover{ext}"
+        for p in sorted(images_dir.glob("cover*")):
+            if p.is_file() and p.suffix.lower() in IMAGE_EXTS:
+                return f"/media/{book_name}/images/{p.name}"
+    return None
+
+
+def find_chapter_image_url(media_dir, book_name, num):
+    """查找章节配图 URL，兼容 images/chapter_XXXX.* 与 images/chapters/chapter_XXXX*.*"""
+    images_dir = media_dir / "images"
+    if not images_dir.exists():
+        return None
+    for ext in IMAGE_EXTS:
+        p = images_dir / f"chapter_{num:04d}{ext}"
+        if p.exists():
+            return f"/media/{book_name}/images/chapter_{num:04d}{ext}"
+    chapters_dir = images_dir / "chapters"
+    if chapters_dir.exists():
+        for p in sorted(chapters_dir.glob(f"chapter_{num:04d}*")):
+            if p.is_file() and p.suffix.lower() in IMAGE_EXTS:
+                return f"/media/{book_name}/images/chapters/{p.name}"
+    return None
+
 
 def discover_books(parent_dir):
     """扫描目录下所有小说，同时检测多媒体资源"""
@@ -969,11 +1125,11 @@ def discover_books(parent_dir):
         if entry.name in ("audio", "logs", "scripts", "node_modules"):
             continue
         chapters_dir = entry / "chapters"
-        outlines = list_outline_chapters(entry)
-        if not outlines or not chapters_dir.exists():
+        outline_files = list(outline_dir(entry).glob("chapter_*.json"))
+        if not outline_files or not chapters_dir.exists():
             continue
         try:
-            chapter_count = len(outlines)
+            chapter_count = len(outline_files)
             total_words = 0
             # 优先统计 final/ 目录，其次 draft/，最后 chapters/
             for src_dir in (entry / "chapters" / "final", entry / "chapters" / "draft", chapters_dir):
@@ -981,14 +1137,12 @@ def discover_books(parent_dir):
                     txt_files = list(src_dir.glob("chapter_*.txt"))
                     if txt_files:
                         for cf in txt_files:
-                            if cf.stat().st_size > 100:
-                                total_words += len(cf.read_text(encoding="utf-8"))
+                            sz = cf.stat().st_size
+                            if sz > 100:
+                                total_words += sz // 3  # UTF-8 中文约3字节/字
                         break
 
-            book_title = entry.name
-            first_ch = outlines[0] if outlines else {}
-            if first_ch and "series_title" in first_ch:
-                book_title = first_ch["series_title"]
+            book_title = load_book_title(entry)
 
             media_dir = entry / "media"
             cover_path = None
@@ -1000,11 +1154,7 @@ def discover_books(parent_dir):
 
             if media_dir.exists():
                 # 封面
-                for ext in (".jpg", ".jpeg", ".png", ".webp"):
-                    cover = media_dir / f"cover{ext}"
-                    if cover.exists():
-                        cover_path = f"/media/{entry.name}/cover{ext}"
-                        break
+                cover_path = find_cover_url(media_dir, entry.name)
                 # 预告片
                 for ext in (".mp4", ".webm", ".mov"):
                     trailer = media_dir / f"trailer{ext}"
@@ -1095,28 +1245,23 @@ def make_handler(parent_dir, port):
             self.send_error(404)
 
         def serve_media(self, path):
-            # /media/{book_id}/{type}/{filename}
+            # /media/{book_id}/{相对路径...}  支持任意层级子目录
             parts = path.split("/")
-            if len(parts) < 5:
+            if len(parts) < 4:
                 self.send_error(400)
                 return
-            book_id = unquote(parts[2])
-            media_type = parts[3]
-            filename = unquote(parts[4])
-
-            # 安全检查：防止目录遍历
-            if ".." in book_id or ".." in filename or ".." in media_type:
+            segs = [unquote(p) for p in parts[2:]]
+            # 安全检查：防止目录遍历与空段
+            if any(s in ("..", ".", "") for s in segs):
                 self.send_error(403)
                 return
-
-            file_path = Path(parent_dir) / book_id / "media" / media_type / filename
-            if not file_path.exists() or not file_path.is_file():
-                # 兼容根级媒体文件 (cover.jpg, trailer.mp4)
-                if media_type in ("cover", "trailer"):
-                    file_path = Path(parent_dir) / book_id / "media" / filename
-                if not file_path.exists() or not file_path.is_file():
-                    self.send_error(404)
-                    return
+            book_id = segs[0]
+            file_path = Path(parent_dir) / book_id / "media"
+            for seg in segs[1:]:
+                file_path = file_path / seg
+            if not file_path.is_file():
+                self.send_error(404)
+                return
 
             ext = file_path.suffix.lower()
             mime = MIME_MAP.get(ext, "application/octet-stream")
@@ -1165,11 +1310,9 @@ def make_handler(parent_dir, port):
             media_dir = book_dir / "media"
             if media_dir.exists():
                 # 配图
-                for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
-                    img = media_dir / "images" / f"chapter_{num:04d}{ext}"
-                    if img.exists():
-                        media["image"] = f"/media/{book_dir.name}/images/chapter_{num:04d}{ext}"
-                        break
+                img_url = find_chapter_image_url(media_dir, book_dir.name, num)
+                if img_url:
+                    media["image"] = img_url
                 # 背景音乐
                 for ext in (".mp3", ".wav", ".ogg", ".m4a"):
                     music = media_dir / "music" / f"chapter_{num:04d}{ext}"
@@ -1189,11 +1332,21 @@ def make_handler(parent_dir, port):
                         media["lyrics"] = lyrics.read_text(encoding="utf-8")
                         break
 
+            # 大纲数据
+            outline = {}
+            outline_file = outline_dir(book_dir) / f"chapter_{num:04d}.json"
+            if outline_file.exists():
+                try:
+                    outline = json.loads(outline_file.read_text(encoding="utf-8"))
+                except Exception:
+                    outline = {}
+
             return {
                 "number": num,
                 "content": content,
                 "word_count": len(content),
                 "media": media,
+                "outline": outline,
             }
 
     return ReaderHandler
@@ -1205,6 +1358,7 @@ def main():
                         default=os.getenv("NOVELS_PARENT_DIR", str(DEFAULT_NOVELS_PARENT_DIR)),
                         help="小说父目录（包含多个小说项目）")
     parser.add_argument("--port", type=int, default=8889, help="服务端口")
+    parser.add_argument("--open-browser", action="store_true", help="启动后自动打开浏览器")
     args = parser.parse_args()
 
     parent_dir = Path(args.novels_dir).resolve()
@@ -1223,6 +1377,10 @@ def main():
     print("  媒体文件请放在每本小说的 media/ 目录下")
     print("  按 Ctrl+C 停止")
     print("=" * 50)
+    if args.open_browser:
+        t = threading.Timer(0.5, lambda: webbrowser.open(f"http://localhost:{port}"))
+        t.daemon = True
+        t.start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
