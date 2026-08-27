@@ -24,3 +24,5 @@ scratch/
 /projects
 /.artifacts
 /reader-web/node_modules
+/.codegraph/
+/.pytest_cache/
