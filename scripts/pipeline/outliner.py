@@ -18,7 +18,7 @@ import os
 import re
 import time
 
-from core.mmx_client import MmxError, call_mmx as call_mmx_client
+from core.llm_client import LLMError, call_llm as _call_section_llm
 from core.json_repair import strip_json_markdown as _strip_json_markdown
 from core.novel_config import build_origin_fact_directive, load_config, load_origin_materials, resolve_project_dir
 from core.outline_constraints import format_outline_constraints
@@ -60,26 +60,20 @@ def init_project(project_dir: str | Path) -> None:
         NOVEL_PREMISE = f"请围绕既有世界观和角色档案，规划一部长篇小说，全书共{total}章。"
 
 
-def call_mmx(system_prompt: str, user_prompt: str, max_tokens: int = 8192, temperature: float = 0.5) -> str:
+def call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 8192, temperature: float = 0.5) -> str:
     try:
-        cfg = CONFIG.get("outliner", {})
-        fallback = CONFIG.get("writer", {})
-        return call_mmx_client(
+        return _call_section_llm(
+            CONFIG,
+            NOVELS_DIR,
+            "outliner",
             system_prompt,
             user_prompt,
-            model=CONFIG["model"],
-            mmx_path=CONFIG["mmx_path"],
-            max_tokens=cfg.get("max_tokens", max_tokens),
-            temperature=cfg.get("temperature", temperature),
-            retries=cfg.get("max_retries", cfg.get("retries", fallback.get("max_retries", 3))),
-            retry_delay=cfg.get("retry_delay", fallback.get("retry_delay", 5.0)),
-            log_dir=NOVELS_DIR / "logs" / "raw_responses",
+            max_tokens=max_tokens,
+            temperature=temperature,
             raw_name="outliner",
-            qps=CONFIG["api_qps"],
-            rate_state_dir=NOVELS_DIR / "logs" / "rate_limit",
         )
-    except MmxError as e:
-        print(f"[ERROR] mmx调用失败: {e}", file=sys.stderr)
+    except LLMError as e:
+        print(f"[ERROR] LLM调用失败: {e}", file=sys.stderr)
         return ""
 
 
@@ -867,7 +861,7 @@ origin/ 原始参考素材：
         retry_hint = ""
         for attempt in range(semantic_retries + 1):
             try:
-                content = call_mmx(
+                content = call_llm(
                     system,
                     prompt + retry_hint,
                     max_tokens=8192,
@@ -2316,7 +2310,7 @@ story_beat 必须取枚举值之一：opening_image/theme_stated/setup/catalyst/
         for semantic_attempt in range(semantic_retries + 1):
             attempt_prompt = prompt + retry_hint
             start_time = _time.time()
-            content = call_mmx(
+            content = call_llm(
                 system,
                 attempt_prompt,
                 max_tokens=4096 if rescue_mode else 8192,

@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from core.mmx_client import MmxError, call_mmx as call_mmx_client
+from core.llm_client import LLMError, call_llm as _call_section_llm
 from core.json_repair import repair_latin1_gbk_mojibake as _repair_latin1_gbk_mojibake
 from core.novel_config import (
     build_origin_fact_directive,
@@ -79,26 +79,24 @@ def log(msg: str):
         f.write(line + "\n")
 
 
-def call_mmx(system_prompt: str, user_prompt: str, max_tokens: int = 8192, temperature: float = 0.7) -> str:
+def call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 8192, temperature: float = 0.7) -> str:
     try:
         writer_cfg = CONFIG.get("writer", {})
-        return call_mmx_client(
+        return _call_section_llm(
+            CONFIG,
+            NOVELS_DIR,
+            "writer",
             system_prompt,
             user_prompt,
-            model=CONFIG["model"],
-            mmx_path=CONFIG["mmx_path"],
             max_tokens=max_tokens,
             temperature=temperature,
+            raw_name="writer",
             retries=int(writer_cfg.get("candidate_retries", 0) if CANDIDATE_MODE else writer_cfg.get("max_retries", 3)),
             retry_delay=float(writer_cfg.get("retry_delay", 5.0)),
-            log_dir=NOVELS_DIR / "logs" / "raw_responses",
-            raw_name="writer",
             timeout=int(writer_cfg.get("candidate_timeout_seconds", 240) if CANDIDATE_MODE else writer_cfg.get("timeout_seconds", 300)),
-            qps=CONFIG["api_qps"],
-            rate_state_dir=NOVELS_DIR / "logs" / "rate_limit",
         )
-    except MmxError as e:
-        log(f"[ERROR] mmx调用失败: {e}")
+    except LLMError as e:
+        log(f"[ERROR] LLM调用失败: {e}")
         return ""
 
 
@@ -574,7 +572,7 @@ def _auto_compress(content: str, chapter_number: int, max_words: int, target_min
 {content}"""
 
         log(f"[Writer] 第{chapter_number}章字数过多（{current_count}字），启动第{attempt+1}次压缩...")
-        compressed = call_mmx(compress_system, compress_prompt, max_tokens=8192, temperature=0.3)
+        compressed = call_llm(compress_system, compress_prompt, max_tokens=8192, temperature=0.3)
         if compressed:
             compressed = compressed.strip()
             if compressed.startswith("```"):
@@ -612,7 +610,7 @@ def _apply_incremental_edits(
     log(f"[Writer] 第{chapter_number}章尝试增量编辑...")
     start_time = time.time()
     try:
-        raw = call_mmx(system, prompt, max_tokens=8192, temperature=0.3)
+        raw = call_llm(system, prompt, max_tokens=8192, temperature=0.3)
     except Exception as e:
         log(f"[Writer] 增量编辑调用失败: {e}")
         return None
@@ -727,7 +725,7 @@ def _deepen_rewrite(
 
     log(f"[Writer] 第{chapter_number}章重写轮启动二轮深化...")
     start = time.time()
-    deepened = call_mmx(system, prompt, max_tokens=4096, temperature=0.4)
+    deepened = call_llm(system, prompt, max_tokens=4096, temperature=0.4)
     elapsed = time.time() - start
     if not deepened or not deepened.strip():
         log(f"[Writer] 第{chapter_number}章二轮深化返回空，保留第一轮（耗时{elapsed:.1f}s）")
@@ -1232,7 +1230,7 @@ def generate_chapter(
 
     log(f"[Writer] 正在生成第{chapter_number}章...")
     start_time = time.time()
-    content = call_mmx(system, prompt, max_tokens=8192, temperature=0.7)
+    content = call_llm(system, prompt, max_tokens=8192, temperature=0.7)
     elapsed = time.time() - start_time
     log(f"[Writer] 第{chapter_number}章生成 API 调用耗时 {elapsed:.1f}s")
 

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Long-running watchdog for novels12 coordinator with MiniMax quota check."""
+"""Long-running watchdog for the novels12 coordinator."""
 from __future__ import annotations
 
-import json
 import logging
 import subprocess
 import sys
@@ -21,12 +20,10 @@ PROJECT_DIR = ROOT / "projects" / "novels12"
 LOG_DIR = PROJECT_DIR / "logs"
 LOG_FILE = LOG_DIR / "auto_restart.log"
 COORDINATOR_SCRIPT = ROOT / "scripts" / "pipeline" / "coordinator.py"
-COORDINATOR_STDOUT = LOG_DIR / "coordinator_mmx.stdout.log"
-COORDINATOR_STDERR = LOG_DIR / "coordinator_mmx.stderr.log"
+COORDINATOR_STDOUT = LOG_DIR / "coordinator.stdout.log"
+COORDINATOR_STDERR = LOG_DIR / "coordinator.stderr.log"
 
 INTERVAL_SECONDS = 300  # 5 minutes
-MIN_INTERVAL_PERCENT = 20
-MIN_WEEKLY_PERCENT = 15
 
 
 def _setup_logging() -> logging.Logger:
@@ -79,41 +76,6 @@ def is_coordinator_running() -> bool:
     return False
 
 
-def get_mmx_quota() -> dict | None:
-    """Return the 'general' model quota entry from `mmx quota show`, or None."""
-    try:
-        result = subprocess.run(
-            "mmx quota show",
-            shell=True,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=60,
-        )
-        if result.returncode != 0:
-            LOGGER.error(
-                "mmx quota show failed: rc=%s stderr=%s",
-                result.returncode,
-                result.stderr.strip(),
-            )
-            return None
-        data = json.loads(result.stdout)
-        for entry in data.get("model_remains", []):
-            if entry.get("model_name") == "general":
-                return entry
-        LOGGER.error("general model quota not found in mmx output")
-        return None
-    except Exception as exc:
-        LOGGER.exception("failed to fetch mmx quota")
-        return None
-
-
-def quota_is_sufficient(quota: dict) -> bool:
-    interval = quota.get("current_interval_remaining_percent", 0)
-    weekly = quota.get("current_weekly_remaining_percent", 0)
-    LOGGER.info("quota general: interval=%s%%, weekly=%s%%", interval, weekly)
-    return interval >= MIN_INTERVAL_PERCENT and weekly >= MIN_WEEKLY_PERCENT
-
 
 def restart_coordinator() -> None:
     cmd = [
@@ -160,20 +122,8 @@ def main() -> None:
             if is_coordinator_running():
                 LOGGER.info("coordinator is running; no action needed")
             else:
-                LOGGER.info("coordinator is NOT running; checking MiniMax quota")
-                quota = get_mmx_quota()
-                if quota is None:
-                    LOGGER.warning(
-                        "quota check failed; will retry in %ss",
-                        INTERVAL_SECONDS,
-                    )
-                elif quota_is_sufficient(quota):
-                    restart_coordinator()
-                else:
-                    LOGGER.warning(
-                        "quota insufficient (interval>=20%% and weekly>=15%% required); "
-                        "waiting for replenishment"
-                    )
+                LOGGER.info("coordinator is NOT running; restarting")
+                restart_coordinator()
             LOGGER.info("sleeping %ss until next check", INTERVAL_SECONDS)
             time.sleep(INTERVAL_SECONDS)
     except KeyboardInterrupt:

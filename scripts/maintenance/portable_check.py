@@ -19,7 +19,7 @@ TOOLS_ROOT = Path(__file__).resolve().parents[1]
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
-from core.mmx_client import _mmx_base_cmd
+from core.mmx_cli import mmx_base_cmd, resolve_media_mmx_path
 from core.novel_config import configure_stdio, get_webhook_url, load_config, resolve_project_dir
 from core.push_notifier import story_flow_audit_state
 
@@ -80,7 +80,7 @@ def _check_writeable(path: Path) -> tuple[bool, str]:
 
 def _mmx_status(mmx_path: str) -> tuple[bool, str]:
     try:
-        cmd = _mmx_base_cmd(mmx_path)
+        cmd = mmx_base_cmd(mmx_path)
     except Exception as exc:
         return False, str(exc)
     exe = cmd[0]
@@ -281,11 +281,11 @@ def main() -> int:
         else:
             warnings.append(f"{name} 缺失；对应阶段会自动补齐或需要先运行 Planner")
 
-    mmx_ok, mmx_detail = _mmx_status(str(config.get("mmx_path", "")))
+    mmx_ok, mmx_detail = _mmx_status(resolve_media_mmx_path(config))
     if mmx_ok:
-        print(f"[OK] MiniMax CLI 可定位: {mmx_detail}")
+        print(f"[OK] MiniMax 媒体 CLI 可定位: {mmx_detail}")
     else:
-        issues.append(f"MiniMax CLI 不可用: {mmx_detail}")
+        warnings.append(f"MiniMax 媒体 CLI 不可用（仅影响封面/视频/音乐生成）: {mmx_detail}")
 
     webhook = get_webhook_url(config)
     if webhook:

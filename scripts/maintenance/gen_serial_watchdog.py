@@ -171,7 +171,7 @@ def stop_process(pid: int) -> bool:
 
 
 def kill_stray_node() -> None:
-    """清理 mmx 调用残留的 node 进程（_gen_serial 卡死时常残留）。"""
+    """清理媒体 mmx 调用残留的 node 进程（_gen_serial 卡死时常残留）。"""
     try:
         subprocess.run(["taskkill", "/F", "/IM", "node.exe"],
                        capture_output=True, timeout=15)

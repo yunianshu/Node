@@ -17,7 +17,7 @@ TOOLS_ROOT = Path(__file__).resolve().parents[1]
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
-from core.mmx_client import MmxError, call_mmx
+from core.llm_client import LLMError, call_llm
 from core.novel_config import load_config, resolve_project_dir
 from core.workflow_state import atomic_write_json, outline_chapter_path
 from core.json_repair import fix_inner_quotes, fix_truncated_json
@@ -54,22 +54,20 @@ def _parse_json(raw: str) -> dict:
 def ai_call(project: Path, config: dict, prompt: str, raw_name: str) -> dict:
     cfg = config.get("foreshadowing_audit", {})
     try:
-        raw = call_mmx(
+        raw = call_llm(
+            config,
+            project,
+            "foreshadowing_audit",
             "你是长篇小说伏笔回收专家。只依据输入证据，输出合法紧凑JSON，不使用Markdown。",
             prompt,
-            model=config["model"],
-            mmx_path=config["mmx_path"],
             max_tokens=int(cfg.get("max_tokens", 2048)),
             temperature=float(cfg.get("temperature", 0.3)),
             retries=int(cfg.get("retries", 2)),
             retry_delay=float(cfg.get("retry_delay", 5.0)),
             timeout=int(cfg.get("timeout_seconds", 180)),
-            log_dir=project / "logs" / "raw_responses",
             raw_name=raw_name,
-            qps=float(config.get("api_qps", 5.0)),
-            rate_state_dir=project / "logs" / "rate_limit",
         )
-    except MmxError as exc:
+    except LLMError as exc:
         return {"status": "failed", "error": str(exc)}
     result = _parse_json(raw)
     result.setdefault("status", "completed")

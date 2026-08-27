@@ -17,7 +17,7 @@ import os
 import time
 from pathlib import Path
 
-from core.mmx_client import MmxError, call_mmx as call_mmx_client
+from core.llm_client import LLMError, call_llm as _call_section_llm
 from core.novel_config import configure_stdio, load_config, load_origin_materials, resolve_project_dir
 from core.workflow_state import (
     FORBIDDEN_PHRASES, VALID_ENDINGS, load_outline_chapter,
@@ -62,18 +62,20 @@ def log(message: str) -> None:
             f.write(line + "\n")
 
 
-def call_mmx(system: str, prompt: str, max_tokens: int = 8192, temperature: float = 0.4) -> str:
+def call_llm(system: str, prompt: str, max_tokens: int = 8192, temperature: float = 0.4) -> str:
     try:
-        return call_mmx_client(
+        return _call_section_llm(
+            CONFIG,
+            NOVELS_DIR if NOVELS_DIR else Path.cwd(),
+            "polisher",
             system,
             prompt,
-            model=CONFIG.get("model", "MiniMax-M2.7-highspeed"),
-            mmx_path=CONFIG.get("mmx_path", "mmx"),
             max_tokens=max_tokens,
             temperature=temperature,
+            raw_name="polisher",
         )
-    except MmxError as e:
-        log(f"MiniMax 调用失败: {e}")
+    except LLMError as e:
+        log(f"LLM 调用失败: {e}")
         return ""
 
 
@@ -215,7 +217,7 @@ def polish_chapter(chapter_number: int, retry: int = 0, candidate_id: int = 0, t
 请直接输出精修后的完整正文。字数必须在 {min_words}-{max_words} 之间。不要输出解释、不要输出修改清单、不要输出任何元信息。"""
 
     temp = temperature if temperature is not None else float(CONFIG.get("polisher", {}).get("temperature", 0.2))
-    content = call_mmx(system, prompt, max_tokens=8192, temperature=temp)
+    content = call_llm(system, prompt, max_tokens=8192, temperature=temp)
     if not content:
         log(f"第{chapter_number}章精修收到空响应")
         max_retry = CONFIG.get("polisher", {}).get("max_retries", 3)

@@ -6,36 +6,50 @@ import copy
 import json
 import os
 import re
-import shutil
-import subprocess
+
 import sys
 from pathlib import Path
 
 
 DEFAULT_CONFIG = {
     "total_chapters": 2000,
-    "model": "MiniMax-M3",
-    "mmx_path": "",
     "webhook_url": "",
     "api_qps": 5.0,
-    "review_ai": {
-        "provider": "",
+    # 共享 LLM 缺省配置：Agent 节未指定 provider/model 时回退到这里。
+    "llm": {
+        "provider": "deepseek",
         "model": "",
-        "mmx_path": "",
         "base_url": "",
         "api_key_env": "",
         "api_key": "",
         "api_qps": None,
         "timeout_seconds": None,
         "extra_body": {},
+        "headers": {},
+    },
+    # 共享审查 LLM 配置（兼容旧字段名）：优先级低于各审查 Agent 自己的节。
+    "review_ai": {
+        "provider": "glm",
+        "model": "",
+        "base_url": "",
+        "api_key_env": "",
+        "api_key": "",
+        "api_qps": None,
+        "timeout_seconds": None,
+        "extra_body": {},
+        "headers": {},
     },
     "writer": {
+        "provider": "deepseek",
+        "model": "deepseek-chat",
         "max_tokens": 8192,
         "temperature": 0.7,
         "max_retries": 3,
         "retry_delay": 5.0,
     },
     "reviewer": {
+        "provider": "glm",
+        "model": "glm-4.6",
         "max_tokens": 6144,
         "temperature": 0.1,
         "min_score": 8.5,
@@ -43,6 +57,8 @@ DEFAULT_CONFIG = {
         "semantic_retries": 1,
     },
     "outline_reviewer": {
+        "provider": "glm",
+        "model": "glm-4.6",
         "max_tokens": 6144,
         "temperature": 0.1,
         "min_score": 8.5,
@@ -55,6 +71,8 @@ DEFAULT_CONFIG = {
     },
 
     "planner": {
+        "provider": "deepseek",
+        "model": "deepseek-chat",
         "max_tokens": 8192,
         "temperature": 0.3,
         "parallel_agents": 2,
@@ -109,6 +127,8 @@ DEFAULT_CONFIG = {
         "semantic_retries": 1,
     },
     "relationship_state": {
+        "provider": "deepseek",
+        "model": "deepseek-chat",
         "max_tokens": 2048,
         "temperature": 0.1,
         "retries": 2,
@@ -136,7 +156,41 @@ DEFAULT_CONFIG = {
         "title_prefixes": ["第"],
         "title_keywords": ["章", "节", "回"],
     },
+    "outliner": {
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+        "max_tokens": 8192,
+        "temperature": 0.5,
+    },
+    "polisher": {
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+        "max_tokens": 8192,
+        "temperature": 0.4,
+    },
+    "character_state": {
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+        "max_tokens": 2048,
+        "temperature": 0.1,
+        "retries": 2,
+        "retry_delay": 5.0,
+        "timeout_seconds": 120,
+    },
+    "arc_state": {
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+        "max_tokens": 2048,
+        "temperature": 0.1,
+        "retries": 2,
+        "retry_delay": 5.0,
+        "timeout_seconds": 120,
+    },
 }
+
+# 生成端 Agent 与审查端 Agent 分组；两端的 (provider, model) 必须不同。
+GENERATOR_LLM_SECTIONS = ("planner", "outliner", "writer", "polisher")
+REVIEWER_LLM_SECTIONS = ("reviewer", "outline_reviewer")
 
 STANDARD_PROJECT_DIRS = (
     "chapters/outline",
@@ -397,70 +451,6 @@ def _expand_path_text(value: str) -> str:
     return os.path.expandvars(os.path.expanduser(str(value or "").strip()))
 
 
-def _path_candidates(value: str, project_dir: Path) -> list[Path]:
-    text = _expand_path_text(value)
-    if not text:
-        return []
-    path = Path(text)
-    if path.is_absolute():
-        return [path]
-    return [
-        (project_dir / path).resolve(),
-        (REPO_ROOT / path).resolve(),
-        path.resolve(),
-    ]
-
-
-def _npm_global_mmx_candidates() -> list[Path]:
-    candidates: list[Path] = []
-    npm = shutil.which("npm")
-    if npm:
-        try:
-            result = subprocess.run(
-                [npm, "root", "-g"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=10,
-                check=False,
-            )
-            root = result.stdout.strip()
-            if result.returncode == 0 and root:
-                candidates.append(Path(root) / "mmx-cli" / "dist" / "mmx.mjs")
-        except Exception as exc:
-            pass
-    for env_name in ("APPDATA", "LOCALAPPDATA"):
-        base = os.getenv(env_name)
-        if base:
-            candidates.append(Path(base) / "npm" / "node_modules" / "mmx-cli" / "dist" / "mmx.mjs")
-            candidates.append(Path(base) / "Roaming" / "npm" / "node_modules" / "mmx-cli" / "dist" / "mmx.mjs")
-    return candidates
-
-
-def resolve_mmx_path(config: dict, project_dir: Path) -> str:
-    """Resolve MiniMax CLI location across machines.
-
-    Priority: env override, project config, npm global install, command on PATH.
-    The returned value may be a .mjs/.js path or an executable command.
-    """
-    explicit = os.getenv("NOVEL_MMX_PATH") or os.getenv("MMX_PATH") or str(config.get("mmx_path", "") or "")
-    for candidate in _path_candidates(explicit, project_dir):
-        if candidate.exists():
-            return str(candidate)
-
-    for candidate in _npm_global_mmx_candidates():
-        if candidate.exists():
-            return str(candidate.resolve())
-
-    for command in ("mmx", "mmx-cli"):
-        found = shutil.which(command)
-        if found:
-            return found
-
-    expanded = _expand_path_text(explicit)
-    return expanded or str(DEFAULT_CONFIG["mmx_path"])
-
 
 def _env_section_name(section: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "_", str(section or "").upper()).strip("_")
@@ -478,12 +468,6 @@ def _resolve_tool_path(value: str, project_dir: Path) -> str:
     text = _expand_path_text(value)
     if not text:
         return ""
-    for candidate in _path_candidates(text, project_dir):
-        if candidate.exists():
-            return str(candidate)
-    found = shutil.which(text)
-    if found:
-        return found
     return text
 
 
@@ -491,10 +475,10 @@ def resolve_agent_model(
     config: dict,
     section: str,
     *,
-    shared_section: str | None = "review_ai",
+    shared_section: str | None = "llm",
     env_aliases: tuple[str, ...] = (),
 ) -> str:
-    """Resolve a stage-specific model with shared review-ai fallback."""
+    """Resolve a stage-specific model with shared llm fallback."""
     env_names = [f"NOVEL_{_env_section_name(section)}_MODEL", *env_aliases]
     if shared_section:
         env_names.append(f"NOVEL_{_env_section_name(shared_section)}_MODEL")
@@ -510,41 +494,14 @@ def resolve_agent_model(
     if isinstance(shared_cfg, dict) and str(shared_cfg.get("model", "") or "").strip():
         return str(shared_cfg["model"]).strip()
 
-    return str(config.get("model", DEFAULT_CONFIG["model"]) or DEFAULT_CONFIG["model"])
-
-
-def resolve_agent_mmx_path(
-    config: dict,
-    project_dir: Path,
-    section: str,
-    *,
-    shared_section: str | None = "review_ai",
-    env_aliases: tuple[str, ...] = (),
-) -> str:
-    """Resolve a stage-specific CLI/adapter path with shared review-ai fallback."""
-    env_names = [f"NOVEL_{_env_section_name(section)}_MMX_PATH", *env_aliases]
-    if shared_section:
-        env_names.append(f"NOVEL_{_env_section_name(shared_section)}_MMX_PATH")
-    explicit = _first_env_value(env_names)
-    if explicit:
-        return _resolve_tool_path(explicit, project_dir)
-
-    section_cfg = config.get(section, {})
-    if isinstance(section_cfg, dict) and str(section_cfg.get("mmx_path", "") or "").strip():
-        return _resolve_tool_path(str(section_cfg["mmx_path"]), project_dir)
-
-    shared_cfg = config.get(shared_section, {}) if shared_section else {}
-    if isinstance(shared_cfg, dict) and str(shared_cfg.get("mmx_path", "") or "").strip():
-        return _resolve_tool_path(str(shared_cfg["mmx_path"]), project_dir)
-
-    return str(config.get("mmx_path") or resolve_mmx_path(config, project_dir))
+    return ""
 
 
 def resolve_agent_qps(
     config: dict,
     section: str,
     *,
-    shared_section: str | None = "review_ai",
+    shared_section: str | None = "llm",
 ) -> float:
     for cfg_name in (section, shared_section):
         cfg = config.get(cfg_name, {}) if cfg_name else {}
@@ -557,6 +514,38 @@ def resolve_agent_qps(
         return float(config.get("api_qps", DEFAULT_CONFIG["api_qps"]))
     except (TypeError, ValueError):
         return float(DEFAULT_CONFIG["api_qps"])
+
+
+def validate_model_separation(config: dict) -> None:
+    """校验审查端与生成端的 LLM (provider, model) 不得相同。
+
+    违规时抛 ValueError，阻断流程——质量检查必须用与生成不同的模型，
+    避免同模型自审带来的系统性偏差。
+    """
+    from core.llm_client import resolve_provider, resolve_model
+
+    def identity(section: str) -> tuple[str, str]:
+        provider = str(resolve_provider(config, section)).lower()
+        try:
+            model = str(resolve_model(config, section)).lower()
+        except Exception as exc:
+            model = ""
+        return provider, model
+
+    generator_ids = {section: identity(section) for section in GENERATOR_LLM_SECTIONS}
+    reviewer_ids = {section: identity(section) for section in REVIEWER_LLM_SECTIONS}
+
+    for review_section, review_identity in reviewer_ids.items():
+        for gen_section, gen_identity in generator_ids.items():
+            if not review_identity[1] or not gen_identity[1]:
+                continue
+            if review_identity == gen_identity:
+                raise ValueError(
+                    f"模型分离校验失败：{review_section} 与生成端 {gen_section} 使用了相同模型 "
+                    f"{review_identity[0]}/{review_identity[1]}。"
+                    "质量检查必须与大纲/草稿生成使用不同模型，请修改 config.json 中对应节的 "
+                    "provider/model 配置。"
+                )
 
 
 def resolve_project_dir(value: str | os.PathLike | None = None) -> Path:
@@ -606,16 +595,14 @@ def load_config(project_dir: Path) -> dict:
     config_file = project_dir / "config.json"
     if not config_file.exists():
         config = copy.deepcopy(DEFAULT_CONFIG)
-        config["mmx_path"] = resolve_mmx_path(config, project_dir)
-        return config
-    try:
-        data = json.loads(config_file.read_text(encoding="utf-8"))
-    except Exception as exc:
-        config = copy.deepcopy(DEFAULT_CONFIG)
-        config["mmx_path"] = resolve_mmx_path(config, project_dir)
-        return config
-    config = deep_merge(DEFAULT_CONFIG, data)
-    config["mmx_path"] = resolve_mmx_path(config, project_dir)
+    else:
+        try:
+            data = json.loads(config_file.read_text(encoding="utf-8"))
+        except Exception as exc:
+            config = copy.deepcopy(DEFAULT_CONFIG)
+        else:
+            config = deep_merge(DEFAULT_CONFIG, data)
+    validate_model_separation(config)
     return config
 
 

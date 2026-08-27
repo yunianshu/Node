@@ -20,7 +20,7 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 from core.json_repair import fix_inner_quotes, fix_truncated_json
-from core.mmx_client import MmxError, call_mmx
+from core.llm_client import LLMError, call_llm
 from core.novel_config import load_config, resolve_project_dir
 from core.workflow_state import analyze_chapter_text, load_quality_rules
 
@@ -403,22 +403,20 @@ def call_patch_model(project: Path, config: dict, chapter: int, text: str, issue
     system, prompt = build_prompt(chapter, text, issues, prev, nxt)
     repair_cfg = config.get("book_repair", {})
     try:
-        raw = call_mmx(
+        raw = call_llm(
+            config,
+            project,
+            "book_repair",
             system,
             prompt,
-            model=config["model"],
-            mmx_path=config["mmx_path"],
             max_tokens=int(repair_cfg.get("max_tokens", 4096)),
             temperature=float(repair_cfg.get("temperature", 0.15)),
             retries=int(repair_cfg.get("retries", 2)),
             retry_delay=float(repair_cfg.get("retry_delay", 5.0)),
             timeout=int(repair_cfg.get("timeout_seconds", 240)),
-            log_dir=project / "logs" / "raw_responses",
             raw_name=f"book_repair_ch{chapter:04d}",
-            qps=float(config.get("api_qps", 5.0)),
-            rate_state_dir=project / "logs" / "rate_limit",
         )
-    except MmxError as exc:
+    except LLMError as exc:
         return {"status": "model_error", "error": str(exc)}
     data = parse_json(raw)
     if not data:

@@ -92,7 +92,7 @@ def log(msg: str):
         f.write(line + "\n")
 
 
-def call_mmx(system_prompt: str, user_prompt: str, max_tokens: int = 4096, temperature: float = 0.3) -> str:
+def call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 4096, temperature: float = 0.3) -> str:
     try:
         cfg = CONFIG.get("outline_reviewer", {})
         fallback = CONFIG.get("writer", {})
@@ -561,7 +561,7 @@ def review_outline(
 
     log(f"[OutlineReviewer] 正在审查第{chapter_number}章大纲...")
     start_time = time.time()
-    content = call_mmx(system, prompt, max_tokens=4096, temperature=0.3)
+    content = call_llm(system, prompt, max_tokens=4096, temperature=0.3)
     elapsed = time.time() - start_time
     log(f"[OutlineReviewer] 第{chapter_number}章大纲审查 API 调用耗时 {elapsed:.1f}s")
 

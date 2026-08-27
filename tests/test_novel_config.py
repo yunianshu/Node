@@ -3,17 +3,16 @@ import json
 
 from pathlib import Path
 
-import core.novel_config as novel_config
+import pytest
+
 from core.novel_config import (
     DEFAULT_CONFIG,
     deep_merge,
     get_book_title,
     get_webhook_url,
+    load_config,
+    validate_model_separation,
 )
-
-
-def _no_npm_probe(monkeypatch):
-    monkeypatch.setattr(novel_config, "_npm_global_mmx_candidates", lambda: [])
 
 
 class TestDeepMerge:
@@ -34,30 +33,56 @@ class TestDeepMerge:
 
 
 class TestLoadConfig:
-    def test_missing_file_returns_default(self, tmp_path: Path, monkeypatch):
-        _no_npm_probe(monkeypatch)
-        config = novel_config.load_config(tmp_path)
+    def test_missing_file_returns_default(self, tmp_path: Path):
+        config = load_config(tmp_path)
         assert config["total_chapters"] == DEFAULT_CONFIG["total_chapters"]
 
-    def test_override_values(self, tmp_path: Path, monkeypatch):
-        _no_npm_probe(monkeypatch)
+    def test_override_values(self, tmp_path: Path):
         (tmp_path / "config.json").write_text(
-            json.dumps({"total_chapters": 100, "model": "test-model"}),
+            json.dumps({"total_chapters": 100}),
             encoding="utf-8",
         )
-        config = novel_config.load_config(tmp_path)
+        config = load_config(tmp_path)
         assert config["total_chapters"] == 100
-        assert config["model"] == "test-model"
         assert config["writer"]["max_tokens"] == DEFAULT_CONFIG["writer"]["max_tokens"]
 
-    def test_invalid_json_returns_default(self, tmp_path: Path, monkeypatch):
-        _no_npm_probe(monkeypatch)
+    def test_invalid_json_returns_default(self, tmp_path: Path):
         (tmp_path / "config.json").write_text("not json", encoding="utf-8")
-        config = novel_config.load_config(tmp_path)
+        config = load_config(tmp_path)
         assert config["total_chapters"] == DEFAULT_CONFIG["total_chapters"]
+
+    def test_no_mmx_fields_in_default(self):
+        assert "mmx_path" not in DEFAULT_CONFIG
+        for section in ("planner", "outliner", "writer", "polisher",
+                        "reviewer", "outline_reviewer"):
+            assert "mmx_path" not in DEFAULT_CONFIG[section]
 
     def test_outline_book_reviewer_section_removed(self):
         assert "outline_book_reviewer" not in DEFAULT_CONFIG
+
+
+class TestModelSeparation:
+    def test_defaults_are_separated(self):
+        """默认配置下生成端与审查端模型必须不同。"""
+        validate_model_separation(DEFAULT_CONFIG)
+
+    def test_same_model_rejected(self):
+        config = {
+            "llm": {},
+            "planner": {"provider": "deepseek", "model": "same-model"},
+            "outliner": {"provider": "deepseek", "model": "same-model"},
+            "writer": {"provider": "deepseek", "model": "same-model"},
+            "polisher": {"provider": "deepseek", "model": "same-model"},
+            "reviewer": {"provider": "deepseek", "model": "same-model"},
+            "outline_reviewer": {"provider": "glm", "model": "other-model"},
+        }
+        with pytest.raises(ValueError, match="相同模型"):
+            validate_model_separation(config)
+
+    def test_shared_llm_section_applies(self, tmp_path: Path):
+        config = load_config(tmp_path)
+        assert config["writer"]["provider"] == "deepseek"
+        assert config["reviewer"]["provider"] == "glm"
 
 
 class TestGetBookTitle:

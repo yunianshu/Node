@@ -18,7 +18,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from core.mmx_client import MmxError, call_mmx as call_mmx_client
+from core.llm_client import LLMError, call_llm as _call_section_llm
 from core.json_repair import strip_json_markdown as _strip_json_markdown
 from core.novel_config import load_config, load_origin_materials, resolve_project_dir
 from core.outline_quality_gate import clean_char_name
@@ -69,26 +69,20 @@ def init_project(project_dir: str | Path) -> None:
         )
 
 
-def call_mmx(system_prompt: str, user_prompt: str, max_tokens: int = 8192, temperature: float = 0.4) -> str:
+def call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 8192, temperature: float = 0.4) -> str:
     try:
-        cfg = CONFIG.get("planner", {})
-        fallback = CONFIG.get("writer", {})
-        return call_mmx_client(
+        return _call_section_llm(
+            CONFIG,
+            NOVELS_DIR,
+            "planner",
             system_prompt,
             user_prompt,
-            model=CONFIG["model"],
-            mmx_path=CONFIG["mmx_path"],
-            max_tokens=cfg.get("max_tokens", max_tokens),
-            temperature=cfg.get("temperature", temperature),
-            retries=cfg.get("max_retries", cfg.get("retries", fallback.get("max_retries", 3))),
-            retry_delay=cfg.get("retry_delay", fallback.get("retry_delay", 5.0)),
-            log_dir=NOVELS_DIR / "logs" / "raw_responses",
+            max_tokens=max_tokens,
+            temperature=temperature,
             raw_name="planner",
-            qps=CONFIG["api_qps"],
-            rate_state_dir=NOVELS_DIR / "logs" / "rate_limit",
         )
-    except MmxError as e:
-        print(f"[ERROR] mmx调用失败: {e}", file=sys.stderr)
+    except LLMError as e:
+        print(f"[ERROR] LLM调用失败: {e}", file=sys.stderr)
         return ""
 
 
@@ -368,7 +362,7 @@ def _generate_json_with_contract(
     retry_hint = ""
     last_content = ""
     for attempt in range(semantic_retries + 1):
-        last_content = call_mmx(system, prompt + retry_hint, max_tokens=max_tokens, temperature=0.3)
+        last_content = call_llm(system, prompt + retry_hint, max_tokens=max_tokens, temperature=0.3)
         data = _parse_json_response(last_content)
         issues = validator(data) if isinstance(data, dict) else ["响应不是完整JSON对象"]
         if isinstance(data, dict) and not issues:
@@ -746,7 +740,7 @@ def generate_media_prompts():
 6. 必须输出合法JSON"""
 
     print("[Planner] 正在生成媒体提示词...")
-    content = call_mmx(system, prompt, max_tokens=4096, temperature=0.5)
+    content = call_llm(system, prompt, max_tokens=4096, temperature=0.5)
     media_prompts = None
     if content:
         try:

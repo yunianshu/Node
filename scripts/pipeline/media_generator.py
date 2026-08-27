@@ -15,7 +15,7 @@ import os
 import subprocess
 import time
 
-from core.mmx_client import _mmx_base_cmd
+from core.mmx_cli import mmx_base_cmd, resolve_media_mmx_path
 from core.novel_config import configure_stdio, load_config, resolve_project_dir
 
 configure_stdio()
@@ -54,7 +54,7 @@ def _load_world() -> dict:
 
 def _run_mmx(args: list[str], timeout: int) -> bool:
     assert CONFIG is not None
-    cmd = [*_mmx_base_cmd(CONFIG["mmx_path"]), *args]
+    cmd = [*mmx_base_cmd(resolve_media_mmx_path(CONFIG)), *args]
     try:
         result = subprocess.run(
             cmd,

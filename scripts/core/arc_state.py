@@ -26,7 +26,7 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 from core.json_repair import fix_inner_quotes, fix_truncated_json
-from core.mmx_client import MmxError, call_mmx
+from core.llm_client import LLMError, call_llm
 from core.workflow_state import atomic_write_json
 
 # 六阶段定义（顺序即成长方向）
@@ -141,22 +141,20 @@ def extract_arc_progress(
 {text[:6000]}"""
     cfg = config.get("arc_state", {})
     try:
-        raw = call_mmx(
+        raw = call_llm(
+            config,
+            project,
+            "arc_state",
             "你是小说人物成长分析专家。精准判断角色弧线阶段，只基于正文事实。",
             prompt,
-            model=config["model"],
-            mmx_path=config["mmx_path"],
             max_tokens=int(cfg.get("max_tokens", 1024)),
             temperature=float(cfg.get("temperature", 0.1)),
             retries=int(cfg.get("retries", 2)),
             retry_delay=float(cfg.get("retry_delay", 5.0)),
             timeout=int(cfg.get("timeout_seconds", 120)),
-            log_dir=project / "logs" / "raw_responses",
             raw_name=f"arc_state_ch{chapter:04d}",
-            qps=float(config.get("api_qps", 5.0)),
-            rate_state_dir=project / "logs" / "rate_limit",
         )
-    except MmxError as exc:
+    except LLMError as exc:
         return {"protagonist": protagonist_name, "current_stage": prev_stage or "",
                 "stage_evidence": "", "chapter": chapter, "error": str(exc)}
 

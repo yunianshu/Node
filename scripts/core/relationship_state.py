@@ -16,7 +16,7 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 from core.json_repair import fix_inner_quotes, fix_truncated_json
-from core.mmx_client import MmxError, call_mmx
+from core.llm_client import LLMError, call_llm
 from core.workflow_state import atomic_write_json
 
 
@@ -269,22 +269,20 @@ def extract_relationship_states(
 {text[:6000]}"""
     cfg = config.get("relationship_state", {})
     try:
-        raw = call_mmx(
+        raw = call_llm(
+            config,
+            project,
+            "relationship_state",
             "你是小说关系线连续性编辑。只基于正文事实，抽取会影响后文的人情债与潜台词。",
             prompt,
-            model=config["model"],
-            mmx_path=config["mmx_path"],
             max_tokens=int(cfg.get("max_tokens", 2048)),
             temperature=float(cfg.get("temperature", 0.1)),
             retries=int(cfg.get("retries", 2)),
             retry_delay=float(cfg.get("retry_delay", 5.0)),
             timeout=int(cfg.get("timeout_seconds", 120)),
-            log_dir=project / "logs" / "raw_responses",
             raw_name=f"relationship_state_ch{chapter:04d}",
-            qps=float(config.get("api_qps", 5.0)),
-            rate_state_dir=project / "logs" / "rate_limit",
         )
-    except MmxError as exc:
+    except LLMError as exc:
         return {"chapter": chapter, "relationships": [], "error": str(exc)}
 
     parsed = _parse_json(raw)
