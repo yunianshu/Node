@@ -789,9 +789,6 @@ def _run_outline_review_rounds(
         stop_event=stop_event,
     )
 
-def _outline_race_config() -> dict:
-    return outline_gate_module.outline_race_config(_runtime())
-
 def _draft_min_score() -> float:
     return draft_gate_module.draft_min_score(_runtime())
 

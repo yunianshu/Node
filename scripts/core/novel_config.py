@@ -89,20 +89,6 @@ DEFAULT_CONFIG = {
         "draft_attempts_per_round": 1,
         "draft_analysis_rounds": 2,
     },
-    "outline_race": {
-        "enabled": False,
-        "candidates": 3,
-        "max_workers": 3,
-        "stop_on_first_pass": True,
-        "early_stop_score": 8.7,
-    },
-    "draft_race": {
-        "enabled": True,
-        "candidates": 3,
-        "max_workers": 3,
-        "stop_on_first_pass": True,
-        "early_stop_score": 8.6,
-    },
     "repair": {
         "max_consecutive_failures": 5,
     },

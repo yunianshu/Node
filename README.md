@@ -12,7 +12,7 @@
 
 ```text
 projects/<book_id>/
-├── config.json                          # 总章数/模型/各门阈值/race 开关/webhook
+├── config.json                          # 总章数/模型/各门阈值/webhook
 ├── premise.txt                          # 故事前提/设定种子
 ├── origin/                              # 高优先级参考素材(facts/style/旧文)
 │
@@ -44,7 +44,7 @@ projects/<book_id>/
 │
 └── logs/
     ├── coordinator.log
-    ├── outline_candidates/  draft_candidates/   # 赛马候选
+    ├── outline_candidates/  draft_candidates/   # 历史候选目录(已停用,仅存档)
     ├── outline_feedback_*.json  draft_feedback_*.json  # 失败反馈 → --review-feedback
     └── *watchdog.{log,lock}             # 守护进程单例
 ```
@@ -58,14 +58,10 @@ projects/<book_id>/
 ```text
 config/premise → Planner → world.json + characters.json (+ media)
                           ↓
-   ┌─ 全量大纲优先(--outline-first / 配置开启)──────────────┐
-   │  卷纲 → 批量预填大纲 → 逐章大纲门 → 整本大纲总审 → 伏笔闭环门 │
-   └──────────────────────────────────────────────────────────┘
-                          ↓
    逐章正文循环 run_serial_quality_workflow(第 N 章):
      ensure_outline_lookahead  → 先让 N..N+9 章大纲过门
-     大纲门  process_outline_gate   → outline + outline_review
-     正文门  process_draft_gate     → draft + review (+ polisher) → final
+     大纲门  process_outline_gate   → outline + outline_review(不达标→意见定点修订)
+     正文门  process_draft_gate     → draft + review (+ polisher) → final(不达标→原稿+意见局部修订)
      状态抽取(三路并行)            → character/arc/relationship states
      G14 终稿 AI味复检
    全书末章 → G16 结尾收束检查(伏笔回收率 + 弧线终点)
@@ -77,14 +73,14 @@ config/premise → Planner → world.json + characters.json (+ media)
 ```
 
 ### 大纲门(`scripts/pipeline/outline_gate.py`)
-- 最多 `3 轮 × 3 次`;每次 `outliner 生成 → outline_reviewer 审查`
+- 最多 `3 轮 × 3 次`;每次 `outliner 修订 → outline_reviewer 审查`
+- **意见修订**:不达标时保留原大纲,反馈写 `logs/outline_feedback_*.json`,下次带 `--review-feedback` 做定点修订(字段级 edits 优先,模型修订兜底),不推倒重生成;累计 ≥8 次启用 `--rescue`
 - 三层质量门:首轮初筛(分 < screening_score 或设计门不过直接停)→ 多轮投票(中位分 + 票数)
 - **设计门五硬项**:core_desire / irreversible_choice / midpoint_reversal / human_warmth / strong_hook
-- 失败反馈写 `logs/outline_feedback_*.json`,下次带 `--review-feedback`;累计 ≥8 次启用 `--rescue`
-- `outline_race.enabled=true` 时多候选并行竞马,先达 `early_stop_score` 即止
 
 ### 正文门(`scripts/pipeline/draft_gate.py`)
-- 最多 `3 轮 × 3 次`;每次 `writer 写稿 → reviewer 评分`
+- 最多 `3 轮 × 3 次`;每次 `writer 修订 → reviewer 评分`
+- **意见修订**:不达标时保留原稿,完整原稿 + 审查意见一并注入 writer 做局部修订,不推倒重写
 - **分数门槛**:1–3 章用 `golden_chapter_min_score`(默认 9.0),其余 `min_score`(默认 8.5)
 - **Polisher 捷径**:已有 `threshold≤分<min_score` 底稿时跳过重写,直接最小化精修(长度比锁 0.85–1.15)
 - **本地硬门**(reviewer,LLM 高分也压回):字数 / AI味<7 / 角色在场 / 烟火气 / 关系任务 / origin 事实
@@ -140,8 +136,6 @@ python -m py_compile scripts/pipeline/planner.py scripts/pipeline/outliner.py sc
     "draft_analysis_rounds": 3,
     "push_interval_seconds": 120
   },
-  "outline_race": { "enabled": true, "candidates": 3, "stop_on_first_pass": true },
-  "draft_race":   { "enabled": true, "candidates": 3, "stop_on_first_pass": true },
   "outline_reviewer": { "min_score": 8.5 },
   "reviewer":         { "min_score": 8.5, "golden_chapter_min_score": 9.0 },
   "polisher":         { "enabled": true, "threshold": 8.0 },
@@ -151,7 +145,7 @@ python -m py_compile scripts/pipeline/planner.py scripts/pipeline/outliner.py sc
 }
 ```
 
-- 阈值/race 开关一律走 config,**不在代码或命令里硬编码分数**。
+- 阈值开关一律走 config,**不在代码或命令里硬编码分数**。
 - webhook 优先写 `config.json`,也可用 `NOVEL_WEBHOOK_URL` 临时覆盖。
 - 项目路径用 `--project` 或 `NOVEL_PROJECT_DIR`,不硬编码本地路径。
 

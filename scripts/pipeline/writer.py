@@ -782,9 +782,31 @@ def generate_chapter(
         log(f"[Writer] 第{chapter_number}章已存在且字数合格（{existing_words}字），跳过")
         return "exists"
     if exists and is_rewrite:
-        log(f"[Writer] 第{chapter_number}章已有初稿但审查未通过，基于审查意见重新生成")
+        log(f"[Writer] 第{chapter_number}章已有初稿但审查未通过，将基于审查意见修订原稿")
     elif exists:
         log(f"[Writer] 第{chapter_number}章已存在但字数不合格（{existing_words}字），重新生成")
+
+    # 重写轮以现有稿件为修订基础；稿件缺失时退回全新生成。
+    # 原稿与审查反馈同属每轮变化内容，最终置于 prompt 尾部动态区
+    # （见 {original_draft_section}），前置静态指令不动，保住提示词前缀缓存。
+    original_draft_text = ""
+    original_draft_section = ""
+    if is_rewrite:
+        if chapter_file.exists():
+            original_draft_text = chapter_file.read_text(encoding="utf-8", errors="ignore").strip()
+        if original_draft_text:
+            log(f"[Writer] 第{chapter_number}章已加载现有稿件（{len(original_draft_text)}字），将基于审查意见局部修订")
+            original_draft_section = (
+                "\n\n## 当前稿件（上一轮未达标版本，作为修订基础）\n"
+                f"{original_draft_text}\n"
+                "\n## 修订输出要求\n"
+                "- 输出修订后的完整正文：不是修改说明，不是差异对比，更不是推倒重写的新故事。\n"
+                "- 只针对审查反馈点名的问题做局部修改；未被点名的段落、对话、场景一律原样保留。\n"
+                "- 禁止改变主线、场景顺序、人物动作与既有关键事件；禁止为改而改。\n"
+            )
+        else:
+            log(f"[Writer] 第{chapter_number}章审查未通过但无现有稿件，按全新生成执行")
+            is_rewrite = False
 
     world = load_json(WORLD_FILE)
     characters = load_json(CHARACTERS_FILE)
@@ -911,7 +933,6 @@ def generate_chapter(
         if old_file.exists():
             with open(old_file, "r", encoding="utf-8") as f:
                 old_content = f.read()
-            review_section += f"\n### 原文参考（前800字）\n{old_content[:800]}\n...\n"
 
         # === 方案B：增量编辑优先 ===
         # 如果 reviewer 给出了 edits，先尝试定点修改；失败再回退全文重写
@@ -1083,7 +1104,7 @@ def generate_chapter(
 
     if is_rewrite:
         system = (f"""你是一位追求9分神作的顶尖中文网络小说作家，同时也是一位冷酷的资深编辑。
-你现在需要对一篇接近9分但未达标的章节进行**局部精修**，而不是推倒重来。
+你现在需要基于下方【当前稿件】，对一篇未达标章节进行**局部精修**，而不是推倒重来。
 你擅长创作{genre}，但你的标准不是"合格"，而是"惊艳"。
 
 ## 精修原则（必须遵守）
@@ -1169,7 +1190,7 @@ def generate_chapter(
 {lang_fp_text}
 {foreshadowing_directive}
 ## 后一章摘要（为后续铺垫）
-{next_summary}{review_section}
+{next_summary}{review_section}{original_draft_section}
 
 ## 故事设定
 {story_context}

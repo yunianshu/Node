@@ -231,14 +231,6 @@ def lower_worker_counts(project: Path, reason: str) -> bool:
             coordinator[key] = new_value
             changed = True
 
-    for section_name in ("outline_race", "draft_race"):
-        section = config.get(section_name)
-        if not isinstance(section, dict):
-            continue
-        current = int(section.get("max_workers", 1) or 1)
-        new_value = max(1, current - 1)
-        if new_value < current:
-            section["max_workers"] = new_value
             changed = True
 
     if changed:

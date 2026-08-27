@@ -1595,7 +1595,7 @@ def _find_duplicate_candidate(candidate_file: Path, chapter_data: dict) -> Path 
     """检测候选是否与历史候选实质雷同（summary/key_events 相似度≥0.8）。
 
     早期实现用整章 JSON 字节级精确匹配，模型改个标点就绕过；改为内容相似度检测，
-    让 race 竞速真正选到不同的候选。
+    确保修复候选与历史候选实质不同。
     """
     candidate_root = candidate_file.parent.parent
     new_summary, new_events = _chapter_signature(chapter_data)
@@ -2135,6 +2135,25 @@ def generate_outline_range(
             if batch_feedback:
                 review_section = f"""\n上一轮大纲审查反馈（请特别注意并改进以下问题；其中提到的其它章节号只作上下文，本次输出 chapter_number 必须是 {batch_start}）：\n{json.dumps(batch_feedback, ensure_ascii=False, indent=2)}\n"""
 
+        # 修订模式：存在本章失败反馈且原大纲在盘时，注入原大纲全文，
+        # 让模型在既有结构上定点修订而非推倒重生成。原大纲与审查反馈同置
+        # prompt 尾部动态区，前置静态指令不动，保住提示词前缀缓存。
+        outline_revision_section = ""
+        if chapter is not None and batch_start == batch_end == chapter and review_feedback_data:
+            current_outline_file = outline_dir(NOVELS_DIR) / f"chapter_{chapter:04d}.json"
+            if current_outline_file.exists():
+                try:
+                    current_outline = _load_json(current_outline_file)
+                    outline_revision_section = (
+                        f"\n\n## 当前大纲（上一轮未通过审查，作为修订基础）\n"
+                        f"{json.dumps(current_outline, ensure_ascii=False, indent=2)}\n"
+                        "\n## 修订要求\n"
+                        "- 输出修订后的完整单章大纲JSON；只针对上方审查反馈点名的问题做局部修改，未被点名的字段尽量原样保留。\n"
+                        "- 禁止推倒重写、禁止更换主线事件与场景走向；禁止为改而改。\n"
+                    )
+                except Exception as exc:
+                    print(f"[Outliner] 第{chapter}章现有大纲读取失败，按全新生成执行: {exc}")
+
         prompt_premise = NOVEL_PREMISE
         prompt_origin = ORIGIN_MATERIALS or "（无）"
         if chapter is not None:
@@ -2211,7 +2230,7 @@ def generate_outline_range(
 {ledger_constraints}
 
 {prev_context}
-{review_section}
+{review_section}{outline_revision_section}
 
 请输出以下JSON结构。所有字段都是必填；不得输出“章节标题”“200字详细摘要”“事件1”等占位文本。
 story_beat 必须取枚举值之一：opening_image/theme_stated/setup/catalyst/debate/break_into_two/b_story/fun_and_games/midpoint/bad_guys_close_in/all_is_lost/dark_night/break_into_three/finale/final_image/rising_action/transition：

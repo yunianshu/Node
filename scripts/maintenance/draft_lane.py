@@ -97,7 +97,7 @@ def main() -> int:
     parser.add_argument("--start", type=int, default=1)
     parser.add_argument("--end", type=int, default=0)
     parser.add_argument("--wait-seconds", type=float, default=5.0)
-    parser.add_argument("--workers", type=int, default=0, help="兼容参数；正文 lane 始终按章节顺序单 worker 推进，draft_race 只控制同章候选并发")
+    parser.add_argument("--workers", type=int, default=0, help="兼容参数；正文 lane 始终按章节顺序单 worker 推进，不再有同章候选并发")
     parser.add_argument(
         "--continuity-window",
         type=int,
@@ -123,8 +123,6 @@ def main() -> int:
     workers = 1
     continuity_window = 1
     coordinator.init_project(project)
-    runtime = coordinator.runtime_context()
-    race_cfg = draft_gate.draft_race_config(runtime)
     push_interval = int(config.get("coordinator", {}).get("push_interval_seconds", 120))
     coordinator.ensure_wechat_pusher_process(push_interval)
     coordinator.ensure_gate_watchdog_process("draft")
@@ -140,7 +138,6 @@ def main() -> int:
         project,
         f"启动: 第{args.start}-{end}章，workers={workers}，continuity_window={continuity_window}，"
         f"正文门槛={draft_min_score:g}，每章最多{max_rounds * attempts_per_round}次重写，"
-        f"draft_race={race_cfg['enabled']} candidates={race_cfg['candidates']}，"
         f"未过审大纲每{args.wait_seconds:g}秒检查一次",
     )
     next_chapter = max(1, args.start)
