@@ -48,7 +48,7 @@ def _load_world() -> dict:
         return {}
     try:
         return json.loads(world_file.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
         return {}
 
 

@@ -634,52 +634,6 @@ def _process_outline_gate_race(rt, chapter: int, *, push_on_failure: bool = True
     return False
 
 
-def prefill_missing_outlines(rt, end: int) -> bool:
-    """Generate missing outlines in coherent batches before chapter reviews."""
-    missing = [
-        chapter
-        for chapter in range(1, end + 1)
-        if not outline_chapter_path(rt.NOVELS_DIR, chapter).exists()
-    ]
-    if not missing:
-        return True
-
-    batch_size = max(
-        2,
-        int(rt.CONFIG.get("outliner", {}).get("initial_batch_size", 5) or 5),
-    )
-    batches: list[tuple[int, int]] = []
-    start = missing[0]
-    previous = missing[0]
-    for chapter in missing[1:]:
-        if chapter == previous + 1 and chapter - start + 1 <= batch_size:
-            previous = chapter
-            continue
-        batches.append((start, previous))
-        start = previous = chapter
-    batches.append((start, previous))
-
-    all_ok = True
-    for start, batch_end in batches:
-        rt.log(f"[Coordinator] 首轮按跨章批次预生成第{start}-{batch_end}章大纲")
-        rc = rt.run_script(
-            "outliner.py",
-            "--start",
-            str(start),
-            "--end",
-            str(batch_end),
-        )
-        if rc != 0:
-            all_ok = False
-            rt.log(
-                f"[Coordinator] 第{start}-{batch_end}章批量预生成失败，"
-                "后续逐章质量门将继续兜底"
-            )
-    if any(outline_chapter_path(rt.NOVELS_DIR, chapter).exists() for chapter in missing):
-        build_ledgers(rt.NOVELS_DIR)
-    return all_ok
-
-
 def process_outline_gate(rt, chapter: int, *, push_on_failure: bool = True, initial_feedback: Path | None = None) -> bool:
     if is_chapter_locked(rt.NOVELS_DIR, chapter):
         if initial_feedback is None:
@@ -875,28 +829,6 @@ def ensure_outline_lookahead(rt, chapter: int, end: int, lookahead: int) -> tupl
     return True, None
 
 
-def run_outline_book_review(rt, force: bool = False) -> bool:
-    script = rt.MAINTENANCE_SCRIPTS["outline_book_reviewer.py"]
-    cmd = [sys.executable, str(script), "--project", str(rt.NOVELS_DIR)]
-    if force:
-        cmd.append("--force")
-    child_log = rt.LOGS_DIR / "outline_book_reviewer_child.log"
-    rc = rt.run_streaming_process(cmd, child_log)
-    report = rt._load_json_file(report_path(rt.NOVELS_DIR, "outline_book_review") / "final_outline_review.json")
-    if rc != 0 or not report.get("gate_passed"):
-        rt.log(
-            f"[Coordinator] 整本大纲总审未通过: rc={rc}, "
-            f"score={report.get('score')}, verdict={report.get('verdict')}"
-        )
-        return False
-    rt.log(f"[Coordinator] 整本大纲总审通过: score={report.get('score')}")
-    return True
-
-
-def _outline_book_review_report(rt) -> dict:
-    return rt._load_json_file(report_path(rt.NOVELS_DIR, "outline_book_review") / "final_outline_review.json")
-
-
 def _global_outline_feedback(
     rt,
     chapter: int,
@@ -1075,125 +1007,6 @@ def _human_warmth_repair_issues_from_local_scan(local_scan: dict, total: int, li
     return {chapter: items[:1] for chapter, items in sorted(assigned.items())}
 
 
-def _assign_repair_issues(
-    issues: list[dict],
-    *,
-    total: int,
-    limit: int,
-) -> dict[int, list[dict]]:
-    """Assign each cross-chapter issue to later chapters only.
-
-    Rewriting every chapter named by an issue removes all stable facts and
-    causes the repair loop to chase its own changes. The earliest referenced
-    chapter is therefore retained as the canonical anchor.
-    """
-    assigned: dict[int, list[dict]] = {}
-    severity_order = {"critical": 0, "major": 1, "minor": 2}
-    ordered = sorted(
-        (item for item in issues if isinstance(item, dict)),
-        key=lambda item: severity_order.get(str(item.get("severity", "")).lower(), 3),
-    )
-    for issue in ordered:
-        chapters = sorted({
-            value
-            for value in issue.get("chapters", [])
-            if isinstance(value, int) and 1 <= value <= total
-        })
-        issue_text = " ".join(
-            str(issue.get(field, ""))
-            for field in ("detail", "evidence", "suggestion")
-        )
-        explicit_chapters = {
-            int(value)
-            for value in re.findall(
-                r"(?:第\s*|ch(?:apter)?\s*)(\d+)\s*章?",
-                issue_text,
-                flags=re.I,
-            )
-        }
-        explicit_in_range = sorted(set(chapters) & explicit_chapters)
-        if len(explicit_in_range) >= 2:
-            chapters = explicit_in_range
-        if not chapters:
-            continue
-        targets = chapters if len(chapters) == 1 else chapters[1:]
-        for chapter in targets:
-            assigned.setdefault(chapter, []).append(issue)
-
-    if len(assigned) <= limit:
-        return {chapter: items[:1] for chapter, items in assigned.items()}
-    selected = sorted(
-        assigned,
-        key=lambda chapter: (
-            min(
-                severity_order.get(str(item.get("severity", "")).lower(), 3)
-                for item in assigned[chapter]
-            ),
-            chapter,
-        ),
-    )[:limit]
-    return {chapter: assigned[chapter][:1] for chapter in sorted(selected)}
-
-
-def repair_outline_book_review(rt, round_no: int) -> bool:
-    report = _outline_book_review_report(rt)
-    issues = report.get("issues", []) if isinstance(report.get("issues"), list) else []
-    total = int(rt.CONFIG["total_chapters"])
-    limit = int(rt.CONFIG.get("outline_book_reviewer", {}).get("max_repair_chapters", 80) or 80)
-    assigned = _assign_repair_issues(issues, total=total, limit=max(1, limit))
-    targets = sorted(assigned)
-    if not targets:
-        fallback = []
-        for item in report.get("failed_ranges", []) if isinstance(report.get("failed_ranges"), list) else []:
-            match = re.search(r"\d+", str(item))
-            if match:
-                chapter = int(match.group(0))
-                if 1 <= chapter <= total:
-                    fallback.append(chapter)
-        targets = sorted(set(fallback))[:max(1, limit)] or [1]
-        assigned = {chapter: issues for chapter in targets}
-        rt.log(f"[Coordinator] 整本大纲总审未提供精确章节，使用兜底修复章节: {targets}")
-    unlocked = unlock_chapters(rt.NOVELS_DIR, targets)
-    if unlocked:
-        rt.log(f"[Coordinator] 整本审查修复前已解锁批次: {unlocked}")
-
-    rt.log(
-        f"[Coordinator] 整本大纲总审第{round_no}轮定向修复章节: {targets}；"
-        "每个问题保留最早章节作为事实锚点"
-    )
-    for chapter in targets:
-        feedback = _global_outline_feedback(rt, chapter, assigned.get(chapter, []), round_no)
-        if not process_outline_gate(rt, chapter, push_on_failure=False, initial_feedback=feedback):
-            rt.log(f"[Coordinator] 第{chapter}章应用整本总审反馈后仍未通过逐章大纲门")
-            return False
-    return True
-
-
-def prepare_all_outlines_and_book_review(rt, end: int, force_review: bool = False) -> bool:
-    rt.log(f"[Coordinator] 全量大纲优先模式：先完成第1-{end}章逐章大纲质量门")
-    if rt.run_script("outliner.py", "--volume-only") != 0:
-        rt.log("[Coordinator] Outliner 卷级规划生成或校验失败")
-        return False
-    prefill_missing_outlines(rt, end)
-    for chapter in range(1, end + 1):
-        if not process_outline_gate(rt, chapter):
-            return False
-    if run_outline_book_review(rt, force=force_review):
-        return True
-
-    max_rounds = int(rt.CONFIG.get("outline_book_reviewer", {}).get("max_repair_rounds", 2) or 2)
-    for round_no in range(1, max_rounds + 1):
-        if not repair_outline_book_review(rt, round_no):
-            return False
-        if run_outline_book_review(rt, force=True):
-            if rt.run_script("outliner.py", "--volume-only", "--force-volume") != 0:
-                rt.log("[Coordinator] 整本修复通过，但卷纲刷新失败")
-                return False
-            rt.log("[Coordinator] 整本修复通过，已按最新单章事实刷新卷纲")
-            return True
-    return False
-
-
 def repair_book_relationship_targets(rt, round_no: int = 1) -> list[int]:
     """Apply final book-review relationship repair targets to chapter outlines.
 
@@ -1205,7 +1018,7 @@ def repair_book_relationship_targets(rt, round_no: int = 1) -> list[int]:
         return []
     total = int(rt.CONFIG["total_chapters"])
     cfg = rt.CONFIG.get("book_reviewer", {}) if isinstance(rt.CONFIG.get("book_reviewer"), dict) else {}
-    default_limit = int(rt.CONFIG.get("outline_book_reviewer", {}).get("max_repair_chapters", 10) or 10)
+    default_limit = 10
     limit = int(cfg.get("max_relationship_repair_chapters", default_limit) or default_limit)
     assigned = _relationship_repair_issues_from_book_review(report, total=total, limit=max(1, limit))
     targets = sorted(assigned)
@@ -1242,7 +1055,7 @@ def repair_book_human_warmth_streaks(rt, round_no: int = 1) -> list[int]:
         return []
     total = int(rt.CONFIG["total_chapters"])
     cfg = rt.CONFIG.get("book_reviewer", {}) if isinstance(rt.CONFIG.get("book_reviewer"), dict) else {}
-    default_limit = int(rt.CONFIG.get("outline_book_reviewer", {}).get("max_repair_chapters", 10) or 10)
+    default_limit = 10
     limit = int(cfg.get("max_human_warmth_repair_chapters", default_limit) or default_limit)
     assigned = _human_warmth_repair_issues_from_local_scan(local_scan, total=total, limit=max(1, limit))
     targets = sorted(assigned)

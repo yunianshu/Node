@@ -1078,7 +1078,7 @@ def load_book_title(book_dir):
             title = d.get("title")
             if title and str(title).strip():
                 return str(title).strip()
-        except Exception:
+        except Exception as exc:
             pass
     return book_dir.name
 
@@ -1188,7 +1188,7 @@ def discover_books(parent_dir):
                 "has_audio": has_audio,
                 "has_images": has_images,
             })
-        except Exception:
+        except Exception as exc:
             continue
     return sorted(books, key=lambda x: x["id"])
 
@@ -1275,7 +1275,7 @@ def make_handler(parent_dir, port):
                 self.send_header("Cache-Control", "public, max-age=3600")
                 self.end_headers()
                 self.wfile.write(data)
-            except Exception:
+            except Exception as exc:
                 self.send_error(500)
 
         def send_json(self, data):
@@ -1338,7 +1338,7 @@ def make_handler(parent_dir, port):
             if outline_file.exists():
                 try:
                     outline = json.loads(outline_file.read_text(encoding="utf-8"))
-                except Exception:
+                except Exception as exc:
                     outline = {}
 
             return {

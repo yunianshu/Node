@@ -22,12 +22,11 @@ from pathlib import Path
 
 from core.novel_config import (
     configure_stdio,
-    extract_origin_fact_clauses,
-    extract_origin_fact_terms,
     load_config,
     load_origin_materials,
     resolve_project_dir,
 )
+from core.json_repair import parse_score as _parse_score, strip_json_markdown as _strip_json_markdown
 from core.review_ai_client import ReviewAIError, call_review_ai
 from core.ai_flavor_detector import detect_ai_flavor
 # 微信推送已禁用，改由 coordinator 统一推送进度
@@ -414,23 +413,6 @@ def load_json(filepath: Path) -> dict:
     with open(filepath, "r", encoding="utf-8") as f:
         return json.load(f)
 
-
-def _parse_score(val):
-    if isinstance(val, (int, float)):
-        return float(val)
-    if isinstance(val, str):
-        val = val.strip()
-        if "/" in val:
-            num = val.split("/")[0].strip()
-            try:
-                return float(num)
-            except ValueError:
-                pass
-        try:
-            return float(val)
-        except ValueError:
-            pass
-    return val
 
 
 def _extract_json_text(content: str) -> str:
@@ -1148,7 +1130,7 @@ def main():
         try:
             with open(world_file, "r", encoding="utf-8") as f:
                 title = json.load(f).get("title", title)
-        except Exception:
+        except Exception as exc:
             pass
 
     start_ch = args.chapter if args.chapter > 0 else args.start

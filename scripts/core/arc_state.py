@@ -67,7 +67,7 @@ def load_arc(project: Path, chapter: int) -> dict:
     try:
         data = json.loads(f.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) and "current_stage" in data else empty_arc()
-    except Exception:
+    except Exception as exc:
         return empty_arc()
 
 
@@ -187,7 +187,7 @@ def _parse_json(raw: str) -> dict:
             data = json.loads(cand)
             if isinstance(data, dict):
                 return data
-        except Exception:
+        except Exception as exc:
             continue
     return {}
 

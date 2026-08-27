@@ -54,7 +54,7 @@ def load_json(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
-    except Exception:
+    except Exception as exc:
         return {}
 
 
@@ -67,7 +67,7 @@ def parse_json_response(raw: str) -> dict:
     try:
         data = json.loads(text)
         return data if isinstance(data, dict) else {"status": "invalid_shape", "raw_response": raw[:4000]}
-    except Exception:
+    except Exception as exc:
         pass
     start = text.find("{")
     if start >= 0:
@@ -82,7 +82,7 @@ def parse_json_response(raw: str) -> dict:
                 if isinstance(data, dict):
                     data.setdefault("repair_applied", True)
                     return data
-            except Exception:
+            except Exception as exc:
                 continue
     return {"status": "parse_error", "raw_response": raw[:4000]}
 

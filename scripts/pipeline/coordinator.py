@@ -55,7 +55,6 @@ PIPELINE_SCRIPTS = {
 MAINTENANCE_SCRIPTS = {
     "wechat_pusher_lane.py": TOOLS_ROOT / "maintenance" / "wechat_pusher_lane.py",
     "gate_watchdog.py": TOOLS_ROOT / "maintenance" / "gate_watchdog.py",
-    "outline_book_reviewer.py": TOOLS_ROOT / "maintenance" / "outline_book_reviewer.py",
     "book_reviewer.py": TOOLS_ROOT / "maintenance" / "book_reviewer.py",
     "foreshadowing_audit.py": TOOLS_ROOT / "maintenance" / "foreshadowing_audit.py",
     "story_flow_audit.py": TOOLS_ROOT / "maintenance" / "story_flow_audit.py",
@@ -196,7 +195,7 @@ def get_book_title():
             with open(WORLD_FILE, "r", encoding="utf-8") as f:
                 world = json.load(f)
             return world.get("title", "书生武道通神")
-        except Exception:
+        except Exception as exc:
             pass
     return "书生武道通神"
 
@@ -340,10 +339,10 @@ def _terminate_process_tree(proc: subprocess.Popen) -> None:
             )
         else:
             proc.terminate()
-    except Exception:
+    except Exception as exc:
         try:
             proc.kill()
-        except Exception:
+        except Exception as exc:
             pass
 
 def run_cancellable_process(cmd: list[str], child_log: Path, stop_event: threading.Event) -> int:
@@ -416,7 +415,7 @@ def run_cancellable_process(cmd: list[str], child_log: Path, stop_event: threadi
             if proc.stdout:
                 try:
                     proc.stdout.close()
-                except Exception:
+                except Exception as exc:
                     pass
 
 def run_script(script_name: str, *args) -> int:
@@ -474,7 +473,7 @@ def media_prompts_ready() -> bool:
         return False
     try:
         world = json.loads(WORLD_FILE.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
         return False
     prompts = world.get("media_prompts", {})
     if not isinstance(prompts, dict):
@@ -512,7 +511,7 @@ def _load_json_file(path: Path) -> dict:
         return {}
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
         return {}
 
 def _safe_unlink(path: Path) -> None:
@@ -553,7 +552,7 @@ def _load_best_score(chapter: int) -> float:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return float(data.get("score", 0.0))
-    except Exception:
+    except Exception as exc:
         return 0.0
 
 def _save_best_draft(chapter: int, score: float, source: Path) -> None:
@@ -832,7 +831,7 @@ def _read_json_safely(path: Path) -> dict:
         return {}
     try:
         data = _load_json_file(path)
-    except Exception:
+    except Exception as exc:
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -957,7 +956,7 @@ def _extract_post_chapter_states(chapter: int) -> None:
         try:
             import json as _json
             characters_meta = _json.loads(chars_file.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
             pass
 
     def _extract_character_states() -> None:
@@ -1108,12 +1107,6 @@ def run_serial_quality_workflow(start: int, end: int, outline_lookahead: int | N
 
     return True
 
-def run_outline_book_review(force: bool = False) -> bool:
-    return outline_gate_module.run_outline_book_review(_runtime(), force=force)
-
-def _outline_book_review_report() -> dict:
-    return outline_gate_module._outline_book_review_report(_runtime())
-
 def _global_outline_feedback(
     chapter: int,
     issues: list[dict],
@@ -1133,37 +1126,11 @@ def _global_outline_feedback(
         summary=summary,
     )
 
-def repair_outline_book_review(round_no: int) -> bool:
-    return outline_gate_module.repair_outline_book_review(_runtime(), round_no)
-
 def repair_book_relationship_targets(round_no: int = 1) -> list[int]:
     return outline_gate_module.repair_book_relationship_targets(_runtime(), round_no)
 
 def repair_book_human_warmth_streaks(round_no: int = 1) -> list[int]:
     return outline_gate_module.repair_book_human_warmth_streaks(_runtime(), round_no)
-
-def prepare_all_outlines_and_book_review(end: int, force_review: bool = False) -> bool:
-    return outline_gate_module.prepare_all_outlines_and_book_review(_runtime(), end, force_review=force_review)
-
-
-def run_foreshadowing_audit(*, apply_patches: bool = True) -> bool:
-    """A2 伏笔闭环门禁：writer 前检查 dangling 伏笔，必要时自动补丁回收。
-
-    仅在全量大纲就绪后（outline-first 路径）执行。critical_dangling 超阈值则阻断 writer。
-    返回 True 表示通过（可继续 writer），False 表示阻断。
-    """
-    script = MAINTENANCE_SCRIPTS["foreshadowing_audit.py"]
-    cmd = [sys.executable, str(script), "--project", str(NOVELS_DIR),
-           "--block-threshold", "0"]
-    if apply_patches:
-        cmd.append("--apply-patches")
-    child_log = LOGS_DIR / "foreshadowing_audit_child.log"
-    rc = run_streaming_process(cmd, child_log)
-    if rc != 0:
-        log(f"[Coordinator] 伏笔闭环门禁未通过 (rc={rc})，阻断 writer 阶段")
-        return False
-    log("[Coordinator] 伏笔闭环门禁通过，进入正文阶段")
-    return True
 
 
 def run_story_flow_audit_report(start: int, end: int) -> bool:
@@ -1194,7 +1161,7 @@ def _book_review_report() -> dict:
         return {}
     try:
         return _load_json_file(final_path)
-    except Exception:
+    except Exception as exc:
         return {}
 
 def book_review_gate_passed() -> bool:
@@ -1348,12 +1315,12 @@ def _latest_cleanup_snapshots(chapters: list[int]) -> dict[int, dict]:
     snapshots: dict[int, dict] = {}
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
-    except Exception:
+    except Exception as exc:
         return {}
     for line in lines:
         try:
             entry = json.loads(line)
-        except Exception:
+        except Exception as exc:
             continue
         try:
             chapter = int(entry.get("chapter"))
@@ -2101,16 +2068,7 @@ def main():
                         help="写正文前预先通过审查的大纲章数，默认读取 coordinator.outline_lookahead_chapters")
     parser.add_argument("--skip-planner", action="store_true", help="跳过Planner阶段")
     parser.add_argument(
-        "--outline-first",
-        action="store_true",
-        help="先完成全书逐章大纲及整本大纲总审，通过后再生成正文",
-    )
-    parser.add_argument(
-        "--force-outline-book-review",
-        action="store_true",
-        help="忽略整本大纲审查缓存并重新审查",
-    )
-    parser.add_argument(
+
         "--skip-book-review",
         action="store_true",
         help="跳过正文阶段后的整本终审门禁（仅调试用，默认不跳过）",
@@ -2188,31 +2146,7 @@ def main():
 
     outline_lookahead = args.outline_lookahead or int(CONFIG["coordinator"].get("outline_lookahead_chapters", 10) or 10)
     outline_lookahead = max(1, outline_lookahead)
-    outline_book_cfg = CONFIG.get("outline_book_reviewer", {})
-    outline_first = bool(
-        args.outline_first
-        or outline_book_cfg.get("required_before_draft", False)
-    )
-    if outline_first:
-        if not prepare_all_outlines_and_book_review(
-            end_chapter,
-            force_review=args.force_outline_book_review,
-        ):
-            refresh_progress_from_status(progress)
-            log("[Coordinator] 全量大纲或整本大纲总审未通过，正文阶段未启动")
-            return
-        outline_lookahead = 1
-        log("[Coordinator] 全量大纲已过审，正文阶段仅做当前章大纲校验")
-        # A2 伏笔闭环门禁：全量大纲就绪后，writer 前强制回收 dangling 伏笔
-        if not run_foreshadowing_audit(apply_patches=True):
-            refresh_progress_from_status(progress)
-            log("[Coordinator] 伏笔闭环门禁未通过，正文阶段未启动")
-            return
-        log("[Coordinator] 伏笔审计完成，强制复核大纲门与整本大纲总审")
-        if not prepare_all_outlines_and_book_review(end_chapter, force_review=True):
-            refresh_progress_from_status(progress)
-            log("[Coordinator] 伏笔审计后大纲复核未通过，正文阶段未启动")
-            return
+
     log(f"[Coordinator] 单章质量门范围: 第{args.start}-{end_chapter}章；大纲提前窗口: {outline_lookahead}章")
     ok = run_serial_quality_workflow(args.start, end_chapter, outline_lookahead)
     if not ok:

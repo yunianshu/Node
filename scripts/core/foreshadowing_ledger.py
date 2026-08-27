@@ -60,7 +60,7 @@ def load_ledger(project: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) and "threads" in data else empty_ledger()
-    except Exception:
+    except Exception as exc:
         return empty_ledger()
 
 

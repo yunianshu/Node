@@ -104,7 +104,7 @@ def chapter_title(project: Path, chapter: int) -> str:
     if outline.exists():
         try:
             title = str(json.loads(outline.read_text(encoding="utf-8")).get("title", "")).strip()
-        except Exception:
+        except Exception as exc:
             title = ""
     return f"第{chapter}章 {title}" if title else f"第{chapter}章"
 

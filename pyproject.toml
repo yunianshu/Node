@@ -1,0 +1,10 @@
+[project]
+name = "novel-pipeline"
+version = "0.1.0"
+description = "小说自动生成流水线"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+pythonpath = ["scripts"]

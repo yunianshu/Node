@@ -39,7 +39,7 @@ def load_relationships(project: Path, chapter: int) -> dict:
     try:
         data = json.loads(f.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) and "relationships" in data else empty_relationships()
-    except Exception:
+    except Exception as exc:
         return empty_relationships()
 
 
@@ -309,7 +309,7 @@ def _parse_json(raw: str) -> dict:
             data = json.loads(cand)
             if isinstance(data, dict):
                 return data
-        except Exception:
+        except Exception as exc:
             continue
     return {}
 

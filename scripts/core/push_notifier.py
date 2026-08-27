@@ -43,7 +43,7 @@ def _send(webhook_url: str, content: str) -> bool:
         with urllib.request.urlopen(req, timeout=10) as resp:
             resp.read()
         return True
-    except Exception:
+    except Exception as exc:
         return False
 
 
@@ -52,7 +52,7 @@ def _load_json(path: Path) -> dict:
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
         return {}
     return data if isinstance(data, dict) else {}
 

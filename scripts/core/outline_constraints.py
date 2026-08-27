@@ -10,7 +10,7 @@ from core.workflow_state import list_outline_chapters
 def _load(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
         return None
 
 

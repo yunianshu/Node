@@ -111,7 +111,7 @@ def _load_json(path: Path):
         return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
         return None
 
 

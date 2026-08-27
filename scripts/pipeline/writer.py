@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
+from core.json_repair import repair_latin1_gbk_mojibake as _repair_latin1_gbk_mojibake
 from core.novel_config import (
     build_origin_fact_directive,
     configure_stdio,
@@ -224,21 +225,6 @@ def _collect_character_briefs(value, *, limit: int = 10) -> list[str]:
     return result
 
 
-def _cjk_count(text: str) -> int:
-    return sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
-
-
-def _repair_latin1_gbk_mojibake(text: str) -> str:
-    if not text or _cjk_count(text) > 0:
-        return text
-    try:
-        repaired = text.encode("latin1").decode("gbk")
-    except UnicodeError:
-        return text
-    if _cjk_count(repaired) > _cjk_count(text):
-        return repaired
-    return text
-
 
 def normalize_outline_text(value: Any) -> Any:
     if isinstance(value, str):
@@ -437,7 +423,7 @@ def _load_9star_examples(chapter_number: int, min_score: float = 9.0, max_exampl
         try:
             data = json.loads(f.read_text("utf-8"))
             score = float(data.get("overall_score", 0))
-        except Exception:
+        except Exception as exc:
             continue
         if score < min_score:
             continue
@@ -470,7 +456,7 @@ def _load_9star_examples(chapter_number: int, min_score: float = 9.0, max_exampl
 def _load_feedback_as_review(feedback_file: Path, chapter_number: int) -> dict:
     try:
         payload = load_json(feedback_file)
-    except Exception:
+    except Exception as exc:
         return {}
     item = payload.get(str(chapter_number), payload) if isinstance(payload, dict) else {}
     if not isinstance(item, dict):
@@ -790,7 +776,7 @@ def generate_chapter(
             if status != "completed" or verdict in {"需重写", "需修改"} or score < min_review_score:
                 is_rewrite = True
                 log(f"[Writer] 第{chapter_number}章检测到未通过审查报告（status:{status}，评分{score}，verdict:{verdict}），将基于建议重写")
-        except Exception:
+        except Exception as exc:
             pass
 
     exists, existing_words, existing_ok = read_text_length(chapter_file)

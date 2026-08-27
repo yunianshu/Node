@@ -17,7 +17,7 @@ def load_locks(project: Path) -> dict[str, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {"batches": {}}
-    except Exception:
+    except Exception as exc:
         return {"status": "active", "batches": {}}
 
 

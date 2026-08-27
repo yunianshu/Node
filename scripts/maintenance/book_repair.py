@@ -222,7 +222,7 @@ def parse_json(raw: str) -> dict:
             data = json.loads(candidate)
             if isinstance(data, dict):
                 return data
-        except Exception:
+        except Exception as exc:
             continue
     return {}
 
@@ -253,7 +253,7 @@ def task_map_from_review(project: Path) -> dict[int, list[dict]]:
         return {}
     try:
         data = json.loads(review_path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
         return {}
     if not isinstance(data, dict):
         return {}
@@ -613,7 +613,7 @@ def main() -> None:
             loaded = json.loads(results_path.read_text(encoding="utf-8"))
             if isinstance(loaded, list):
                 results = [item for item in loaded if isinstance(item, dict) and isinstance(item.get("chapter"), int)]
-        except Exception:
+        except Exception as exc:
             results = []
     completed_chapters = {item["chapter"] for item in results}
     if completed_chapters:

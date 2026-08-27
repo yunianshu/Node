@@ -14,7 +14,7 @@ TOOLS_ROOT = Path(__file__).resolve().parents[1]
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
-from core.novel_config import load_config, resolve_project_dir
+from core.novel_config import get_book_title, load_config, resolve_project_dir
 from core.push_notifier import push_progress, story_flow_audit_note
 from core.workflow_state import aggregate_review_scores, outline_completed_count, scan_chapter_status
 
@@ -56,13 +56,7 @@ def acquire_lock(project: Path) -> Path | None:
 
 
 def book_title(project: Path) -> str:
-    world_file = project / "world.json"
-    if world_file.exists():
-        try:
-            return json.loads(world_file.read_text(encoding="utf-8")).get("title", project.name)
-        except Exception:
-            pass
-    return project.name
+    return get_book_title(project, default=project.name)
 
 
 def active_lane_count(project: Path) -> int:
@@ -76,7 +70,7 @@ def active_lane_count(project: Path) -> int:
             errors="replace",
             check=False,
         )
-    except Exception:
+    except Exception as exc:
         return 0
     count = 0
     for line in result.stdout.splitlines():
@@ -210,7 +204,7 @@ def main() -> int:
         try:
             if lock_file.read_text(encoding="utf-8").strip() == str(os.getpid()):
                 lock_file.unlink(missing_ok=True)
-        except Exception:
+        except Exception as exc:
             pass
 
 

@@ -14,7 +14,7 @@ import os
 import time
 from pathlib import Path
 
-from core.novel_config import load_config, resolve_project_dir
+from core.novel_config import get_book_title, load_config, resolve_project_dir
 from core.push_notifier import push_progress, story_flow_audit_note
 from core.workflow_state import aggregate_review_scores, outline_completed_count, scan_chapter_status
 
@@ -120,15 +120,7 @@ def estimate_remaining_time(project: Path, total: int, final_count: int) -> str:
 
 def _get_book_title():
     """获取书名，从 world.json 读取"""
-    world_file = NOVELS_DIR / "world.json"
-    if world_file.exists():
-        try:
-            with open(world_file, "r", encoding="utf-8") as f:
-                world = json.load(f)
-            return world.get("title", NOVELS_DIR.name)
-        except Exception:
-            pass
-    return NOVELS_DIR.name
+    return get_book_title(NOVELS_DIR, default=NOVELS_DIR.name)
 
 
 def main():

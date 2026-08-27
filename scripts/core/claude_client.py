@@ -26,7 +26,7 @@ def _load_kimi_credentials():
         base_url = env.get("ANTHROPIC_BASE_URL", "")
         model = cfg.get("model", "opus[1m]")
         return token, base_url, model
-    except Exception:
+    except Exception as exc:
         return None, None, None
 
 
@@ -47,7 +47,7 @@ def _get_kimi_client():
             base_url=_KIMI_BASE_URL,
         )
         return _kimi_client
-    except Exception:
+    except Exception as exc:
         return None
 
 

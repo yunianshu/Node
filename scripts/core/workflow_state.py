@@ -104,7 +104,7 @@ def list_outline_chapters(base_dir: Path) -> list[dict]:
     for chapter_file in sorted(outline_dir(base_dir).glob("chapter_*.json")):
         try:
             data = json.loads(chapter_file.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
             continue
         if isinstance(data.get("chapter_number"), int):
             results.append(data)
@@ -118,7 +118,7 @@ def outline_exists(base_dir: Path, chapter: int) -> bool:
         return False
     try:
         data = json.loads(chapter_file.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
         return False
     return data.get("chapter_number") == chapter
 
@@ -136,7 +136,7 @@ def load_outline_chapter(base_dir: Path, chapter: int) -> dict:
     if chapter_file.exists():
         try:
             return json.loads(chapter_file.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
             return {}
     return {}
 
@@ -313,7 +313,7 @@ def read_text_length(path: Path) -> tuple[bool, int, bool]:
         return False, 0, False
     try:
         text = path.read_text(encoding="utf-8", errors="ignore")
-    except Exception:
+    except Exception as exc:
         return True, 0, False
     length, _, ok, _ = analyze_chapter_text(text)
     return True, length, ok
@@ -337,7 +337,7 @@ def load_text_quality(path: Path, rules: dict | None = None) -> tuple[bool, int,
         return False, 0, "missing", False, ["missing"]
     try:
         text = path.read_text(encoding="utf-8", errors="ignore")
-    except Exception:
+    except Exception as exc:
         return True, 0, "hard_fail", False, ["read_error"]
     length, grade, ok, issues = analyze_chapter_text(text, rules=rules)
     return True, length, grade, ok, issues
@@ -348,7 +348,7 @@ def load_review_status(path: Path, min_score: float = 8.5) -> tuple[bool, str, f
         return False, "missing", None, False
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
         return True, "invalid_json", None, False
 
     status = data.get("status", "")
@@ -371,7 +371,7 @@ def load_outline_review_status(
         return False, "missing", None, False
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
         return True, "invalid_json", None, False
 
     status = data.get("status", "")
@@ -532,7 +532,7 @@ def scan_chapter_status(base_dir: Path, start: int, end: int, use_cache: bool = 
     cache_file = status_cache_path(base_dir)
     try:
         cache = json.loads(cache_file.read_text(encoding="utf-8")) if cache_file.exists() else {"chapters": {}}
-    except Exception:
+    except Exception as exc:
         cache = {"chapters": {}}
     chapters = cache.setdefault("chapters", {})
     statuses: dict[int, ChapterStatus] = {}

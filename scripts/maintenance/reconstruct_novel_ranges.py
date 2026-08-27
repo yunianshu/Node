@@ -134,7 +134,7 @@ def range_outlines_ok(project: Path, start: int, end: int, min_score: float) -> 
         try:
             data = json.loads(review.read_text(encoding="utf-8"))
             score = float(data.get("overall_score", 0))
-        except Exception:
+        except Exception as exc:
             return False
         if data.get("status") != "completed" or data.get("verdict") in {"需修改", "需重写"} or score < min_score:
             return False
@@ -188,7 +188,7 @@ def main() -> int:
         try:
             state.update(json.loads(state_path.read_text(encoding="utf-8")))
             state["status"] = "running"
-        except Exception:
+        except Exception as exc:
             pass
     atomic_json(state_path, state)
 

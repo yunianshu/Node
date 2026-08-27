@@ -191,7 +191,7 @@ def _load_progress(project_dir: Path) -> dict:
         try:
             with open(progress_file, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception:
+        except Exception as exc:
             pass
     return {}
 
@@ -202,7 +202,7 @@ def _load_world_title(project_dir: Path) -> str:
         try:
             with open(world_file, "r", encoding="utf-8") as f:
                 return json.load(f).get("title", "本小说")
-        except Exception:
+        except Exception as exc:
             pass
     return "本小说"
 
@@ -228,7 +228,7 @@ def _latest_log_lines(project_dir: Path, n: int = 50) -> list[str]:
         with open(logs[0], "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
         return [line.rstrip() for line in lines[-n:]]
-    except Exception:
+    except Exception as exc:
         return []
 
 
@@ -253,7 +253,7 @@ def build_state(project_dir: Path, total: int) -> dict:
                     "score": float(score),
                     "verdict": s.review_status or "",
                 })
-            except Exception:
+            except Exception as exc:
                 pass
     recent_scores.sort(key=lambda x: x["chapter"], reverse=True)
 
@@ -266,7 +266,7 @@ def build_state(project_dir: Path, total: int) -> dict:
         ts = progress.get("last_update_time")
         if ts:
             pass
-    except Exception:
+    except Exception as exc:
         pass
 
     return {

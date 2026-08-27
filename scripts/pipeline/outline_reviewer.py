@@ -39,7 +39,7 @@ from core.outline_quality_gate import (
     detect_cast_violations,
     detect_scene_density_issues,
 )
-from core.json_repair import fix_inner_quotes, fix_truncated_json
+from core.json_repair import fix_inner_quotes, fix_truncated_json, parse_score as _parse_score, strip_json_markdown as _strip_json_markdown
 
 configure_stdio()
 
@@ -302,7 +302,7 @@ def review_outline(
                     f"[OutlineReviewer] 第{chapter_number}章现有审查未达门槛"
                     f"（status={status}, score={score}, min={min_score:g}），重新审查"
                 )
-        except Exception:
+        except Exception as exc:
             pass
 
     outline = load_json(outline_file)
@@ -576,30 +576,6 @@ def review_outline(
             json.dump(review_data, f, ensure_ascii=False, indent=2)
         return review_data
 
-    def _parse_score(val):
-        if isinstance(val, (int, float)):
-            return float(val)
-        if isinstance(val, str):
-            val = val.strip()
-            if "/" in val:
-                num = val.split("/")[0].strip()
-                try:
-                    return float(num)
-                except ValueError:
-                    pass
-            try:
-                return float(val)
-            except ValueError:
-                pass
-        return val
-
-    def _strip_json_markdown(text: str) -> str:
-        cleaned = text.strip()
-        if "```json" in cleaned:
-            return cleaned.split("```json", 1)[1].split("```", 1)[0].strip()
-        if "```" in cleaned:
-            return cleaned.split("```", 1)[1].split("```", 1)[0].strip()
-        return cleaned
 
     required_gates = (
         "core_desire",
@@ -651,7 +627,7 @@ def review_outline(
             for variant in (scores_obj, fix_inner_quotes(scores_obj), fix_truncated_json(scores_obj)):
                 try:
                     scores = json.loads(variant)
-                except Exception:
+                except Exception as exc:
                     continue
                 if isinstance(scores, dict):
                     return scores
@@ -703,7 +679,7 @@ def review_outline(
             for variant in (gate_obj, fix_inner_quotes(gate_obj)):
                 try:
                     gate_data = json.loads(variant)
-                except Exception:
+                except Exception as exc:
                     continue
                 if isinstance(gate_data, dict):
                     design_gates[gate_name] = gate_data

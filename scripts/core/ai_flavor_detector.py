@@ -22,12 +22,12 @@ def load_lexicon(project: Path | None = None) -> dict:
         if override.exists():
             try:
                 return json.loads(override.read_text(encoding="utf-8"))
-            except Exception:
+            except Exception as exc:
                 pass
     if DEFAULT_LEXICON.exists():
         try:
             return json.loads(DEFAULT_LEXICON.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
             return {}
     return {}
 

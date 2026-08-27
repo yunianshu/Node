@@ -103,7 +103,7 @@ def get_mmx_quota() -> dict | None:
                 return entry
         LOGGER.error("general model quota not found in mmx output")
         return None
-    except Exception:
+    except Exception as exc:
         LOGGER.exception("failed to fetch mmx quota")
         return None
 
@@ -126,8 +126,7 @@ def restart_coordinator() -> None:
         "--end",
         "500",
         "--skip-planner",
-        "--outline-first",
-        "--force-outline-book-review",
+
     ]
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     COORDINATOR_STDOUT.touch(exist_ok=True)
@@ -146,7 +145,7 @@ def restart_coordinator() -> None:
             COORDINATOR_STDOUT,
             COORDINATOR_STDERR,
         )
-    except Exception:
+    except Exception as exc:
         LOGGER.exception("failed to restart coordinator")
 
 
@@ -179,7 +178,7 @@ def main() -> None:
             time.sleep(INTERVAL_SECONDS)
     except KeyboardInterrupt:
         LOGGER.info("watchdog stopped by user (KeyboardInterrupt)")
-    except Exception:
+    except Exception as exc:
         LOGGER.exception("watchdog crashed")
         raise
 

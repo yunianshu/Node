@@ -73,14 +73,14 @@ def powershell_json(script: str) -> list[dict]:
             errors="replace",
             check=False,
         )
-    except Exception:
+    except Exception as exc:
         return []
     output = result.stdout.strip()
     if not output:
         return []
     try:
         data = json.loads(output)
-    except Exception:
+    except Exception as exc:
         return []
     if isinstance(data, list):
         return [item for item in data if isinstance(item, dict)]
@@ -129,7 +129,7 @@ def read_tail(path: Path, limit: int = 80) -> list[str]:
         return []
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except Exception:
+    except Exception as exc:
         return []
     return lines[-limit:]
 
@@ -153,7 +153,7 @@ def load_state(project: Path) -> WatchdogState:
         return WatchdogState(last_error_signals=[])
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
         return WatchdogState(last_error_signals=[])
     return WatchdogState(
         last_signature=str(data.get("last_signature", "")),
@@ -191,7 +191,7 @@ def progress_signature(project: Path, config: dict) -> tuple[str, dict]:
     if progress_file.exists():
         try:
             progress = json.loads(progress_file.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
             progress = {}
     counts = count_statuses(project, total)
     payload = {
@@ -216,7 +216,7 @@ def lower_worker_counts(project: Path, reason: str) -> bool:
         return False
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
         return False
 
     changed = False
@@ -263,7 +263,7 @@ def start_coordinator(project: Path) -> subprocess.Popen | None:
         flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
         print(f"$ {' '.join(cmd)}")
         return subprocess.Popen(cmd, cwd=str(Path.cwd()), creationflags=flags)
-    except Exception:
+    except Exception as exc:
         return None
 
 
@@ -278,7 +278,7 @@ def stop_process(pid: int) -> bool:
             check=False,
         )
         return result.returncode == 0
-    except Exception:
+    except Exception as exc:
         return False
 
 

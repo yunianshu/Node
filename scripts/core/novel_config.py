@@ -15,7 +15,7 @@ from pathlib import Path
 DEFAULT_CONFIG = {
     "total_chapters": 2000,
     "model": "MiniMax-M3",
-    "mmx_path": "C:/Users/59290/AppData/Roaming/npm/node_modules/mmx-cli/dist/mmx.mjs",
+    "mmx_path": "",
     "webhook_url": "",
     "api_qps": 5.0,
     "review_ai": {
@@ -53,24 +53,7 @@ DEFAULT_CONFIG = {
         "recent_chapters": 12,
         "max_prompt_chars": 7000,
     },
-    "outline_book_reviewer": {
-        "enabled": False,
-        "required_before_draft": False,
-        "min_score": 9.0,
-        "segment_size": 25,
-        "volume_size": 100,
-        "workers": 3,
-        "max_tokens": 6144,
-        "temperature": 0.1,
-        "retries": 2,
-        "retry_delay": 5.0,
-        "timeout_seconds": 300,
-        "semantic_retries": 1,
-        "review_rounds": 1,
-        "required_votes": 1,
-        "max_repair_rounds": 2,
-        "max_repair_chapters": 80,
-    },
+
     "planner": {
         "max_tokens": 8192,
         "temperature": 0.3,
@@ -261,7 +244,7 @@ def load_origin_materials(project_dir: Path, *, max_files: int = 20, max_chars: 
             break
         try:
             text = path.read_text(encoding="utf-8", errors="ignore").strip()
-        except Exception:
+        except Exception as exc:
             continue
         if not text:
             continue
@@ -445,7 +428,7 @@ def _npm_global_mmx_candidates() -> list[Path]:
             root = result.stdout.strip()
             if result.returncode == 0 and root:
                 candidates.append(Path(root) / "mmx-cli" / "dist" / "mmx.mjs")
-        except Exception:
+        except Exception as exc:
             pass
     for env_name in ("APPDATA", "LOCALAPPDATA"):
         base = os.getenv(env_name)
@@ -627,10 +610,22 @@ def load_config(project_dir: Path) -> dict:
         return config
     try:
         data = json.loads(config_file.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
         config = copy.deepcopy(DEFAULT_CONFIG)
         config["mmx_path"] = resolve_mmx_path(config, project_dir)
         return config
     config = deep_merge(DEFAULT_CONFIG, data)
     config["mmx_path"] = resolve_mmx_path(config, project_dir)
     return config
+
+
+def get_book_title(project_dir: Path, *, default: str = "未命名小说") -> str:
+    """读取 world.json 中的书名，失败时返回 default。"""
+    world_file = Path(project_dir) / "world.json"
+    if not world_file.exists():
+        return default
+    try:
+        world = json.loads(world_file.read_text(encoding="utf-8"))
+        return str(world.get("title") or default)
+    except Exception as exc:
+        return default

@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
+from core.json_repair import strip_json_markdown as _strip_json_markdown
 from core.novel_config import load_config, load_origin_materials, resolve_project_dir
 from core.outline_quality_gate import clean_char_name
 
@@ -105,12 +106,12 @@ def _parse_json_response(content: str) -> dict | None:
             fix_truncated_json(text),
             fix_truncated_json(fix_inner_quotes(text)),
         ])
-    except Exception:
+    except Exception as exc:
         pass
     for variant in variants:
         try:
             value = json.loads(variant)
-        except Exception:
+        except Exception as exc:
             continue
         if isinstance(value, dict):
             return value
@@ -651,13 +652,6 @@ def generate_characters() -> bool:
     print(f"[Planner] 角色档案已保存到 {CHARACTERS_FILE}")
     return True
 
-
-def _strip_json_markdown(content: str) -> str:
-    if "```json" in content:
-        return content.split("```json", 1)[1].split("```", 1)[0].strip()
-    if "```" in content:
-        return content.split("```", 1)[1].split("```", 1)[0].strip()
-    return content.strip()
 
 
 def _default_media_prompts(world: dict, characters: dict) -> dict:

@@ -98,3 +98,33 @@ def fix_truncated_json(text: str) -> str:
         return text[:last_valid_end]
     return text
 
+
+def strip_json_markdown(content: str) -> str:
+    """剥离 ```json ... ``` 或 ``` ... ``` 包裹。"""
+    if not content:
+        return content
+    if "```json" in content:
+        return content.split("```json", 1)[1].split("```", 1)[0].strip()
+    if "```" in content:
+        return content.split("```", 1)[1].split("```", 1)[0].strip()
+    return content.strip()
+
+
+def parse_score(val):
+    """将评分统一转为 float；无法转换时原样返回。"""
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, str):
+        val = val.strip()
+        if "/" in val:
+            num = val.split("/")[0].strip()
+            try:
+                return float(num)
+            except ValueError:
+                pass
+        try:
+            return float(val)
+        except ValueError:
+            pass
+    return val
+

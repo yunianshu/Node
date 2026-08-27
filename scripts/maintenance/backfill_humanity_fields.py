@@ -262,8 +262,7 @@ def _recommend_action(config: dict, presence: dict) -> tuple[str, str]:
     text_artifacts = sum(presence[key]["count"] for key in ("draft", "review", "final"))
     backfill_cfg = config.get("backfill") if isinstance(config.get("backfill"), dict) else {}
     outline_first = bool(config.get("outline_first"))
-    if isinstance(config.get("outline_book_reviewer"), dict):
-        outline_first = outline_first or bool(config["outline_book_reviewer"].get("required_before_draft"))
+
     if text_artifacts:
         return (
             "rerun_quality_gate",
@@ -514,8 +513,7 @@ def main() -> int:
         "outlines": outlines_result,
         "suggested_commands": _suggested_commands(project, outlines_result),
         "recommendation_context": {
-            "outline_first": bool(config.get("outline_first"))
-            or bool((config.get("outline_book_reviewer") or {}).get("required_before_draft")),
+            "outline_first": bool(config.get("outline_first")),
             "allowed_run_actions": sorted(allowed_run_actions),
             "conditional_rerun_quality_gate_allowed": (
                 "rerun_quality_gate" in allowed_run_actions

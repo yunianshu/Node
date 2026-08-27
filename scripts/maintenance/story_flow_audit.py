@@ -35,7 +35,7 @@ def load_json(path: Path) -> Any:
         return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
         return None
 
 

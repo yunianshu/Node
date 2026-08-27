@@ -88,7 +88,7 @@ def wait_for_rate_limit(state_dir: Path, qps: float) -> None:
             try:
                 data = json.loads(state_file.read_text(encoding="utf-8"))
                 last_call = float(data.get("last_call", 0.0))
-            except Exception:
+            except Exception as exc:
                 last_call = 0.0
         wait = compute_wait_seconds(last_call, time.time(), qps)
         if wait > 0:
@@ -158,7 +158,7 @@ def call_mmx(
                 "--stream=false",
                 "--quiet",
             ]
-        except Exception:
+        except Exception as exc:
             # 出错就回退到命令行方式
             use_file = False
             tmp_path = None
@@ -202,7 +202,7 @@ def call_mmx(
                     if tmp_path is not None:
                         try:
                             tmp_path.unlink()
-                        except Exception:
+                        except Exception as exc:
                             pass
                     return content
                 # MiniMax 返回空内容（凌晨维护）→ 视为失败，进入重试/回退
@@ -216,7 +216,7 @@ def call_mmx(
     if tmp_path is not None:
         try:
             tmp_path.unlink()
-        except Exception:
+        except Exception as exc:
             pass
 
     # G17: MiniMax 内部模型级别回退——highspeed 失败时用 pro 模型重试
@@ -235,7 +235,7 @@ def call_mmx(
                         if log_dir:
                             write_raw_response(log_dir, raw_name + "_fallback", raw_fb)
                         return content_fb
-        except Exception:
+        except Exception as exc:
             pass
 
     # MiniMax 失败时自动回退到 Claude CLI（凌晨维护期间可用）
@@ -248,7 +248,7 @@ def call_mmx(
             timeout=min(timeout or 120, 120),
             log_dir=log_dir, raw_name=raw_name,
         )
-    except Exception:
+    except Exception as exc:
         pass
 
     raise MmxError(last_error or "MiniMax 和 Claude 均不可用")

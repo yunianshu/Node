@@ -46,7 +46,7 @@ def _parse_json(raw: str) -> dict:
             data = json.loads(cand)
             if isinstance(data, dict):
                 return data
-        except Exception:
+        except Exception as exc:
             continue
     return {"status": "parse_error", "raw_response": raw[:3000]}
 
@@ -115,7 +115,7 @@ def apply_patch(project: Path, patch: dict) -> bool:
         return False
     try:
         outline = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
         return False
     additions = patch.get("key_events_addition", [])
     if isinstance(additions, list):
@@ -152,7 +152,7 @@ def patch_outline_from_thread(project: Path, config: dict, thread: dict,
                            resolution=patch.get("resolution_summary", ""),
                            resolved_in_outline=True)
             save_ledger(project, ledger)
-        except Exception:
+        except Exception as exc:
             pass
     return True
 

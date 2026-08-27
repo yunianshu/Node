@@ -65,14 +65,14 @@ def powershell_json(script: str) -> list[dict]:
             ["powershell", "-NoProfile", "-Command", script],
             capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
         )
-    except Exception:
+    except Exception as exc:
         return []
     output = result.stdout.strip()
     if not output:
         return []
     try:
         data = json.loads(output)
-    except Exception:
+    except Exception as exc:
         return []
     if isinstance(data, list):
         return [item for item in data if isinstance(item, dict)]
@@ -119,7 +119,7 @@ def read_tail(path: Path, limit: int = 40) -> list[str]:
         return []
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except Exception:
+    except Exception as exc:
         return []
     return lines[-limit:]
 
@@ -143,7 +143,7 @@ def load_state(project: Path) -> WatchdogState:
         return WatchdogState(last_error_signals=[])
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
         return WatchdogState(last_error_signals=[])
     return WatchdogState(
         last_final_count=int(data.get("last_final_count", -1)),
@@ -166,7 +166,7 @@ def stop_process(pid: int) -> bool:
             capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
         )
         return result.returncode == 0
-    except Exception:
+    except Exception as exc:
         return False
 
 
@@ -175,7 +175,7 @@ def kill_stray_node() -> None:
     try:
         subprocess.run(["taskkill", "/F", "/IM", "node.exe"],
                        capture_output=True, timeout=15)
-    except Exception:
+    except Exception as exc:
         pass
 
 

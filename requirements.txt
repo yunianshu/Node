@@ -1,0 +1,5 @@
+# Python 3.12+
+# 本项目仅使用 Python 标准库（json/os/subprocess/pathlib/argparse/threading/re/copy/sys）
+# 通过 subprocess 调用 node mmx-cli，无需第三方 Python 依赖。
+# 开发/测试可选（仅运行测试套件时安装）：
+pytest>=8.0

@@ -19,6 +19,7 @@ import re
 import time
 
 from core.mmx_client import MmxError, call_mmx as call_mmx_client
+from core.json_repair import strip_json_markdown as _strip_json_markdown
 from core.novel_config import build_origin_fact_directive, load_config, load_origin_materials, resolve_project_dir
 from core.outline_constraints import format_outline_constraints
 from core.outline_memory import build_outline_memory, format_outline_memory
@@ -89,7 +90,7 @@ def _ledger_resolve_directive(batch_start: int) -> str:
     try:
         ledger = load_ledger(NOVELS_DIR)
         due = ledger_dangling(ledger, as_of_chapter=batch_start)
-    except Exception:
+    except Exception as exc:
         return ""
     if not due:
         return ""
@@ -110,7 +111,7 @@ def _update_ledger_from_new_chapters(chapters: list) -> None:
         return
     try:
         ledger = load_ledger(NOVELS_DIR)
-    except Exception:
+    except Exception as exc:
         return
     tc = int(CONFIG.get("total_chapters", 0)) if CONFIG else 0
     if tc:
@@ -143,7 +144,7 @@ def _load_json(path: Path) -> dict:
         return {}
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
         return {}
 
 
@@ -253,13 +254,6 @@ def _story_architecture_context(
     }
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
-
-def _strip_json_markdown(content: str) -> str:
-    if "```json" in content:
-        return content.split("```json", 1)[1].split("```", 1)[0].strip()
-    if "```" in content:
-        return content.split("```", 1)[1].split("```", 1)[0].strip()
-    return content.strip()
 
 
 def _fix_inner_quotes(text: str) -> str:
@@ -387,7 +381,7 @@ def _safe_parse_outline(text: str, depth: int = 0) -> dict | None:
             parsed = coerce_outline(json.loads(variant))
             if parsed is not None:
                 return parsed
-        except Exception:
+        except Exception as exc:
             pass
     # 3. 截断到最后一个完整的 }
     for end_marker in ('"\n    }\n  ]\n}', '"\n    }\n  ]', '"\n    }', '"\n}'):
@@ -406,7 +400,7 @@ def _safe_parse_outline(text: str, depth: int = 0) -> dict | None:
                     parsed = coerce_outline(json.loads(variant))
                     if parsed is not None:
                         return parsed
-                except Exception:
+                except Exception as exc:
                     pass
     return None
 
@@ -1616,7 +1610,7 @@ def _find_duplicate_candidate(candidate_file: Path, chapter_data: dict) -> Path 
             continue
         try:
             existing = _load_json(path)
-        except Exception:
+        except Exception as exc:
             continue
         ex_summary, ex_events = _chapter_signature(existing)
         # summary 或 key_events 任一高度相似即判雷同
@@ -2341,12 +2335,12 @@ story_beat 必须取枚举值之一：opening_image/theme_stated/setup/catalyst/
                     try:
                         from core.json_repair import repair_latin1_gbk_mojibake
                         stripped = repair_latin1_gbk_mojibake(stripped)
-                    except Exception:
+                    except Exception as exc:
                         pass
                     try:
                         from core.json_repair import fix_truncated_json
                         stripped = fix_truncated_json(stripped)
-                    except Exception:
+                    except Exception as exc:
                         pass
                     batch_outline = _safe_parse_outline(stripped)
                     if batch_outline is None:
