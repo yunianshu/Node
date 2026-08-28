@@ -22,6 +22,7 @@ from pathlib import Path
 
 from core.novel_config import (
     configure_stdio,
+    extract_origin_fact_terms,
     load_config,
     load_origin_materials,
     resolve_project_dir,
