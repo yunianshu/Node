@@ -26,3 +26,7 @@ scratch/
 /reader-web/node_modules
 /.codegraph/
 /.pytest_cache/
+
+# 本地导入补丁与交付包，保留原文件但不重复纳入源码。
+/Node-narrative-fix/
+/Node-pipeline-fix.patch
