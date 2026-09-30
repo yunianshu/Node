@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Dict, Iterable
 
 from core.novel_config import load_config
+from core.review_quality import review_quality_settings, read_manuscript, review_matches_text
+from core.ai_flavor_detector import check_text_ai_gate
 
 MIN_CHAPTER_WORDS = 5000
 MAX_CHAPTER_WORDS = 12000
@@ -36,6 +38,11 @@ COMPLETED_REVIEW_REQUIRED_FIELDS = {
     "verdict": str,
     "scores": dict,
     "summary": str,
+    "strengths": list,
+    "weaknesses": list,
+    "suggestions": list,
+    "continuity_issues": list,
+    "edits": list,
 }
 DEFAULT_QUALITY_RULES = {
     "min_chapter_words": MIN_CHAPTER_WORDS,
@@ -351,6 +358,8 @@ def load_review_status(path: Path, min_score: float = 8.5) -> tuple[bool, str, f
     except Exception as exc:
         return True, "invalid_json", None, False
 
+    if not isinstance(data, dict):
+        return True, "invalid_object", None, False
     status = data.get("status", "")
     score = data.get("overall_score")
     score_value = score if isinstance(score, (int, float)) else None
@@ -358,7 +367,16 @@ def load_review_status(path: Path, min_score: float = 8.5) -> tuple[bool, str, f
     schema_errors = validate_review_schema(data)
     if schema_errors:
         return True, "schema_" + schema_errors[0], score_value, False
-    ok = status == "completed" and verdict not in {"需重写", "需修改"} and score_value is not None and score_value >= min_score
+    quality_gate = data.get("quality_gate")
+    quality_gate_ok = isinstance(quality_gate, dict) and quality_gate.get("passed") is True
+    if not quality_gate_ok:
+        return True, "quality_gate_failed", score_value, False
+    ok = (
+        status == "completed"
+        and verdict == "通过"
+        and score_value is not None
+        and score_value >= min_score
+    )
     return True, status or "unknown", score_value, ok
 
 
@@ -417,6 +435,8 @@ def _same_text_file(left: Path, right: Path) -> bool:
 
 
 def validate_review_schema(data: dict) -> list[str]:
+    if not isinstance(data, dict):
+        return ["invalid_object"]
     if not isinstance(data.get("status"), str) or not data.get("status"):
         return ["missing_status"]
     if data.get("status") != "completed":
@@ -428,6 +448,16 @@ def validate_review_schema(data: dict) -> list[str]:
             errors.append(f"missing_{field}")
         elif not isinstance(value, expected_type):
             errors.append(f"invalid_{field}")
+    import math
+    score = data.get("overall_score")
+    if type(score) not in (int, float) or not math.isfinite(score) or not 0 <= score <= 10:
+        errors.append("invalid_score")
+    if data.get("verdict") not in {"通过", "需修改", "需重写"}:
+        errors.append("invalid_verdict")
+    if not isinstance(data.get("summary"), str) or not data["summary"].strip():
+        errors.append("missing_summary")
+    if data.get("review_contract_errors"):
+        errors.append("contract_errors")
     return errors
 
 
@@ -440,7 +470,7 @@ def scan_one_chapter(base_dir: Path, chapter: int, rules: dict | None = None) ->
     outline_review_file = outline_review_path(base_dir, chapter)
     config = load_config(base_dir)
     outline_min_score = float(config.get("outline_reviewer", {}).get("min_score", 8.5))
-    review_min_score = float(config.get("reviewer", {}).get("min_score", 8.5))
+    review_min_score = review_quality_settings(config)["review_min_score"]
 
     draft_exists, draft_words, draft_grade, draft_ok, draft_issues = load_text_quality(draft_file, rules)
     final_exists, final_words, final_grade, final_length_ok, final_issues = load_text_quality(final_file, rules)
@@ -454,7 +484,10 @@ def scan_one_chapter(base_dir: Path, chapter: int, rules: dict | None = None) ->
         outline_min_score,
         require_quality_gate=require_outline_quality_gate,
     )
-    if review_ok and _is_older_than(review_file, draft_file):
+    manuscript_file = draft_file if draft_exists else final_file
+    if review_ok and (not manuscript_file.exists() or not review_matches_text(
+        json.loads(review_file.read_text(encoding="utf-8")), read_manuscript(manuscript_file)
+    )):
         review_status = "stale_review"
         review_ok = False
     if outline_review_ok and _is_older_than(outline_review_file, outline_file):
@@ -463,6 +496,9 @@ def scan_one_chapter(base_dir: Path, chapter: int, rules: dict | None = None) ->
 
     final_matches_draft = (not draft_exists) or _same_text_file(final_file, draft_file)
     final_ok = final_exists and final_length_ok and review_ok and final_matches_draft
+    if final_ok and not check_text_ai_gate(read_manuscript(final_file), project=base_dir)["passed"]:
+        final_ok = False
+        final_issues.append("ai_gate_failed")
 
     failed_reason = ""
     if draft_exists and not draft_ok:

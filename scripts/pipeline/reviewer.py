@@ -30,7 +30,9 @@ from core.novel_config import (
 )
 from core.json_repair import parse_score as _parse_score, strip_json_markdown as _strip_json_markdown
 from core.review_ai_client import ReviewAIError, call_review_ai
-from core.ai_flavor_detector import detect_ai_flavor
+from core.ai_flavor_detector import detect_ai_flavor, evaluate_ai_gate
+from core.review_quality import (evaluate_review_quality_gate, review_quality_settings,
+                                content_sha256, read_manuscript, review_matches_text)
 # 微信推送已禁用，改由 coordinator 统一推送进度
 # from core.push_notifier import push_stage_complete
 from core.workflow_state import (
@@ -174,7 +176,7 @@ def detect_origin_fact_reference(chapter_content: str, origin_materials: str) ->
 def detect_human_warmth(chapter_content: str, chapter_outline: dict) -> dict:
     """本地启发式检查：正文是否兑现了 human_anchor 与基本人情味元素。
 
-    这是保守门禁，不评价文笔，只挡明显"只有事件没有人"的章节。
+    仅供诊断。关键词命中不能证明人情味，未命中也不能作为拒绝理由。
     """
     text = chapter_content or ""
     anchor = str(chapter_outline.get("human_anchor", "")).strip() if isinstance(chapter_outline, dict) else ""
@@ -326,11 +328,15 @@ def detect_relationship_obligation(chapter_content: str, chapter_number: int) ->
     }
 
 
-def detect_scene_realization(chapter_content: str, chapter_outline: dict) -> dict:
+def detect_scene_realization(
+    chapter_content: str,
+    chapter_outline: dict,
+    *,
+    min_rate: float = 0.75,
+) -> dict:
     """本地检测正文是否兑现大纲 scenes 的感官锚点、潜台词和出口钩子。
 
-    非硬门禁：用 bigram 软匹配避免误杀同义改写。scene_realization_rate < 0.5 时
-    由上层降 human_warmth 分并触发重写轮深化。
+    仅供诊断，不按该比例降分或触发改写。全章关键词匹配不代表逐场语义兑现。
     """
     if not isinstance(chapter_outline, dict):
         return {"required": False, "rate": None, "scenes": []}
@@ -375,7 +381,8 @@ def detect_scene_realization(chapter_content: str, chapter_outline: dict) -> dic
         "realized_count": realized_count,
         "total_scenes": len(scene_results),
         "scenes": scene_results,
-        "needs_attention": rate < 0.5,
+        "min_rate": min_rate,
+        "needs_attention": rate < min_rate,
     }
 
 
@@ -461,15 +468,16 @@ def _partial_review_from_raw(chapter_number: int, content: str, local_analysis: 
     }
 
 
-def _single_item_list(value) -> list:
+def _limited_item_list(value, limit: int) -> list:
     if not isinstance(value, list):
         return []
-    return value[:1]
+    return [item for item in value if item is not None][:limit]
 
 
-def _normalize_single_action_review(review_data: dict) -> None:
-    for field in ("strengths", "weaknesses", "suggestions", "continuity_issues", "edits"):
-        review_data[field] = _single_item_list(review_data.get(field))
+def _normalize_review_tasks(review_data: dict, max_repair_tasks: int) -> None:
+    review_data["strengths"] = _limited_item_list(review_data.get("strengths"), 2)
+    for field in ("weaknesses", "suggestions", "continuity_issues", "edits"):
+        review_data[field] = _limited_item_list(review_data.get(field), max_repair_tasks)
     primary_issue = ""
     for field in ("weaknesses", "continuity_issues", "suggestions"):
         values = review_data.get(field)
@@ -481,6 +489,24 @@ def _normalize_single_action_review(review_data: dict) -> None:
         review_data["primary_issue"] = primary_issue
     if isinstance(review_data.get("suggestions"), list) and review_data["suggestions"]:
         review_data["primary_suggestion"] = str(review_data["suggestions"][0]).strip()
+
+
+def _build_repair_tasks(review_data: dict, gate_reasons: list[str], limit: int) -> list[str]:
+    """将审稿意见和确定性门禁原因整理为 Writer 可执行的有限任务集。"""
+    tasks: list[str] = []
+    for field in ("suggestions", "continuity_issues", "weaknesses"):
+        values = review_data.get(field)
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            text = str(value or "").strip()
+            if text and text not in tasks:
+                tasks.append(text)
+    for reason in gate_reasons:
+        text = str(reason or "").strip()
+        if text and text not in tasks:
+            tasks.append(text)
+    return tasks[:limit]
 
 
 def _character_presence_issues(
@@ -573,6 +599,7 @@ def review_chapter(
     review_file_override: str | Path | None = None,
     _semantic_attempt: int = 0,
     _semantic_errors: list[str] | None = None,
+    force: bool = False,
 ) -> dict:
     chapter_file = Path(chapter_file_override) if chapter_file_override else CHAPTERS_DIR / f"chapter_{chapter_number:04d}.txt"
     review_file = Path(review_file_override) if review_file_override else REVIEWS_DIR / f"chapter_{chapter_number:04d}_review.json"
@@ -581,19 +608,27 @@ def review_chapter(
         log(f"[Reviewer] 第{chapter_number}章文件不存在")
         return {"status": "no_file"}
 
-    if review_file.exists():
-        configured_min_score = float(CONFIG.get("reviewer", {}).get("min_score", 8.5))
+    chapter_content = read_manuscript(chapter_file)
+    snapshot_sha256 = content_sha256(chapter_content)
+    if review_file.exists() and not force:
+        configured_min_score = review_quality_settings(CONFIG)["review_min_score"]
         _, status, _, ok = load_review_status(review_file, configured_min_score)
-        if ok:
+        cached = load_json(review_file)
+        if (ok and cached.get("chapter_number") == chapter_number
+                and review_matches_text(cached, chapter_content)
+                and evaluate_review_quality_gate(cached, cached.get("local_analysis", {}), CONFIG)["passed"]):
             log(f"[Reviewer] 第{chapter_number}章已有有效审查报告，跳过")
             with open(review_file, "r", encoding="utf-8") as f:
                 return json.load(f)
         log(f"[Reviewer] 第{chapter_number}章审查报告无效（{status}），重新审查")
 
-    with open(chapter_file, "r", encoding="utf-8") as f:
-        chapter_content = f.read()
     local_analysis = analyze_chapter_text(chapter_content)
-    ai_flavor = detect_ai_flavor(chapter_content, project=NOVELS_DIR)
+    try:
+        ai_flavor = detect_ai_flavor(chapter_content, project=NOVELS_DIR)
+    except Exception as exc:
+        ai_flavor = {"error": str(exc)}
+    if not isinstance(ai_flavor, dict):
+        ai_flavor = {"error": "AI检测器未返回有效对象"}
     local_analysis["ai_flavor_detection"] = ai_flavor
 
     chapter_outline = load_outline_chapter(NOVELS_DIR, chapter_number)
@@ -611,14 +646,19 @@ def review_chapter(
     local_analysis["relationship_obligation_detection"] = detect_relationship_obligation(
         chapter_content, chapter_number
     )
+    review_settings = review_quality_settings(CONFIG)
     local_analysis["scene_realization_detection"] = detect_scene_realization(
-        chapter_content, chapter_outline
+        chapter_content,
+        chapter_outline,
+        min_rate=review_settings["scene_realization_min_rate"],
     )
 
-    content_sample = chapter_content[:1500]
-    mid_start = max(0, len(chapter_content) // 2 - 500)
-    content_sample += "\n\n[中间部分...]\n\n" + chapter_content[mid_start:mid_start + 800]
-    content_sample += "\n\n[结尾部分...]\n\n" + chapter_content[-800:]
+    # Evidence must come from the full chapter; samples can hide a setup or payoff.
+    content_sample = chapter_content
+    for key in ("human_warmth_detection", "origin_fact_reference_detection",
+                "relationship_obligation_detection", "scene_realization_detection"):
+        local_analysis[key]["advisory_only"] = True
+    local_analysis["ai_flavor_detection"]["advisory_only"] = False
 
     world = load_json(WORLD_FILE)
     book_title = world.get("title", "本小说")
@@ -638,7 +678,8 @@ def review_chapter(
     genre_text = "\n".join(genre_hints) if genre_hints else "请根据世界观和角色设定判断题材类型。"
 
     quality = CONFIG.get("quality", {})
-    review_min_score = float(CONFIG.get("reviewer", {}).get("min_score", 8.5))
+    review_min_score = review_settings["review_min_score"]
+    max_repair_tasks = review_settings["max_repair_tasks"]
     min_words = int(quality.get("min_chapter_words", 5000))
     max_words = int(quality.get("max_chapter_words", 12000))
     warn_min = int(quality.get("warn_min_chapter_words", min_words - 200))
@@ -650,163 +691,78 @@ def review_chapter(
             "\n## 上次输出无效，本次必须纠正\n"
             "上次缺陷：" + "；".join(_semantic_errors) + "\n"
             "本次必须返回完整 JSON；不得省略 strengths、weaknesses、suggestions、"
-            "continuity_issues、summary、edits。未通过时只给出一条最关键可定位 edits。\n"
+            "continuity_issues、summary、edits。未通过时必须给出可定位的 edits。\n"
         )
 
-    system = f"""你是一位拥有20年经验的资深网络小说编辑，同时也是一位苛刻的"神作猎手"。
-你的任务不是列出所有问题，而是找出当前最阻碍本章达标的唯一问题，并给出唯一一条可执行修改。
-本书是《{book_title}》。
+    system = f"""你是一位中文小说编辑，审查《{book_title}》的正文。
 {genre_text}
 {retry_contract}
+根据本章承担的功能评价因果、人物、语言和阅读体验；日常、过渡、安静收尾都可获得高分。
+不要把悬念密度、反转、打脸、性格反差、潜台词或物象数量当作所有章节的配额。
+评分描述当前文本的完成度，不是 AI 来源概率。保留作者口吻和有意留白。
+10分为完成度极高，9分为完成度高且表达鲜明，8分为基本有效但有具体可改进问题，
+7分及以下须有影响理解、可信度或阅读的实际问题。不得仅因没有强钩子、生活词汇或微表情扣分。
+本地词频、句式、关系和场景匹配均为弱线索；必须读上下文验证，不能直接作为失败理由。
+只指出有文本证据的最关键问题；不存在问题时允许空数组，不为了凑9分虚构不足。
+只输出紧凑的合法 JSON，不要 Markdown。"""
 
-## 【9分神作评分标准】
-- 10分：传世级神作。每一句都在推动剧情或揭示人物，章末钩子让人失眠，读完之后心跳加速，无法停止思考。
-- 9-9.9分：优秀神作。悬念密集，情感冲击强烈，信息新鲜，读完立刻想打开下一章。只存在极小的可改进空间。
-- 8-8.9分：良好但不够惊艳。有可读性，但存在套路化倾向、悬念不足、情感平淡或信息重复等问题。低于{review_min_score}分，必须重写。
-- 7-7.9分：平庸。有明显水文、套路、OOC或逻辑问题，读者很可能中途弃书。
-- 低于7分：不合格，存在严重质量问题。
+    prompt = f"""审查第{chapter_number}章。保持现有评分字段用于报告兼容，但按章节功能理解它们：
+hook_strength 评价结尾是否合适，suspense_density 评价信息安排是否合适，
+payoff_intensity 评价本章的阅读收获；安静的认识变化、后果消化也算收获。
+不适用的维度不应因缺少相应桥段扣分。
 
-【你的审查哲学】
-- 不要给"辛苦分"。写得多、写得顺不等于写得好。
-- 不要放过"还行"——"还行"就是失败的委婉说法。
-- 重点关注：读者读完这章后，会不会立刻想读下一章？如果不会，只指出最关键的一处原因。
-- 如果你给不出9分以上，必须在 weaknesses 中只写一条"距离9分的最大差距"。
-
-输出必须是合法的紧凑JSON，不要使用Markdown代码块，不要输出JSON之外的任何文字。
-审查意见要短而具体，整份JSON尽量控制在1500个中文字符以内。"""
-
-    prompt = f"""请审查以下第{chapter_number}章的内容。
-
-## 章节大纲
+## 本章大纲（核心事件与事实需要遵守，修辞和感官提示允许不同表达）
 {json.dumps(chapter_outline, ensure_ascii=False, indent=2) if chapter_outline else '未找到大纲'}
-
 ## 角色设定
-{json.dumps(characters, ensure_ascii=False, indent=2)[:1000]}
-
-## origin/ 原始参考素材
-{ORIGIN_MATERIALS or "（无）"}
-
-## 章节内容（节选）
+{json.dumps(characters, ensure_ascii=False, indent=2)}
+## origin 原始参考素材
+{ORIGIN_MATERIALS or '（无）'}
+## 正文全文
 {content_sample}
-
-## 章节字数
-{len(chapter_content)}字
-
-## 本地全文检查
+## 本地检查
 {json.dumps(local_analysis, ensure_ascii=False, indent=2)}
 
-请只输出以下JSON格式的审查报告。所有数组都只能有1条，每条不超过80字；edits只能有1条：
+重点检查：人物行为与认知依据、核心事件因果、时间/地点/伤势/资源连续性、
+设定冲突、严重重复和妨碍理解的语句。风格意见须引用具体原文并说明实际阅读影响。
+缺少某个词、某种物件、反转或潜台词不能证明缺少人情味或场景。
+字数范围 {min_words}-{max_words}；角色实际缺失和字数违规属于本地硬检查。
+总分低于 {review_min_score} 或有实际硬伤时给“需修改”，并定位需要修订的补丁；
+达标且无硬伤时给“通过”。修改应解决具体问题，不追求统一的“更生动、更紧张”。
+edits、weaknesses、suggestions、continuity_issues 最多 {max_repair_tasks} 条，strengths 最多两条，可以为空；每条编辑引用原稿唯一的 old/after 锚点。
+
+输出格式：
 {{
   "chapter_number": {chapter_number},
-  "overall_score": "请给出0-10的客观评分。9分意味着'非常想读下一章'，10分意味着'震撼到说不出话'。不要给辛苦分",
-  "verdict": "通过/需修改/需重写。注意：如果 overall_score >= {review_min_score}，verdict 必须写'通过'；只有低于{review_min_score}分才写'需重写'或'需修改'",
+  "overall_score": 8.5,
+  "verdict": "通过/需修改",
   "scores": {{
-    "writing_quality": "文笔流畅度（0-10）",
-    "plot_coherence": "剧情连贯性（0-10）",
-    "character_consistency": "人物一致性（0-10）",
-    "character_voice": "人物辨识度（0-10。遮住角色名字能否认出是谁？主角是否有鲜明性格锋芒、价值取向、标志动作或说话腔调？是否有性格反差让人物立体？不同角色台词是否可分辨？）",
-    "causal_logic": "因果逻辑（0-10。每个转折/破局是否可追溯到前文原因？是否禁止巧合解围？信息传递是否闭环？动机-行为-结果是否自洽？时间/伤情/资源是否连续？）",
-    "scene_description": "场景氛围感（0-10。不是画面多清晰，而是氛围多压迫/诡异/震撼）",
-    "dialogue_quality": "对话质量（0-10。是否有潜台词？是否推动情节？是否避免了解说员式对话？）",
-    "outline_adherence": "大纲遵循度（0-10）",
-    "pacing": "节奏把控（0-10。是否存在平铺直叙超过1500字？中段是否有小高潮？）",
-    "emotional_impact": "情感冲击力（0-10。是否触及角色核心恐惧/欲望？是否有刺点？）",
-    "human_warmth": "烟火气与人情味（0-10。是否有具体生活压力、关系牵挂、潜台词和人的反应？）",
-    "hook_strength": "章末钩子强度（0-10。最后200字是否让人心跳加速、必须读下一章？）",
-    "suspense_density": "悬念密度（0-10。每800-1200字是否有新信息/冲突升级/意外转折？）",
-    "information_freshness": "信息新鲜度（0-10。是否带来至少一个此前从未出现过的新元素？有无重复已知信息？）",
-    "content_richness": "内容丰富度/层次感（0-10。外部事件之外，是否同时推进人物关系、生活压力、秘密代价或世界规则现场化？）",
-    "anti_cliche": "反套路程度（0-10。是否存在标准升级流/打怪流/解谜流模板？是否有意外和不可预测性？）",
-    "payoff_intensity": "爽点与反差强度（0-10。每2000-3000字是否有明确爽点？是否有充分的压抑→爆发反差？打脸/扮猪吃虎是否写到位而非无脑碾压？本章读起来爽不爽、有没有让人拍腿的瞬间？）",
-    "read_desire": "读下去的欲望（0-10。假设你是第一次读的读者，读完这章后有多想立刻打开下一章？）",
-    "ai_flavor": "去AI味程度（0-10。越高越自然。参考 local_analysis.ai_flavor_detection 的本地证据）",
-    "world_consistency": "世界观/设定一致性（0-10。本章涉及的力量体系/势力关系/地理/经济/规则是否与世界观设定自洽？有无设定矛盾或吃书？）"
+    "writing_quality": 8.5, "plot_coherence": 8.5, "character_consistency": 8.5,
+    "character_voice": 8.5, "causal_logic": 8.5, "scene_description": 8.5,
+    "dialogue_quality": 8.5, "outline_adherence": 8.5, "pacing": 8.5,
+    "emotional_impact": 8.5, "human_warmth": 8.5, "hook_strength": 8.5,
+    "suspense_density": 8.5, "information_freshness": 8.5, "content_richness": 8.5,
+    "anti_cliche": 8.5, "payoff_intensity": 8.5, "read_desire": 8.5,
+    "ai_flavor": 8.5, "world_consistency": 8.5
   }},
-  "word_count_check": {{
-    "actual": {len(chapter_content)},
-    "target": {min_words},
-    "status": "达标/偏短/偏长"
-  }},
-  "primary_issue": "当前最关键的唯一问题，80字以内",
-  "primary_suggestion": "针对primary_issue的唯一修改建议，80字以内",
-  "strengths": ["唯一优点，80字以内"],
-  "weaknesses": ["唯一不足，80字以内。如果给分低于9分，必须写出'距离9分的最大差距'"],
-  "suggestions": ["唯一具体修改建议，80字以内"],
-  "continuity_issues": ["唯一连续性问题；没有则空数组"],
-  "summary": "总体评价，80字以内。如果评分低于9分，用一句话回答：'本章最致命的短板是什么？'",
-  "edits": [
-    {{
-      "type": "replace",
-      "old": "正文中需要被替换的原文片段（30-200字，必须精确可定位）",
-      "new": "替换后的文本"
-    }},
-    {{
-      "type": "insert",
-      "after": "原文锚点片段（插入位置）",
-      "text": "要插入的新内容"
-    }},
-    {{
-      "type": "delete",
-      "old": "要删除的原文片段"
-    }}
-  ]
+  "word_count_check": {{"actual": {len(chapter_content)}, "target": {min_words}, "status": "达标/偏短/偏长"}},
+  "primary_issue": "问题或空字符串", "primary_suggestion": "建议或空字符串",
+  "strengths": [], "weaknesses": [], "suggestions": [], "continuity_issues": [],
+  "summary": "基于本章功能的简短评价",
+  "edits": []
 }}
-
-【9分神作核心审查清单】
-请你在给出评分前按以下核心项快速自检；如存在多个问题，只输出最影响通过的一项：
-1. 章末最后200字是否包含一个让人心跳加速的强力钩子（危机升级/信息反转/情感爆点）？
-2. 本章是否有至少一个让读者心头一紧的"刺点"细节（反常动作、未说出口的话、突然沉默）？
-3. 每800-1200字是否至少有一次有效推进（新信息、冲突升级、意外转折、人物关系质变）？
-4. 本章是否给读者带来至少一个"此前从未出现过的新元素"？
-5. 心理描写是否展现了真实的情感波动，而不是代码化/分析化的流水账？
-6. 冲突是否触及角色核心恐惧或核心欲望，而非表层利害计算？
-7. 本章是否有具体生活压力或人际牵挂参与剧情，而不是只有宏大危机和任务推进？
-8. 关键对白是否有潜台词，配角是否有自己的难处、善意、恐惧或小算盘？
-9. 爽点/破局后是否有人产生真实反应、关系变化或亏欠回声？
-10. 本章是否兑现大纲 content_layers，除外部事件外至少还有一层关系、生活压力、秘密代价或世界规则现场化发生真实变化？
-11. 是否出现AI指纹：高频1-3字短句断句、身后/身前/一步又一步式对称收尾、抽象概念堆叠、地图打卡、散文诗式重复段式？
-12. 是否存在形式感压过叙事的问题：多个段落只是同一瞬间的物象变奏，而没有新的行动、阻碍、选择、反应或信息变化？
-13. 本章是否有一个可复述的不可逆动作，让读者看见人物真的“往前挪了半寸”？
-14. 若本章有群像/多线协作，是否完成“从重奏到独步”的转折：群像压力最终收束为主角自己的判断、行动和代价？
-15. 关键证据/信息/信物的传递链是否清楚：谁拿到、如何转交、接收者如何理解、风险在哪里、最后如何使用？
-16. 反派在露出破绽后是否有更冷的应对（规则、程序、威胁、交易、嫁祸），而不是只脸色一变或发怒？
-17. 跨地点/跨时间转场是否有声音、光、脚步、物件、时辰或伤口变化作为桥接，避免读者脑补关键链路？
-18. 反派标志物或贯穿意象是否照出了反派内层、旧事、软肋或破绽，而不是只作为“某人的灯笼/刀/戒指”存在？
-19. 旧签押、旧证词、旧物证逼到反派时，是否有半拍身体裂隙（目光移开、指节发白、喉咙动、张口又咽回、灯柄轻响等）再接冷处理？
-20. 章末关键道具/证据是否在前文有可见预埋动作（制作、拓印、藏匿、转手、瞥见），避免“作者需要它现在出现”？
-21. 墨印/拓片/副本/录音备份等复制型证据是否写出了制作动作，而非结尾突然出现？
-22. 父辈/亲缘/旧痕线索是否在章末关键动作中被微小回扣，而不是中途放下？
-23. 结尾关键动作后是否有1-2个现场微反应形成余韵（反派停顿、旁人吸气、同伴松手、标志物光线变化），而不是动作一落就截断？
-24. 是否有作者旁注式总结（“读者能看见”“这一章往前挪”“权力最怕的是”等）替代现场动作？
-25. 是否存在套路化描写（标准战斗模板、标准解谜流程、配角当解说员）？
-26. 如果我是第一次读这本书的读者，读完这章后会不会立刻想打开下一章？
-27. 本章是否按大纲 scenes 逐场兑现：每个场景的 sensory_anchor（可触摸物象）、subtext_beat（潜台词）、exit_hook（出口钩子）是否在正文中落地？兑现率过低视为内容单薄。
-28. 【人物辨识度】遮住名字能否认出谁在说话、谁在行动？主角是否有"只有他会这么干"的鲜明性格锋芒、价值取向或标志反应？是否有性格反差让人物从扁平变立体？不同角色台词是否可分辨？
-29. 【因果逻辑】每个转折/破局是否可追溯到前文某个人物选择、信息或伏笔？是否禁止"恰好/刚好/凑巧"替主角解决问题？角色掌握的信息是否有合理来源？动机-行为-结果是否自洽？时间/伤情/资源是否连续承接？
-30. 【爽点与反差】本章爽点密度够吗（每2000-3000字一个）？是否有"压抑→爆发"的反差设计？打脸/扮猪吃虎是写到位了（铺垫足、反转有因果）还是无脑碾压？整章读下来有没有让人想拍腿叫好的瞬间，还是只有铺垫和憋屈？
-
-要求：
-1. 评分要冷酷客观。不要给辛苦分，不要给"还行"分。9分意味着"非常想读下一章"，8分意味着"看完了，还行"。
-2. 重点审查：人物辨识度、因果逻辑、爽点与反差、悬念密度、情感冲击、烟火气与人情味、内容丰富度、信息新鲜度、反套路程度、读下去的欲望。这些维度比文笔更重要。**人物辨识度、因果逻辑或爽点与反差任一低于8分，overall_score 不得给到9分及以上；任一低于7分直接判"需修改"。**
-3. 剧情推进是否自然，有无逻辑漏洞或突兀转折
-4. 对话是否有潜台词，是否符合角色身份，是否避免了解说员式长篇大论
-5. 必须给出具体的修改建议，不能泛泛而谈，且只给最关键1条
-6. 如果 origin/ 中存在素材，必须检查正文是否参考并遵守原始素材；与素材冲突需列入 weaknesses 或 continuity_issues
-7. 如低于{review_min_score}分必须标记为"需重写"
-8. 字数不足{warn_min}或超过{warn_max}要标记字数问题
-9. 必须输出合法JSON，不要Markdown，不要长篇解释
-10. **必须输出 edits 数组**：如果 verdict 不是"通过"，只能给出1条最关键、最可定位的 edit ops（replace/insert/delete），用于定点修改而不是全文重写。edit 的 old/after 字段必须引用原文真实片段，长度 30-200 字。
-11. 若 local_analysis.ai_flavor_detection.ai_flavor_score < 7，verdict 不得为"通过"，只挑最严重的一处AI味问题在 edits 中定点重写。
-12. 若 local_analysis.ai_flavor_detection.issues 出现 short_sentence_fragmentation、symmetric_anchor_ending、abstract_concept_pileup、formal_refrain_stagnation、repeated_authorial_judgment、authorial_aside 或 static_lyrical_scene，verdict 不得为"通过"，必须优先定点重写对应段落。
-13. 若 local_analysis.character_presence.absent 非空，verdict 不得为"通过"，只挑最关键缺失角色在 continuity_issues 和 edits 中处理。
-14. 若 local_analysis.human_warmth_detection.passed=false，verdict 不得为"通过"，必须优先修正文中未兑现 human_anchor、缺少生活压力或关系牵挂的问题。
-15. 若 local_analysis.relationship_obligation_detection.required=true 且 passed=false，verdict 不得为"通过"，必须优先修复上一章延续下来的关系任务：让对应人物、压力、潜台词对白、照料/回避/补偿动作和关系结果进入正文。
-16. 若 local_analysis.origin_fact_reference_detection.needs_attention=true，说明正文没有命中 origin/facts 事实素材；这不是单独硬门槛，但应优先在 weaknesses/suggestions 中指出，避免只模仿 style 风格而不遵守事实。
-17. 若 local_analysis.scene_realization_detection.needs_attention=true，verdict 不得为"通过"，必须在 weaknesses/suggestions 中指出哪些 scene 未兑现，并在 edits 中定点补 sensory_anchor 或潜台词对白。"""
+数值仅示意，请独立评分。若需修订，将 edits 填为下列一种：
+{{"type":"replace","old":"精确原文","new":"修正文本"}}，
+{{"type":"insert","after":"精确原文锚点","text":"新增文本"}}，
+{{"type":"delete","old":"精确原文"}}。
+若无法从全文确认问题，不应给出编辑。"""
 
     log(f"[Reviewer] 正在审查第{chapter_number}章...")
     start_time = time.time()
-    content = call_llm(system, prompt, max_tokens=4096, temperature=0.3)
+    try:
+        content = call_llm(system, prompt, max_tokens=4096, temperature=0.3)
+    except Exception as exc:
+        log(f"[Reviewer] 审查调用失败：{exc}")
+        content = ""
     elapsed = time.time() - start_time
     log(f"[Reviewer] 第{chapter_number}章审查 API 调用耗时 {elapsed:.1f}s")
 
@@ -815,6 +771,7 @@ def review_chapter(
         review_data = {
             "chapter_number": chapter_number,
             "status": "failed",
+            "content_sha256": snapshot_sha256,
             "local_analysis": local_analysis,
         }
         review_file.parent.mkdir(parents=True, exist_ok=True)
@@ -835,7 +792,7 @@ def review_chapter(
         if isinstance(scores, dict):
             for k, v in list(scores.items()):
                 scores[k] = _parse_score(v)
-        _normalize_single_action_review(review_data)
+        _normalize_review_tasks(review_data, max_repair_tasks)
 
         contract_errors: list[str] = []
         score = review_data.get("overall_score")
@@ -857,86 +814,42 @@ def review_chapter(
         hard_gate_reasons: list[str] = []
         if not local_analysis.get("word_count_ok", False):
             hard_gate_reasons.append("正文字数未通过本地范围检查")
-        ai_flavor_score = (local_analysis.get("ai_flavor_detection") or {}).get("ai_flavor_score")
-        if isinstance(ai_flavor_score, (int, float)) and ai_flavor_score < 7:
-            hard_gate_reasons.append("本地去AI味评分低于7")
-        ai_issues = (local_analysis.get("ai_flavor_detection") or {}).get("issues")
-        if isinstance(ai_issues, list):
-            fingerprint_types = {
-                "short_sentence_fragmentation": "短句断句AI指纹",
-                "symmetric_anchor_ending": "对称式章节结尾AI指纹",
-                "abstract_concept_pileup": "抽象概念堆叠AI指纹",
-                "formal_refrain_stagnation": "散文诗式重复段式",
-                "repeated_authorial_judgment": "重复作者判断句",
-                "authorial_aside": "作者旁注式总结",
-                "static_lyrical_scene": "静态意象堆叠导致叙事停滞",
-            }
-            found = [
-                fingerprint_types.get(str(item.get("type")))
-                for item in ai_issues
-                if isinstance(item, dict) and str(item.get("type")) in fingerprint_types
-            ]
-            if found:
-                hard_gate_reasons.append("本地AI指纹检测未通过：" + "、".join(dict.fromkeys(found)))
         absent = (local_analysis.get("character_presence") or {}).get("absent")
         if isinstance(absent, list) and absent:
             hard_gate_reasons.append("大纲要求角色在正文缺失：" + "、".join(str(item) for item in absent[:3]))
-        human_warmth = local_analysis.get("human_warmth_detection") or {}
-        if isinstance(human_warmth, dict) and human_warmth.get("passed") is False:
-            issues = human_warmth.get("issues")
-            if isinstance(issues, list) and issues:
-                hard_gate_reasons.append("本地人情味检测未通过：" + "、".join(str(item) for item in issues[:3]))
-            else:
-                hard_gate_reasons.append("本地人情味检测未通过")
-        relationship_obligation = local_analysis.get("relationship_obligation_detection") or {}
-        if (
-            isinstance(relationship_obligation, dict)
-            and relationship_obligation.get("required") is True
-            and relationship_obligation.get("passed") is False
-        ):
-            issues = relationship_obligation.get("issues")
-            pair = str(relationship_obligation.get("pair", "")).strip()
-            prefix = f"关系任务未兑现({pair})" if pair else "关系任务未兑现"
-            if isinstance(issues, list) and issues:
-                hard_gate_reasons.append(prefix + "：" + "、".join(str(item) for item in issues[:3]))
-            else:
-                hard_gate_reasons.append(prefix)
-        scene_realization = local_analysis.get("scene_realization_detection") or {}
-        if (
-            isinstance(scene_realization, dict)
-            and scene_realization.get("required") is True
-            and scene_realization.get("needs_attention") is True
-        ):
-            scene_rate = scene_realization.get("rate")
-            hard_gate_reasons.append(
-                f"本地场景兑现率过低({scene_rate})：scenes 的 sensory_anchor/subtext_beat/exit_hook 未充分落地正文"
-            )
+        hard_gate_reasons.extend(evaluate_ai_gate(ai_flavor)["reasons"])
 
+        quality_gate = evaluate_review_quality_gate(
+            review_data,
+            local_analysis,
+            CONFIG,
+            base_reasons=hard_gate_reasons,
+        )
         if isinstance(score, (int, float)):
-            if hard_gate_reasons and score >= review_min_score:
+            if not quality_gate["passed"] or verdict in {"需修改", "需重写"}:
                 review_data["reported_overall_score"] = score
-                review_data["overall_score"] = round(review_min_score - 0.1, 2)
+                review_data["overall_score"] = min(score, round(review_min_score - 0.1, 2))
                 score = review_data["overall_score"]
                 review_data["verdict"] = "需修改"
                 verdict = "需修改"
-            elif score >= review_min_score:
-                review_data["verdict"] = "通过"
-                verdict = "通过"
             elif verdict == "通过":
-                review_data["verdict"] = "需修改"
-                verdict = "需修改"
+                if score < review_min_score:
+                    review_data["verdict"] = "需修改"
+                    verdict = "需修改"
 
-        if hard_gate_reasons:
+        if not quality_gate["passed"]:
             weaknesses = review_data.get("weaknesses")
-            weakness_text = "；".join(hard_gate_reasons)
-            if isinstance(weaknesses, list) and weakness_text not in weaknesses:
-                weaknesses[:] = [weakness_text]
+            if isinstance(weaknesses, list):
+                for reason in quality_gate["reasons"]:
+                    if reason not in weaknesses:
+                        weaknesses.append(reason)
+                review_data["weaknesses"] = weaknesses[:max_repair_tasks]
 
         score = review_data.get("overall_score")
-        if isinstance(score, (int, float)) and score < 9:
+        if isinstance(score, (int, float)) and score < review_min_score:
             weaknesses = review_data.get("weaknesses")
             if not isinstance(weaknesses, list) or not weaknesses:
-                contract_errors.append("低于9分但未说明具体 weaknesses")
+                contract_errors.append("未达通过阈值但未说明具体 weaknesses")
 
         edits = review_data.get("edits")
         if verdict != "通过":
@@ -946,7 +859,7 @@ def review_chapter(
                 contract_errors.append("未通过但没有可定位 edits")
 
         if isinstance(edits, list):
-            review_data["edits"] = edits[:1]
+            review_data["edits"] = edits[:max_repair_tasks]
             edits = review_data["edits"]
             valid_edit_count = 0
             for index, edit in enumerate(edits):
@@ -970,6 +883,11 @@ def review_chapter(
                 contract_errors.append("未通过但没有任何可应用的 edit")
 
         if contract_errors:
+            quality_gate["passed"] = False
+            quality_gate["reasons"] = list(dict.fromkeys([
+                *quality_gate["reasons"],
+                *(f"审稿报告契约错误：{item}" for item in contract_errors),
+            ]))
             semantic_retries = max(
                 0,
                 int(CONFIG.get("reviewer", {}).get("semantic_retries", 1) or 0),
@@ -986,26 +904,23 @@ def review_chapter(
                     review_file_override,
                     _semantic_attempt=_semantic_attempt + 1,
                     _semantic_errors=contract_errors,
+                    force=True,
                 )
             review_data["reported_overall_score"] = review_data.get(
                 "reported_overall_score",
                 review_data.get("overall_score"),
             )
-            # M3 等模型偶发输出字段不全（edit 锚点不命中原文、漏 suggestions/weaknesses 等）
-            # 触发契约失败，但其给出的分数仍有效。salvage 真实分数，避免整候选作废、压低通过率。
-            # 本地硬门禁失败时镜像正常路径降分到 min_score-0.1，防止带硬伤的章节因 salvage 误过。
-            _reported = review_data.get("reported_overall_score")
-            if isinstance(_reported, (int, float)) and 0 <= float(_reported) <= 10:
-                _salvaged = round(float(_reported), 2)
-                if hard_gate_reasons and _salvaged >= review_min_score:
-                    _salvaged = round(review_min_score - 0.1, 2)
-                review_data["overall_score"] = _salvaged
-                review_data["status"] = "invalid_review_salvaged"
-            else:
-                review_data["overall_score"] = None
-                review_data["status"] = "invalid_review"
+            # 契约不完整的审稿不能作为质量依据，保留 reported 分数仅用于排障。
+            review_data["overall_score"] = None
+            review_data["status"] = "invalid_review"
             review_data["verdict"] = "需修改"
             review_data["review_contract_errors"] = contract_errors
+        review_data["quality_gate"] = quality_gate
+        review_data["repair_tasks"] = _build_repair_tasks(
+            review_data,
+            quality_gate["reasons"],
+            max_repair_tasks,
+        )
     except Exception as e:
         log(f"[Reviewer] JSON解析失败: {e}")
         semantic_retries = max(
@@ -1023,9 +938,11 @@ def review_chapter(
                 review_file_override,
                 _semantic_attempt=_semantic_attempt + 1,
                 _semantic_errors=["响应不是可解析的完整 JSON 对象"],
+                force=True,
             )
         review_data = _partial_review_from_raw(chapter_number, content, local_analysis)
 
+    review_data["content_sha256"] = snapshot_sha256
     review_file.parent.mkdir(parents=True, exist_ok=True)
     with open(review_file, "w", encoding="utf-8") as f:
         json.dump(review_data, f, ensure_ascii=False, indent=2)
@@ -1079,6 +996,7 @@ def main():
     parser.add_argument("--final", action="store_true", help="审查终稿（final 目录）而非草稿")
     parser.add_argument("--chapter-file", type=str, default="", help="候选模式：审查指定正文文件")
     parser.add_argument("--review-file", type=str, default="", help="候选模式：审查报告写入指定文件")
+    parser.add_argument("--force", action="store_true", help="强制重审当前正文，禁止复用缓存")
     args = parser.parse_args()
 
     try:
@@ -1112,15 +1030,16 @@ def main():
             args.chapter,
             chapter_file_override=args.chapter_file or None,
             review_file_override=args.review_file or None,
+            force=args.force,
         )
-        if result.get("status") in ("failed", "no_file", "parse_error"):
+        if result.get("status") != "completed":
             failed += 1
         if not (args.chapter_file or args.review_file):
             _refresh_status(args.chapter, args.chapter)
     else:
         for ch in range(args.start, args.end + 1):
-            result = review_chapter(ch)
-            if result.get("status") in ("failed", "no_file", "parse_error"):
+            result = review_chapter(ch, force=args.force)
+            if result.get("status") != "completed":
                 failed += 1
             time.sleep(1)
         _refresh_status(args.start, args.end)
@@ -1150,7 +1069,8 @@ def main():
     log(f"[Reviewer] 完成 {total - failed} 章，失败 {failed} 章")
 
     log("[Reviewer] 全部完成")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

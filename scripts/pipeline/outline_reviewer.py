@@ -120,47 +120,6 @@ def load_json(filepath: Path) -> dict:
         return json.load(f)
 
 
-def _flatten_project_text(*values, limit: int = 12000) -> str:
-    parts: list[str] = []
-
-    def walk(value) -> None:
-        if len(" ".join(parts)) >= limit:
-            return
-        if isinstance(value, dict):
-            for item in value.values():
-                walk(item)
-        elif isinstance(value, list):
-            for item in value:
-                walk(item)
-        elif value is not None:
-            text = str(value).strip()
-            if text:
-                parts.append(text)
-
-    for value in values:
-        walk(value)
-    return " ".join(parts)[:limit]
-
-
-def _payoff_review_profile(world: dict, outline: dict) -> dict:
-    text = _flatten_project_text(world, outline).lower()
-    if any(key in text for key in ("悬疑", "案件", "调查", "记者", "证据", "真相", "追踪", "警方", "犯罪", "谜", "都市")):
-        return {
-            "label": "阅读回报",
-            "chain": "期待→压迫/阻碍→线索反转→代价兑现/局势推进",
-            "score_desc": "payoff_design是否有完整的期待、阻碍、反转和阶段性兑现？回报是否来自主角判断/行动/证据推进而非巧合？",
-            "check": "payoff_design是否包含题材适配的阅读回报链（期待→阻碍/压迫→反转→兑现/推进）？若该字段缺失或空泛，需在weaknesses指出。",
-            "design": "阅读回报是否到位：是否有期待感、压迫或阻碍、信息/局势反转、阶段性兑现，且是否触及角色内核",
-        }
-    return {
-        "label": "阅读回报",
-        "chain": "期待→阻碍/压制→反转→兑现",
-        "score_desc": "payoff_design是否有完整的期待、阻碍/压制、反转和兑现？回报是否来自主角真实发挥而非巧合？",
-        "check": "payoff_design是否包含完整阅读回报链（期待→阻碍/压制→反转→兑现）？若该字段缺失或空泛，需在weaknesses指出。",
-        "design": "阅读回报是否到位：是否有期待感、阻碍、反转、兑现等要素，且是否触及角色内核",
-    }
-
-
 def _current_chapter_continuity_failures(chapter: int, issues: object) -> list[str]:
     if not isinstance(issues, list):
         return []
@@ -377,7 +336,6 @@ def review_outline(
     if world_desc:
         genre_hints.append(f"世界观：{world_desc}")
     genre_text = "\n".join(genre_hints) if genre_hints else "请根据世界观和角色设定判断题材类型。"
-    payoff_profile = _payoff_review_profile(world, outline)
 
     min_score = float(CONFIG.get("outline_reviewer", {}).get("min_score", 8.5))
 
@@ -390,27 +348,13 @@ def review_outline(
             "continuity_issues、summary、edits。未通过时只给出1条最关键edit。\n"
         )
 
-    system = f"""你是一位拥有20年经验的资深网络小说总编，同时也是一位苛刻的"神作猎手"。
-你的任务是判断单章大纲能否稳定支撑高质量正文，并找出当前最阻止它达标的唯一关键原因。
-本书是《{book_title}》。
+    system = f"""你是一位中文小说编辑，评估《{book_title}》的大纲是否可执行、人物可信、前后连贯。
 {genre_text}
 {retry_contract}
-
-## 【高质量单章大纲评分标准】
-- 10分：大纲足以支撑传世级神作。悬念密集，情感冲击强烈，信息新鲜，章末钩子让人失眠，Writer据此必能写出让人欲罢不能的章节。
-- 9-9.9分：优秀大纲。悬念设计到位，情绪曲线清晰，反套路，有新鲜感，足以支撑9分正文。
-- 8-8.9分：良好到优秀。结构完整、有明确冲突和钩子；达到{min_score}分且六项设计门通过即可进入后续全书审查。
-- 7-7.9分：平庸大纲。有明显套路、重复、动机牵强或缺乏钩子的问题。
-- 低于7分：不合格，存在严重设计缺陷。
-
-【你的审查哲学】
-- 不要给"辛苦分"。字段全不等于设计好。
-- 不要给字段完整性辛苦分，但也不要把每章都强行要求成卷终高潮。
-- 重点关注：这个大纲能否让 Writer 写出一章让人"读完立刻想打开下一章"的内容？
-- 如果你给不出9分以上，必须在 weaknesses 中只写一条"距离9分的最大差距"。
-
-输出必须是合法的紧凑JSON，不要使用Markdown代码块，不要输出JSON之外的任何文字。
-审查意见要短而具体，整份JSON尽量控制在3500个中文字符以内；不得为压缩长度省略任何必填字段。"""
+按章节在全书中的作用评分。过渡、日常、后果消化和安静结束也可获得高分；
+不按反转、物象、潜台词、爽点或情绪变化的数量打分，不要求每章成为高潮。
+9分表示设计完成度高，8分表示基本有效但有具体可改进处；不为追求9分虚构问题。
+只输出紧凑合法 JSON，指出最关键的、有事实证据的问题；无问题时允许空数组。"""
 
     context_parts = []
     for number, item in sorted(context_outlines.items()):
@@ -458,15 +402,15 @@ def review_outline(
 请只输出以下JSON格式的审查报告。所有数组都只能有1条，每条不超过80字；edits只能有1条：
 {{
   "chapter_number": {chapter_number},
-  "overall_score": "请给出0-10的客观评分。9分意味着Writer据此必能写出让人欲罢不能的章节。不要给辛苦分",
+  "overall_score": "请给出0-10的客观评分。按本章功能、人物与因果完成度评价，不以悬念密度为统一标准",
   "verdict": "通过/需修改/需重写。注意：如果 overall_score >= {min_score}，verdict 必须写'通过'；只有低于{min_score}分才写'需重写'或'需修改'",
   "primary_issue": "当前最关键的唯一问题，80字以内",
   "primary_suggestion": "针对primary_issue的唯一修改建议，80字以内",
-  "weaknesses": ["唯一不足，80字以内。如果给分低于9分，必须写出距离9分的最大差距"],
+  "weaknesses": ["唯一不足，80字以内。无实际问题时可为空数组"],
   "suggestions": ["唯一具体修改建议，80字以内"],
   "continuity_issues": ["唯一衔接问题；没有则空数组"],
   "repair_feedback_checks": [{{"id": "R1", "passed": true, "evidence": "本章中实际完成修复的具体事件"}}],
-  "summary": "总体评价，80字以内。如果评分低于9分，用一句话回答：本章大纲最致命的短板是什么？",
+  "summary": "总体评价，80字以内。按本章功能评价完成度，不虚构短板",
   "edits": [
     {{
       "field": "summary",
@@ -498,66 +442,21 @@ def review_outline(
     "human_warmth": {{"passed": true, "evidence": "本章具体生活压力、关系牵挂或潜台词如何参与剧情，60字以内"}},
     "content_richness": {{"passed": true, "evidence": "本章除外部事件外，至少哪一层关系/生活/秘密/规则内容被推进，60字以内"}},
     "strong_hook": {{"passed": true, "evidence": "章末正在发生的具体危机或反转，60字以内"}},
-    "scene_design": {{"passed": true, "evidence": "scenes 数组3-5个、五字段齐全、sensory_anchor不重复且取自分类库、human_anchor落进至少一个场景，60字以内"}}{repair_gate_schema}
+    "scene_design": {{"passed": true, "evidence": "scenes 非空，位置与具体目标有效，场景数量和修辞随需要，60字以内"}}{repair_gate_schema}
   }}
 }}
 
-【9分神作大纲核心审查清单】
-请在给出评分前按以下核心项快速自检。六项 design_gates 是硬门槛；其余项目用于综合评分。若存在多个问题，只输出最影响通过的一项：
-1. chapter_hook字段是否明确写出了一个让人心跳加速的强力钩子（危机升级/信息反转/情感爆点）？
-2. chapter_hook是否禁止了平静收尾、总结现状、铺垫过渡？
-3. emotional_arc是否描述了清晰的情绪起伏（如压抑→紧张→希望→绝望），而非全程单一情绪？
-4. tension_points是否至少包含3个有效的让人无法停止阅读的关键时刻？
-5. 本章是否带来有效的新进展（新信息、新关系变化、新风险或旧伏笔回收），不要求每章强行新增人物或地点？
-6. 是否存在套路化设计（标准战斗流程、标准解谜流程、配角当解说员）？
-7. 本章回报是否触及角色核心欲望、恐惧或明确阶段目标，而非只有表层事件堆叠？
-8. human_anchor 是否具体写出了生活压力、关系牵挂、潜台词或生活物件，且这些内容会参与剧情推进？
-9. 本章是否有具体生活压力、关系牵挂、旧情分、亏欠、照料、面子或尊严参与剧情推进？
-10. content_layers 是否至少包含两层，并且不是复述同一个外部事件？是否明确推进了关系、生活压力、秘密代价或世界规则现场化？
-11. 是否有打卡地图风险：地点只为拿道具/升境界/过副本服务，缺少风土人情、制度、生计和文化差异？
-12. 是否有抽象概念堆叠风险：道意、本源、法则、共鸣、境界等概念没有身体/器物/环境/关系后果？
-13. chapter_hook 是否避开“身后……身前……”“一步又一步”“未知的路”等机械对称收尾？
-14. 是否避免散文诗式复沓：不是用十几段同一物象聚焦/同一作者判断替代事件推进？
-15. 是否设计了一个可复述的不可逆动作，而不是只用氛围说明人物“往前挪”？
-16. 若是群像/多线章节，是否设计了“从重奏到独步”：群像铺压或递火，最终收束成主角自己的独立选择？
-17. 关键证据/信息/信物的传递链是否清楚：起点、转交、接收者理解方式、风险、最终用途是否都能复述？
-18. 反派是否有层次：面对破绽时会用规矩、程序、威胁、交易、嫁祸或冷处理稳住场面，而不是只变脸或发怒？
-19. 跨地点/跨时辰/并行动作是否有明确转场桥，避免Writer写成突兀跳切？
-20. 反派标志物或贯穿意象是否被设计成反照反派内层、旧事、软肋或破绽，而不是只做道具？
-21. 旧证据逼到反派时是否设计了一个半拍身体裂隙，再接规矩/程序/威胁等冷处理？
-22. 章末关键道具/证据是否在前文预埋了制作、拓印、藏匿、转手或瞥见动作？
-23. 墨印/拓片/副本/录音备份等复制型证据是否提前设计了复制动作？
-24. 父辈/亲缘/旧痕线索是否在 chapter_hook 或 payoff_design 中有章末微回扣？
-25. chapter_hook 是否包含关键动作后的1-2个现场微反应，形成余韵而不是动作一落就截断？
-26. 是否设计了至少一句有潜台词的对白或欲言又止的瞬间，而不是把动机和情绪全说透？
-27. 如果Writer严格按这个大纲写，能否产出一章让人读完立刻想打开下一章的内容？
-28. story_beat是否名实相符？标注的结构功能（如catalyst/midpoint/all_is_lost/finale）是否在剧情中真正兑现？与全卷节奏曲线是否衔接？
-29. chapter_goal是否是本章可推进的具体目标（非全书口号）？失败后果是否触及核心利益？
-30. {payoff_profile['check']}
-31. 与上下文各章相比，是否重复了同一核心场景、追逐、对峙、取证、营救或直播动作链？
-32. 人物身份、阵营、生死、伤势、被捕/获救状态是否与前后章一致？不可逆事件是否只发生一次？
-33. 时间是否单调推进？跨日、等待、移动和地点切换是否有明确过渡？
-34. 本章新埋伏笔在后续接口中是否有承接；前章已回收信息是否被错误地再次当成未知？
-35. 问题归属遵循“最早事实为锚点”：若冲突由后章推翻前章事实造成，只在 continuity_issues 中指出应修改的后章，不得因此压低本章分数或判本章不通过。
-36. 【人物辨识度】大纲是否为每个有戏份角色设计了体现性格的动作/抉择/台词方向？主角的关键抉择是否"只有他会这么干"？是否设计了至少一处性格反差作为人物弧线一步？不同角色是否预留了可分辨的说话方式差异？
-37. 【因果链】本章转折/破局是否都可追溯到前文原因（人物选择/信息/物件/伏笔）？是否禁止"恰好/凑巧"破局？主角回报是否来自自身判断/能力/资源/布局而非天降？信息传递是否闭环？时间/伤势/资源是否与前章一致承接？
-
-要求：
-1. 评分要客观可复现。9分代表单章设计突出；达到{min_score}分且六项设计门通过，代表足以进入全书层级审查。
-2. 重点审查：人物辨识度、因果链、悬念密度、钩子强度、情绪曲线、烟火气与人情味、内容层次、不可逆动作、地图真实感、概念落地、信息新鲜度、反套路程度、结构功能合理性、目标赌注、{payoff_profile['label']}。这些维度比字段完整性更重要。
-3. 剧情是否有真正的冲突和转折，而非流水账
-4. {payoff_profile['design']}
-5. 人物动机是否合理，是否与角色设定一致
-6. 与前后章的衔接是否自然，伏笔是否呼应
-7. 场景使用是否有效；单章允许集中在一个地点，但不能重复做同样的事或缺少状态变化
-8. 力量体系是否自洽，实力成长是否有合理铺垫
-9. 信息是否足够详细，Writer能否据此写出{outline.get('word_count_target', 5000)}字高质量正文
-10. 如果origin/中存在素材，必须检查大纲是否参考并遵守原始素材；与素材冲突需列入weaknesses或continuity_issues
-11. 如低于{min_score}分必须标记为需重写
-12. 必须输出合法JSON，不要Markdown，不要长篇解释
-13. 任一由本章引入或应由本章承担修复责任的 critical 跨章矛盾（重复不可逆事件、身份/生死冲突、时间倒退、相邻章核心动作链重复）都必须判定为不通过；若责任在更晚章节，本章保留为事实锚点并正常评分
-14. **必须输出 edits 数组**：如果 verdict 不是"通过"，只能给出1条最关键字段级 edit（field/action/value），让 Outliner 定点修改 JSON 而不是整章重生成。action 可选 replace/append/replace_index/delete_index。小问题优先改 chapter_hook、key_events、human_anchor、summary 等字段。
-15. 如果 edit 修改 story_beat，value 只能取以下枚举之一：opening_image/theme_stated/setup/catalyst/debate/break_into_two/b_story/fun_and_games/midpoint/bad_guys_close_in/all_is_lost/dark_night/break_into_three/finale/final_image/rising_action/transition。不得发明 impossible_choice 等新标签。"""
+审查原则：
+1. 硬设计门只包括 core_desire（具体目标）与 scene_design（可执行场景），以及显式修复任务。
+2. irreversible_choice/midpoint_reversal/human_warmth/content_richness/strong_hook 为观察项，不适用时说明即可，不因没有反转、生活词汇或强钩子扣分。
+3. scenes 至少一个，position/objective 有效即可；其他场景字段按需，可空，可自然重复物件。
+4. tension_points 可空，单一情绪、单个场景、日常相处或自然收束均可成立。
+5. 人物认知、时间、地点、伤势、资源、身份与关键事件需和前后章一致。已发生的不可逆事件不能无理由再次发生。
+6. 最早事实作为锚点：由后章引入的矛盾应修后章，不为此压低本章分数。
+7. 遵守 origin 事实，但未复述某个词或某条素材不等于违背事实。
+8. 低于 {min_score} 或有实际硬伤时给“需修改”，并给一条 field/action/value 补丁；其余字段保持。
+9. story_beat 标签是结构描述，不因连续相同自动判为注水；只有具体内容重复才需要修订。
+10. 若有 repair_feedback_checks，逐条给出本章是否完成显式修复任务的证据。"""
 
     log(f"[OutlineReviewer] 正在审查第{chapter_number}章大纲...")
     start_time = time.time()
@@ -577,15 +476,7 @@ def review_outline(
         return review_data
 
 
-    required_gates = (
-        "core_desire",
-        "irreversible_choice",
-        "midpoint_reversal",
-        "human_warmth",
-        "content_richness",
-        "strong_hook",
-        "scene_design",
-    )
+    required_gates = ("core_desire", "scene_design")
     if repair_requirements:
         required_gates += ("repair_feedback_closed",)
 
@@ -861,45 +752,9 @@ def review_outline(
                 if isinstance(score, (int, float)):
                     review_data["overall_score"] = round(min(score, min_score - 0.1), 2)
                 review_data["verdict"] = "需修改"
-        # 跨章节奏守卫：本章若身处连续同 beat 的注水腰段，强制需修改并压分，
-        # 让 Outliner 带反馈重生成本章、换用不同转折 beat。
         if beat_flat_issues:
-            fi = beat_flat_issues[0]
-            review_data.setdefault("continuity_issues", [])[:] = [fi["evidence"]]
-            review_data.setdefault("weaknesses", [])[:] = [fi["evidence"]]
-            review_data.setdefault("suggestions", [])[:] = [fi["suggestion"]]
-            current_beat = str(outline.get("story_beat", "")).strip().lower()
-            replacement_beat = {
-                "setup": "catalyst",
-                "catalyst": "break_into_two",
-                "debate": "break_into_two",
-                "break_into_two": "b_story",
-                "b_story": "fun_and_games",
-                "fun_and_games": "midpoint",
-                "rising_action": "midpoint",
-                "transition": "rising_action",
-                "midpoint": "bad_guys_close_in",
-                "bad_guys_close_in": "all_is_lost",
-                "all_is_lost": "dark_night",
-                "dark_night": "break_into_three",
-                "break_into_three": "finale",
-                "finale": "final_image",
-            }.get(current_beat, "rising_action")
-            edits = review_data.setdefault("edits", [])
-            if isinstance(edits, list) and not any(
-                isinstance(edit, dict) and edit.get("field") == "story_beat"
-                for edit in edits
-            ):
-                edits[:] = [{
-                    "field": "story_beat",
-                    "action": "replace",
-                    "value": replacement_beat,
-                }]
-            score = review_data.get("overall_score")
-            if isinstance(score, (int, float)):
-                review_data["overall_score"] = round(min(score, min_score - 0.1), 2)
-            review_data["verdict"] = "需修改"
-            review_data["beat_distribution_issue"] = fi
+            review_data["beat_distribution_issue"] = beat_flat_issues[0]
+            # 相同节拍不等同于内容重复，不能据此改标签、压分或强制改写。
         if scene_density_issue:
             scene_evi = "；".join(scene_density_issue["issues"])
             review_data.setdefault("continuity_issues", [])[:] = [scene_evi]
@@ -913,7 +768,7 @@ def review_outline(
                 scene_edits[:] = [{
                     "field": "scenes",
                     "action": "replace",
-                    "value": "3-5个场景对象，每个含position/objective/conflict/sensory_anchor/subtext_beat/exit_hook",
+                    "value": "非空场景数组，每项有有效position与具体objective，其他修辞字段按需",
                 }]
             score = review_data.get("overall_score")
             if isinstance(score, (int, float)):
@@ -999,7 +854,6 @@ def review_outline(
         hard_gate_ok = (
             design_gate_passed
             and repair_feedback_closed
-            and not beat_flat_issues
             and not adjacent_repetition_issue
             and not scene_density_issue
             and not continuity_hard_failures
@@ -1054,10 +908,10 @@ def review_outline(
             contract_errors.append("summary 缺失")
 
         score = review_data.get("overall_score")
-        if isinstance(score, (int, float)) and score < 9.0:
+        if isinstance(score, (int, float)) and score < min_score:
             weaknesses = review_data.get("weaknesses")
             if not isinstance(weaknesses, list) or not weaknesses:
-                contract_errors.append("低于9分但未说明具体 weaknesses")
+                contract_errors.append("未达通过阈值但未说明具体 weaknesses")
         if review_data.get("verdict") != "通过":
             suggestions = review_data.get("suggestions")
             edits = review_data.get("edits")

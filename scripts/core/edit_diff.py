@@ -13,6 +13,73 @@ class EditApplyError(RuntimeError):
     """编辑操作无法安全 apply 时抛出。"""
 
 
+def apply_reviewed_edits(
+    text: str,
+    edits: list[dict],
+    approved_edits: list[dict],
+    *,
+    max_changed_ratio: float = 0.15,
+    min_words: int = 0,
+    max_words: int | None = None,
+) -> str:
+    """Apply exact, unambiguous edits only inside reviewer-nominated regions.
+
+    Resolve every span against the original text before changing anything. Unlike
+    the legacy fuzzy editor, preserve all bytes outside those spans, including
+    whitespace. Bound inserted text as well as removed text; length similarity
+    alone would permit an equal-length rewrite of the entire chapter.
+    """
+    if not 0 < max_changed_ratio <= 1:
+        raise EditApplyError("max_changed_ratio 必须在 (0, 1] 内")
+    if not edits or not isinstance(edits, list) or not approved_edits:
+        raise EditApplyError("缺少编辑操作或审查定位，保留原稿")
+
+    def locate(edit: dict) -> tuple[int, int]:
+        if not isinstance(edit, dict) or edit.get("type") not in {"replace", "delete", "insert"}:
+            raise EditApplyError("无效编辑类型")
+        anchor = edit.get("after") if edit["type"] == "insert" else edit.get("old")
+        if not isinstance(anchor, str) or not anchor.strip():
+            raise EditApplyError("编辑锚点不能为空")
+        start = text.find(anchor)
+        if start < 0 or text.find(anchor, start + 1) >= 0:
+            raise EditApplyError("编辑锚点缺失或不唯一")
+        return start, start + len(anchor)
+
+    approved = [(item, locate(item)) for item in approved_edits]
+    changes = []
+    cost = 0
+    for edit in edits:
+        start, end = locate(edit)
+        kind = edit["type"]
+        if not any(
+            item["type"] == kind and lo <= start and end <= hi
+            and (kind != "insert" or end == hi)
+            for item, (lo, hi) in approved
+        ):
+            raise EditApplyError("编辑超出审查指出的范围")
+        replacement = "" if kind == "delete" else edit.get("text" if kind == "insert" else "new")
+        if not isinstance(replacement, str) or (kind != "delete" and not replacement.strip()):
+            raise EditApplyError("修改后文本缺失")
+        if kind == "insert":
+            start = end
+        cost += max(end - start, len(replacement))
+        changes.append((start, end, replacement))
+    changes.sort(key=lambda item: (item[0], item[1]))
+    for previous, current in zip(changes, changes[1:]):
+        if current[0] < previous[1] or current[0] == previous[0]:
+            raise EditApplyError("编辑范围重叠")
+    if cost > len(text) * max_changed_ratio:
+        raise EditApplyError("修改量超过配置上限，保留原稿")
+    result = text
+    for start, end, replacement in reversed(changes):
+        result = result[:start] + replacement + result[end:]
+    if len(result) < min_words or (max_words is not None and len(result) > max_words):
+        raise EditApplyError("补丁后字数不合格；禁止截断原稿")
+    if result == text:
+        raise EditApplyError("补丁没有产生有效修改")
+    return result
+
+
 def _normalize(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
@@ -173,16 +240,20 @@ def build_edit_prompt(old_text: str, review_data: dict, chapter_number: int, min
 }}
 
 ## 规则
-1. **只改问题区域**：如果 reviewer 只批评了章末钩子，就只改最后 200-400 字；不要动前面 90% 的内容。
+1. **只改问题区域**：只能在下方审查指定的 old/after 范围内修改，操作类型也必须一致；不要改动其他位置。
 2. **old/after 必须精确**：尽量引用原文中连续 30-200 字的完整段落，不要只给几个字，避免匹配失败。
 3. **禁止伪原创**：未要求修改的句子必须原样保留，禁止为了"润色"改掉原本合格的文字。
 4. **保持总字数在 {min_words}-{max_words} 字之间**；如果需要大幅删减，优先用 deletions；如果需要补充，用 insertions。
 5. **所有 edit 必须解决 reviewer 指出的 weaknesses/suggestions/continuity_issues**。
-6. 如果某个问题无法通过局部修改解决（需要整章重构），则输出空 edits 列表 `[]`，系统会自动回退到全文重写。"""
+6. 如果问题无法局部修复，输出 {{"edits": []}}。系统将保留原稿并报告失败，不会自动全文重写。
+7. 不以提升分数为目标；不自动补潜台词、微表情、物象或强钩子。保持作者原有表达。"""
 
     prompt = f"""请对第{chapter_number}章进行定点增量修改。
 
 ## 审查意见
+允许修改的范围（old/after 必须来自原稿，禁止扩大范围）：
+{json.dumps(review_data.get('edits', []), ensure_ascii=False)}
+
 **不足**：
 {chr(10).join(f"- {w}" for w in weaknesses) or "（无）"}
 

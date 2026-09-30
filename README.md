@@ -38,7 +38,6 @@ projects/<book_id>/
 │   ├── summary_report.json              # 全书总结
 │   ├── foreshadowing_ledger.json        # 伏笔台账(planted/claimed/resolved/dangling)
 │   ├── outline_memory.json              # 远程压缩记忆(里程碑+近8章)
-│   ├── outline_book_review/             # 大纲整本终审
 │   ├── book_review/                     # 整本终审 + repair_manifest
 │   └── story_flow_audit.json            # 确定性流程体检
 │
@@ -62,8 +61,8 @@ config/premise → Planner → world.json + characters.json (+ media)
      ensure_outline_lookahead  → 先让 N..N+9 章大纲过门
      大纲门  process_outline_gate   → outline + outline_review(不达标→意见定点修订)
      正文门  process_draft_gate     → draft + review (+ polisher) → final(不达标→原稿+意见局部修订)
+     G14 终稿 AI硬门复检（失败立即停止）
      状态抽取(三路并行)            → character/arc/relationship states
-     G14 终稿 AI味复检
    全书末章 → G16 结尾收束检查(伏笔回收率 + 弧线终点)
                           ↓
    整本终审 book_reviewer(segment 10章 → volume 50章 → final)
@@ -73,27 +72,29 @@ config/premise → Planner → world.json + characters.json (+ media)
 ```
 
 ### 大纲门(`scripts/pipeline/outline_gate.py`)
-- 最多 `3 轮 × 3 次`;每次 `outliner 修订 → outline_reviewer 审查`
+- 轮次与每轮尝试数由配置决定（默认 `2 轮 × 1 次`）;每次 `outliner 修订 → outline_reviewer 审查`
 - **意见修订**:不达标时保留原大纲,反馈写 `logs/outline_feedback_*.json`,下次带 `--review-feedback` 做定点修订(字段级 edits 优先,模型修订兜底),不推倒重生成;累计 ≥8 次启用 `--rescue`
 - 三层质量门:首轮初筛(分 < screening_score 或设计门不过直接停)→ 多轮投票(中位分 + 票数)
-- **设计门五硬项**:core_desire / irreversible_choice / midpoint_reversal / human_warmth / strong_hook
+- **设计硬门**:core_desire / scene_design；允许日常、过渡、单场景和安静收尾，反转/烟火气/强钩子不再是每章配额
 
 ### 正文门(`scripts/pipeline/draft_gate.py`)
-- 最多 `3 轮 × 3 次`;每次 `writer 修订 → reviewer 评分`
-- **意见修订**:不达标时保留原稿,完整原稿 + 审查意见一并注入 writer 做局部修订,不推倒重写
-- **分数门槛**:1–3 章用 `golden_chapter_min_score`(默认 9.0),其余 `min_score`(默认 8.5)
-- **Polisher 捷径**:已有 `threshold≤分<min_score` 底稿时跳过重写,直接最小化精修(长度比锁 0.85–1.15)
-- **本地硬门**(reviewer,LLM 高分也压回):字数 / AI味<7 / 角色在场 / 烟火气 / 关系任务 / origin 事实
-- 全程保存 `_best` 历史最高分稿,可回退兜底;通过则 promote 到 `final/`
+- 轮次与每轮尝试数由配置决定（默认 `2 轮 × 1 次`）;每次 `writer 修订 → reviewer 评分`
+- **意见修订**:只应用审查定位范围内的精确 JSON 补丁，默认修改量不超过原稿15%；失败保留原稿并报告，不回退全文重写
+- **分数门槛**:1–3 章用 `golden_chapter_min_score`(默认 9.0),其余 `quality.review_min_score`(默认 8.5)
+- **Polisher**:默认关闭；已有项目显式开启时也只接受精确定位、限制修改量的补丁
+- **本地硬门**:字数 / 角色在场。AI指定指纹与低于7分检测硬阻断；人情味、关系、场景与origin词匹配保留观察提示；Reviewer阅读全文，事实冲突仍需修订
+- 全程保存 `_best` 历史最高分稿,恢复后必须重审，不能按历史分数直接放行；通过全部质量门才 promote 到 `final/`
 
 ---
+
+新版写作约束、已有配置兼容与验证方式见 [小说生成与局部修订调整](docs/narrative-revision.md)。已有正文与报告不会自动重写。
 
 ## 三、直接驱动命令
 
 > 不经过任何 skill,直接用 `scripts/` 命令。在仓库根目录执行。
 
 ```bash
-# 完整生成 / 断点续传(默认全量大纲优先 + 整本终审)
+# 完整生成 / 断点续传(默认10章大纲提前窗口 + 整本终审)
 python scripts/pipeline/coordinator.py --project "projects/<book_id>"
 
 # 指定章节范围
@@ -106,13 +107,12 @@ python scripts/pipeline/outline_reviewer.py --project "projects/<book_id>" --sta
 python scripts/pipeline/writer.py           --project "projects/<book_id>" --chapter N
 python scripts/pipeline/reviewer.py         --project "projects/<book_id>" --chapter N
 python scripts/maintenance/book_reviewer.py         --project "projects/<book_id>"   # 整本终审
-python scripts/maintenance/outline_book_reviewer.py --project "projects/<book_id>"   # 大纲整本终审
 
 # 接手/迁移前自检
 python scripts/maintenance/portable_check.py --project "projects/<book_id>"
 ```
 
-常用 `coordinator.py` 开关:`--skip-planner`(复用世界/角色)、`--outline-first`(强制全量大纲优先)、`--force-book-review`(忽略终审缓存)、`--skip-book-review`(仅调试)。
+常用 `coordinator.py` 开关:`--skip-planner`(复用世界/角色)、`--outline-lookahead`(大纲提前窗口，默认10章)、`--force-book-review`(忽略终审缓存)、`--skip-book-review`(仅调试)。
 
 改完代码必跑语法校验:
 ```bash
@@ -126,21 +126,23 @@ python -m py_compile scripts/pipeline/planner.py scripts/pipeline/outliner.py sc
 ```json
 {
   "total_chapters": 2000,
-  "model": "MiniMax-M3-highspeed",
+  "llm": { "provider": "deepseek", "model": "deepseek-chat" },
   "mmx_path": "mmx",
   "coordinator": {
     "outline_lookahead_chapters": 10,
-    "outline_attempts_per_round": 3,
-    "outline_analysis_rounds": 3,
-    "draft_attempts_per_round": 3,
-    "draft_analysis_rounds": 3,
+    "outline_attempts_per_round": 1,
+    "outline_analysis_rounds": 2,
+    "draft_attempts_per_round": 1,
+    "draft_analysis_rounds": 2,
     "push_interval_seconds": 120
   },
-  "outline_reviewer": { "min_score": 8.5 },
-  "reviewer":         { "min_score": 8.5, "golden_chapter_min_score": 9.0 },
-  "polisher":         { "enabled": true, "threshold": 8.0 },
+  "outline_reviewer": { "provider": "glm", "model": "glm-4.6", "min_score": 8.5 },
+  "reviewer":         { "provider": "glm", "model": "glm-4.6", "min_score": 8.5, "golden_chapter_min_score": 9.0 },
+  "polisher":         { "enabled": false, "threshold": 8.0 },
+  "writer":           { "use_scored_examples": false },
+  "revision":         { "max_changed_ratio": 0.15 },
   "book_reviewer":    { "enabled": true, "min_score": 8.5, "required_on_finish": true },
-  "quality": { "min_chapter_words": 5000, "max_chapter_words": 12000 },
+  "quality": { "review_min_score": 8.5, "min_chapter_words": 5000, "max_chapter_words": 12000 },
   "webhook_url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=<key>"
 }
 ```
@@ -158,7 +160,7 @@ python -m py_compile scripts/pipeline/planner.py scripts/pipeline/outliner.py sc
 | 伏笔台账 | `reports/foreshadowing_ledger.json` | planted→claimed(大纲标收)→resolved(正文真兑现)→dangling;防「大纲写回收、正文没写」假回收 |
 | 角色状态 | `chapters/character_states/` | 跨章不矛盾(生死/位置/伤势/已知信息) |
 | 成长弧线 | `chapters/arc_states/` | 主角六阶段,只能推进不倒退 |
-| 关系欠账 | `chapters/relationship_states/` | 烟火气跨章延续,作硬任务注入并验收 |
+| 关系欠账 | `chapters/relationship_states/` | 记录跨章关系状态,按当前场景相关性使用,不要求每章推进 |
 | 远程记忆 | `reports/outline_memory.json` | 防 outliner 主线漂移 |
 
 正文过门后三路并行抽取(character/arc/relationship)快照,注入下一章 writer。
@@ -174,3 +176,29 @@ Coordinator 启动时自动拉起三个独立旁路进程(只读,不参与质量
 - `scripts/maintenance/gate_watchdog.py --mode draft` — 监控正文卡章
 
 长篇续跑也支持三 lane 并行:`outline_lane`(大纲)、`draft_lane`(初稿)、`wechat_pusher_lane`(推送)。
+
+## 发布契约与旧入口兼容
+
+- 文本模型使用各 Agent 的 `provider/model`（如 `writer.provider/model`、`reviewer.provider/model`），共享 `llm` 仅作回退；mmx 仅负责媒体。加载配置仍校验生成端与审查端的 `(provider, model)` 不得相同。
+- 默认大纲提前窗口为10章；默认大纲与正文各为 `2轮 × 1次`。已有项目显式配置优先；默认不启用赛马。
+- Reviewer 仅当报告 `status=completed` 返回0，包括有效低分、`需修改/需重写`；API失败、解析失败、无正文、契约无效（含 `invalid_review_salvaged`）返回非零。批量中任何一章执行失败即非零；进程成功不代表质量放行，高分也不会将修订结论改成通过。
+- 报告 `content_sha256` 绑定实际送审正文快照（UTF-8，保留换行），模型返回后不重新读取正文计算。正文变化或旧报告无摘要必须重审；发布核对最终正文摘要一致。
+- 恢复历史最高分稿后必须强制重审，包括 Polisher失败、评分回退与重试耗尽。只有 completed、通过、章节阈值、报告质量门、本地硬门与摘要一致才允许发布；抢救出的无效报告不得成为发布依据。
+- Reviewer 和终稿共用 AI硬门：低于7分拒绝，7.0且无硬门指纹保持通过语义；指定指纹无论高分仍拒绝，包含 parallel_sentiment、summary_ending、meta_narration 和原有七类指纹。检测异常或分数缺失/非法均拒绝。
+- 写入 final 前检查正文 AI硬门，失败不覆盖已有终稿；落盘后复检失败立即停止，不抽取跨章状态、不推进完成进度、不推送完成通知。Coordinator 生成、质量门或整本终审失败均返回非零。
+- 根目录 `_gen_serial.py` 仅转发 `scripts/maintenance/gen_serial.py`，该脚本通过真实子进程运行 Coordinator；watchdog 每次重启也走此路径并保留失败退出码。watchdog 的 `--once` 表示监督一次完整子进程执行；不会结束后假报成功，也不再按 final 文件数判定质量通过。
+- 旧 `--start/--end/--skip-planner` 转发；start/end为0使用 Coordinator 默认范围，从第1章检查并续跑。`--max-rounds` 映射正文分析轮数（每轮尝试数仍读配置）。`--candidates/--workers` 仅接受1并明确提示；其它值、显式 `--timeout`、非0 `--time-limit` 明确拒绝。超时应配置各 Agent 的 `timeout_seconds`，不能静默变更旧语义。
+- 测试项目可设置 `coordinator.background_monitors_enabled=false` 禁止旁路监控进程，并清空 webhook、关闭 media；正式项目默认保留监控。
+
+本地验证（Python 3.12+，先确认标准库可加载；Windows 设置 `$env:PYTHONPATH="<repo>/scripts"`）：
+
+```powershell
+python -c "import sys, encodings; print(sys.version)"
+python -m pytest tests scripts/tests -q
+python -m compileall -q scripts
+python scripts/pipeline/coordinator.py --help
+python _gen_serial.py --help
+python scripts/maintenance/gen_serial_watchdog.py --help
+```
+
+CLI固定响应测试包含复制隔离项目的单章冒烟，验证实际子进程、HTTP模型通道、失败退出码与终稿绑定；它不代表真实模型质量验证。真实模型冒烟只能在复制测试项目运行，记录实际 provider/model、退出码、报告状态与终稿结果；缺凭据时明确记录未完成。

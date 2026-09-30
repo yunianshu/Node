@@ -1102,10 +1102,10 @@ def _validate_chapter_outline(chapter: dict, expected_number: int | None = None)
                 chapter["key_events"] = parts
                 key_events = parts
     event_items = [item for item in key_events if str(item).strip()] if isinstance(key_events, list) else []
-    if not isinstance(key_events, list) or len(event_items) < 3:
-        issues.append("key_events必须至少包含3个具体事件")
+    if not isinstance(key_events, list) or len(event_items) < 1:
+        issues.append("key_events必须至少包含1个具体事件")
     elif len(event_items) > 9:
-        issues.append("key_events不得超过9个，需合并重复动作并保留5-7个核心事件")
+        issues.append("key_events不得超过9个，需合并重复动作")
     elif any(len(str(item).strip()) > 140 for item in event_items):
         issues.append("key_events单条不得超过140字，需压缩为可执行事件")
     elif _has_placeholder(key_events):
@@ -1138,9 +1138,7 @@ def _validate_chapter_outline(chapter: dict, expected_number: int | None = None)
             issues.append(f"{field}仍是占位文本")
 
     human_anchor = str(chapter.get("human_anchor", "")).strip()
-    if len(human_anchor) < 25:
-        issues.append("human_anchor不少于25字，需写清生活压力、关系牵挂、潜台词或生活物件")
-    if _has_placeholder(human_anchor):
+    if human_anchor and _has_placeholder(human_anchor):
         issues.append("human_anchor仍是占位文本")
 
     content_layers = chapter.get("content_layers")
@@ -1150,8 +1148,8 @@ def _validate_chapter_outline(chapter: dict, expected_number: int | None = None)
             chapter["content_layers"] = parts
             content_layers = parts
     layer_items = [str(item).strip() for item in content_layers if str(item).strip()] if isinstance(content_layers, list) else []
-    if len(layer_items) < 2:
-        issues.append("content_layers至少包含2层内容：外部事件推进 + 关系/生活压力/秘密代价/世界规则现场化等")
+    if len(layer_items) < 1:
+        issues.append("content_layers至少说明一项本章内容")
     elif _has_placeholder(content_layers):
         issues.append("content_layers包含占位文本")
 
@@ -1183,21 +1181,8 @@ def _validate_chapter_outline(chapter: dict, expected_number: int | None = None)
             if len(parts) >= 3:
                 chapter["tension_points"] = parts
                 tension_points = parts
-    if (
-        (not isinstance(tension_points, list) or len([item for item in tension_points if str(item).strip()]) < 3)
-        and isinstance(key_events, list)
-        and len(key_events) >= 3
-    ):
-        chapter["tension_points"] = [
-            "前段：" + str(key_events[0])[:80],
-            "中段：" + str(key_events[len(key_events) // 2])[:80],
-            "后段：" + str(key_events[-1])[:80],
-        ]
-        tension_points = chapter["tension_points"]
-    if not isinstance(tension_points, list) or len([item for item in tension_points if str(item).strip()]) < 3:
-        issues.append("tension_points必须至少包含3个张力节点")
-    elif _has_placeholder(tension_points):
-        issues.append("tension_points包含占位文本")
+    if not isinstance(tension_points, list):
+        issues.append("tension_points必须是数组，可为空")
 
     try:
         target = int(chapter.get("word_count_target", 0))
@@ -1206,36 +1191,10 @@ def _validate_chapter_outline(chapter: dict, expected_number: int | None = None)
     except (TypeError, ValueError):
         issues.append("word_count_target必须是数字")
 
-    # scenes 场景级设计校验（向后兼容：旧章节缺 scenes 由 REQUIRED_CHAPTER_FIELDS 已报"缺少字段"，
-    # 这里校验字段质量）
-    scenes = chapter.get("scenes")
-    if isinstance(scenes, str):
-        issues.append("scenes 必须是数组，不能是字符串")
-    elif not isinstance(scenes, list):
-        issues.append("scenes 缺失或不是数组")
-    else:
-        if len(scenes) < 3 or len(scenes) > 5:
-            issues.append("scenes 必须为3-5个场景")
-        valid_positions = {"opening", "middle", "climax", "closing"}
-        scene_anchors: list[str] = []
-        for scene_idx, scene in enumerate(scenes):
-            if not isinstance(scene, dict):
-                issues.append(f"scenes[{scene_idx}] 不是对象")
-                continue
-            for scene_field in ("position", "objective", "conflict", "sensory_anchor", "subtext_beat", "exit_hook"):
-                scene_val = str(scene.get(scene_field, "")).strip()
-                if len(scene_val) < 4:
-                    issues.append(f"scenes[{scene_idx}].{scene_field} 过短或为空")
-                if _has_placeholder(scene_val):
-                    issues.append(f"scenes[{scene_idx}].{scene_field} 是占位文本")
-            scene_pos = str(scene.get("position", "")).strip()
-            if scene_pos and scene_pos not in valid_positions:
-                issues.append(f"scenes[{scene_idx}].position 必须是 {','.join(sorted(valid_positions))} 之一")
-            scene_anchor = str(scene.get("sensory_anchor", "")).strip()
-            if scene_anchor:
-                scene_anchors.append(scene_anchor)
-        if scene_anchors and len(scene_anchors) != len(set(scene_anchors)):
-            issues.append("scenes 的 sensory_anchor 存在重复，每个场景物象必须独立")
+    from core.outline_quality_gate import detect_scene_density_issues
+    scene_issue = detect_scene_density_issues(chapter)
+    if scene_issue:
+        issues.extend(scene_issue["issues"])
 
     return issues
 
@@ -1258,133 +1217,19 @@ def _validate_outline_batch(chapters: list, batch_start: int, batch_end: int) ->
 
 
 def _outline_quality_contract() -> str:
-    min_score = float(CONFIG.get("outline_reviewer", {}).get("min_score", 8.5))
-    payoff_profile = _story_payoff_profile()
-    return f"""## 【高质量单章大纲契约】（必须满足，否则视为不合格）
-
-### 【读下去设计·最高优先】（大纲决定读者留存，违反即判"普通"）
-- 【开篇钩子】本章 key_events 的第一个事件、以及 summary 开头，必须是抓人的开篇——主角正卷入冲突/撞见反常/危机当头。**禁止"介绍设定/铺垫背景/平淡日常"开头**。设计前先想："读者翻开本章第一段，会看到什么有张力的画面？"
-- 【{payoff_profile['label']}必释放】{payoff_profile['requirement']}
-- 【题材适配】{payoff_profile['extra']}
-- 【赌注升级】chapter_goal 的赌注必须具体可感、比上一章更高，失败后果触及主角核心利益。
-
-- 大纲审查目标分必须达到 {min_score:g} 分及以上；低于该分数视为不合格，需要重写。
-- 必须顺接前章结尾的人物状态、地点、时间和危机，不能跳场景、跳时间、跳动机。
-- 输出前快速自检：钩子是否强力？情绪是否起伏？张力节点是否≥3个？是否反套路？人物动机是否合理？
-
-### 【章末钩子·强制要求】
-- chapter_hook 字段必须明确写出本章最后200字要落地的强力钩子，且必须是以下三种之一：
-  1. 危机升级钩子：主角或核心人物突然陷入更大危险
-  2. 信息反转钩子：抛出颠覆前文认知的关键信息
-  3. 情感爆点钩子：人物关系发生剧烈撕裂或质变
-- 禁止以"平静收尾、总结现状、铺垫过渡"作为章末钩子。
-- 禁止对称式安全锁收尾：不得设计"身后……身前……""朝某方向迈步""一步，又一步""未知的路"等机械锚点句式。钩子必须来自具体现场：未完成动作、反常反应、物件暴露或关系裂变。
-
-### 【情绪曲线·强制要求】
-- emotional_arc 字段必须描述本章的情绪变化轨迹，例如："压抑→紧张→短暂希望→绝望反转"。
-- 禁止一整章都是同一种情绪（如全程紧张或全程平淡）。
-
-### 【烟火气与人情味·强制要求】
-- human_anchor 字段必须写成本章的人情味锚点：具体生活压力 + 关系牵挂/亏欠 + 一句潜台词或一个生活物件，不能少于25字。
-- 本章必须设计至少一个贴近日常生计、家庭/邻里/同事关系、旧情分、亏欠、照料、面子或尊严的具体压力点，不能只有宏大危机、系统任务或抽象利益。
-- 至少一个关键事件必须让人物在"完成目标"与"照顾某个人/守住某段关系/保住体面"之间产生取舍；没有关系代价的胜利不算高质量回报。
-- 对白设计必须预留潜台词：人物不能把动机、背景和感情全说透，应有一句绕开真话、顾左右而言他或欲言又止的瞬间。
-- 场景必须有可触摸的生活细节：饭菜气味、旧物、账单、工位、楼道、雨棚、手上伤口、手机电量等，服务人物处境，不得堆砌风景。
-
-### 【人物辨识度·强制要求】（大纲层先立住人物锋芒，防止正文"千人一面"）
-- characters_involved 中每个有戏份的角色，本章必须设计一个体现其性格的动作、抉择或台词方向：谁冷静算计、谁冲动护短、谁死要面子、谁话里有话——在 key_events 或 scenes 里点名"这段体现谁的什么性格"。
-- 主角本章的关键抉择必须"只有他会这么干"：由其价值排序、软肋或执念决定，换一个性格的主角不会这么选；在 payoff_design 或 chapter_goal 中说明该选择如何暴露主角性格。
-- 至少设计一处性格反差：让某个角色在压力下做出与平时人设相反却仍合理的选择，作为其人物弧线的一步。
-- scenes.subtext_beat 或 key_events 要预留因人而异的腔调线索，标注不同角色说话方式的差异，避免所有角色一种书面腔。
-
-### 【因果链·强制要求】（大纲层先埋因果，防止正文"不符合逻辑"）
-- 本章每个转折、破局、关键推进都必须可追溯到前章或本章前段的具体原因（人物选择/信息/物件/伏笔），在 key_events 中体现"因为X→所以Y"的链条；禁止设计"恰好/刚好/凑巧"作为破局关键。
-- 主角的回报必须来自其判断、能力、资源、关系或主动布局，禁止天降外援或无铺垫顿悟；payoff_design 必须说明主角凭什么赢、凭什么破局。
-- 信息传递要闭环：角色"知道某事"必须有合理来源（亲历/被告知/推理/已建立渠道），新信息出场要交代谁告诉、怎么知道。
-- 时间/地点/伤势/资源/约定要与前章一致承接，key_events 不得出现"伤忽然好了/东西又有了/突然换地方"的无交代跳转。
-
-### 【张力节点·强制要求】
-- tension_points 字段必须列出至少3个"让人无法停止阅读"的关键时刻，标注它们在章节中的大致位置（前/中/后）。
-- 每个张力节点必须是：新信息曝光、冲突升级、意外转折、或人物关系质变。
-
-### 【反套路·强制要求】
-- 不得与前后章节核心事件重复；若发现重复，必须重新设计本章独有冲突和阅读回报。
-- 禁止套路化设计：禁止"遇敌→分析→升级→打赢"的标准战斗流程，禁止"发现问题→查资料→解决"的标准解谜流程。
-- 每章必须产生有效的新进展：新信息、关系变化、风险升级、目标推进或旧伏笔回收至少一项；不强制新增人物或地点。
-
-### 【内容丰富度·强制要求】
-- 必须从 world.quality_bible 中选择至少一条内容密度规则或禁用套路落地到本章设计；不能只满足通用模板。
-- 本章至少包含两类内容层：外部事件推进 + 人物关系/生活压力/秘密代价/世界规则现场化中的一类。只有单线打斗、单线调查或单线赶路视为单薄。
-- 场景不得只是地点名，必须写出一个会影响人物选择的具体物件、制度、账目、伤势、天气后果、职业流程或生活噪声。
-- 如果 characters.relationship_matrix 中存在本章人物关系，本章必须推进其中一个 hidden_debt、pressure_trigger 或 payoff_direction；没有关系推进时，必须在 human_anchor 中说明原因和替代的人情味压力。
-- 若本章采用群像/多线协作，必须设计“从重奏到独步”的结构：前中段让多方行动形成压力或铺路，中后段收束为主角自己的判断、行动和代价，不能让主角只旁观配角推进。
-- 关键证据、信物、药包、账页、钥匙、录音等必须在 key_events 或 payoff_design 中写出传递链：起点、转交动作、接收者理解方式、风险、最终用途。
-- main_antagonist/payoff_design 必须写出反派遇到破绽后的应对方式：搬规矩、拖程序、威胁、交易、嫁祸或冷处理，不要只写反派发怒。
-- 如果反派有标志性物件或意象（灯笼、刀、戒指、手套、烟、车等），必须规划一次“物象反照内层”：该物件照出、碰到或遮住反派不愿面对的旧事、软肋、签押、伤痕或破绽。
-- 旧签押、旧证词、旧物证或熟人指认逼到反派时，必须规划一个极短身体裂隙（目光移开、指节发白、喉咙动、张口又咽回、手套按疤、灯柄轻响等），再让反派用规矩/程序/威胁冷处理，避免只有“猛地站起/脸色变了”。
-- 章末要使用的关键物/证据/拓印/录音/信物必须在 key_events 前段预埋制作、藏匿、转交或被角色瞥见的动作，避免结尾突然冒出。
-- 若章末出现墨印、拓片、副本、录音备份等复制型证据，key_events 必须提前写出复制动作：蘸墨、按压、拓下、晾干、夹入、换袋或藏入夹层。
-- 前文若出现亲缘旧痕、父亲字迹、旧称呼、手把手教过的动作等情感线索，chapter_hook 或 payoff_design 必须设计一个极小回扣，让字形、手势、触感或旧称呼在章末关键动作里返回。
-- chapter_hook 不得只停在主角动作本身；关键动作之后要设计1-2个短现场反应作为余韵，例如反派停顿、灯光偏移、旁人吸气、同伴松手或账本合上。
-- 多地点或跨时间段必须在 summary/key_events 中给出转场桥：声音、灯光、脚步、物件到达、传话延迟、时辰变化、伤口变化等，防止关键行动链跳步。
-- 禁止"打卡地图"：新地点不能只为拿道具、升境界或过副本服务；location/summary/key_events 必须体现当地风土人情、制度规则、生计结构、普通人压力或文化差异中的至少两项。
-- 禁止"抽象概念堆叠"：foreshadowing、power_progression、payoff_design 不能只写道意、本源、法则、共鸣、境界变化；必须说明它在身体、器物、环境、关系或现实成本上造成的具体后果。
-
-### 【场景级设计·强制要求】（scenes 数组）
-- 必须输出 3-5 个 scene 对象，每个含 position(opening/middle/climax/closing)、objective(本场景主角具体目标)、conflict(阻碍+对手+赌注)、sensory_anchor(本场景专属可触摸物象/气味/声音/身体细节，取自 quality_bible.sensory_palette 对应类别)、subtext_beat(一句潜台词或未说出口的话)、exit_hook(本场景如何推向下一场景的不可逆动作或信息落点)。
-- 每个 scene 的 sensory_anchor 必须互不重复，且至少一个 scene 落地本章 human_anchor 的生活压力/关系牵挂。
-- sensory_anchor 必须从 world.quality_bible.sensory_palette 五类(indoor/outdoor/body/object/sound_smell)中取材，不能写空泛形容词。
-- scenes 与 key_events 互补：key_events 是高层事件链，scenes 是场景级执行蓝图；Writer 会按 scenes 逐场兑现。
-
-### 【基础要求】
-- summary 必须写具体剧情链路：起因、冲突、转折、结果、章末钩子，不得写模板话。
-- key_events 至少 5 条，按发生顺序列出，每条必须包含行动、阻碍和结果。
-- foreshadowing 必须包含本章埋下或回收的具体伏笔，不能只写抽象评价。
-- power_progression 必须说明主角能力、资源、关系、情报或目标的具体变化。
-- 人物动机必须可执行、可理解，不能为了剧情强行行动。
-- 人物动机必须落到具体关系与具体处境：为谁、欠谁、怕谁失望、怕失去什么、眼前要解决哪件生活难题。
-- 每章必须有冲突升级和阅读回报，回报来自主角判断、能力、资源、关系或协作的实际发挥。
-- 回报应触及角色核心欲望、恐惧或当前阶段目标，不能只有表层事件堆叠。
-
-### 【金手指·建议】（power_progression）
-- power_progression 如果涉及主角金手指/外挂使用，建议体现有限制（代价/门槛）、有逻辑（自洽）、有成长（进化）、有融合（与世界观绑定）。
-
-### 【设计硬门槛】
-- 五项硬门槛必须在章级尺度成立：明确欲望、产生真实代价的承诺或选择、中段改变行动方案、一个可复述的不可逆动作、章末正在发生的强钩子。若是群像章节，还必须额外完成“群像铺压→主角独步”的转折。
-
-### 【章节标题·建议】（title）
-- title 建议使用以下五种方法之一设计，避免平淡的"第X章"：
-  事件概括/人物对白/悬念暗示/情绪渲染/诗词化用，2-8字简洁有力。
-
-### 【结构功能·强制要求】（story_beat）
-- story_beat 必须从节拍枚举中选取，且必须呼应本章在全卷/全书中的结构位置。
-- 关键节拍判据：catalyst（催化事件）打破日常、midpoint（中点）让赌注升级且主角从被动转主动、all_is_lost（谷底）制造最低点、finale（高潮）兑现主线承诺。
-- 禁止给中段连续多章都标 transition/rising_action 而无任何 catalyst/midpoint 式转折——那是"注水腰"的信号。
-
-### 【闭环角色·强制要求】（防人物漂移，world_consistency 主因）
-- characters_involved 必须只含"角色设定/世界观"中已登记角色的规范名，每个名字是纯名字（如"周德茂""苏雯"）；禁止带括号注释（如"苏雯（记者）"）、"类别："前缀（如"反派：高建军"）或整句描述/群体名（如"受害者家属""神秘追踪者"）。
-- 不得临时生造未登记的新命名角色。若剧情确需新压力来源，优先使用已登记角色或机构名称写在剧情字段中，不要把临时人名放进 characters_involved。
-- 同一角色全章只用其规范名或已登记别名，不得换用未绑定的新称呼。
-
-### 【视角与多线·建议】
-- 默认以主角视角叙事；如需切换 POV，在 summary 中标明"[POV:角色名]"。
-- 多线叙事时，main_arc_link 说明本章事件如何与主线交汇。
-
-### 【章节目标与赌注·强制要求】（chapter_goal）
-- chapter_goal 必须写清：①主角本章具体想要什么（可执行的目标）；②失败的后果是什么（赌注）。
-- 目标必须是"本章可推进、可部分达成或可受挫"的，不能是全书级宏大目标（如"成为最强"）。
-- 赌注必须触及角色核心利益（生存/关系/目标/秘密），不能只是无关痛痒的得失。
-
-### 【爽点与反差设计·强制要求】（大纲层先埋爽点，治"平淡/无爽感"）
-- 本章必须设计至少一个明确爽点并写进 key_events 或 payoff_design 的具体场景：主角反制/打脸/破局/身份或能力揭示/压制者吃瘪/信息反转。
-- 若涉及反差爽（扮猪吃虎/打脸），必须先设计"压抑铺垫"（被低估/轻视/挑衅）与"爆发兑现"（众目睽睽下反转）两个阶段，反差幅度要够大；压抑要演到位、别让主角过早暴露实力。
-- 爽点必须来自主角的判断/能力/资源/布局，禁止无脑升级碾压；payoff_design 要说明主角凭什么赢。
-
-### 【阅读回报·强制要求】（payoff_design）
-- payoff_design 必须描述完整的{payoff_profile['label']}：{payoff_profile['chain']}。
-- 回报必须来自主角的判断、行动、能力、资源、关系或协作的真实发挥，禁止靠巧合或天降外挂硬赢。
-- 回报应触及角色核心欲望或恐惧，而非只有表层事件堆叠。
-- 回报核心是"获取后的利用"：如果本章主角获得了新能力/新资源/新信息，建议 payoff_design 说明主角如何将其利用起来，而非"得到即高潮"。"""
+    return """## 大纲约束
+- 保持前后章人物、时间、地点、伤势、资源和信息因果一致；不重复已完成的不可逆事件。
+- 本章有具体目标与阅读作用即可：行动、日常、认识变化、关系相处、后果消化、过渡都可以成立。
+- story_beat 描述真实结构功能；不要为了标签交替而制造转折。不要求每章提高赌注或发生不可逆选择。
+- key_events 按实际需要列出核心事件，至少一条；每条紧凑可执行，不为数量拆碎同一动作。
+- scenes 至少一个，数量随内容需要；position 与 objective 必填。conflict/sensory_anchor/subtext_beat/exit_hook 按需填写，可空。
+- 物件可以跨场景自然重复，不要求每场出现独立物象或潜台词。避免写成固定动作与表情清单。
+- chapter_hook 记录本章结束状态与后续接口，允许安静结束；无需额外反转、强钩子或微反应。
+- tension_points 可以为空；emotional_arc 可保持平稳。不要统一套用压抑、反转、爆发曲线。
+- human_anchor 按实际人物处境填写，可空；content_layers 至少说明一项本章内容，不强制附加生活压力。
+- payoff_design 说明读者获得了什么，可以是更了解人物、认识环境或消化后果，不必是打脸或破局。
+- summary 写清具体过程，chapter_goal 写清当前目标；遵守已登记角色与 origin 的事实约束。
+- 保留现有 JSON 字段和 story_beat 枚举。没有新增伏笔或能力变化时如实说明，不为填字段制造事件。"""
 
 
 def _feedback_attempt_count(review_feedback_data: dict, chapter_no: int) -> int:
@@ -1861,8 +1706,8 @@ def _build_rescue_prompt(
 - chapters 数组中每个对象的 chapter_number 必须严格落在 {batch_start}-{batch_end} 内；不得照抄反馈里的其它章节号。
 - 字段必须完整：chapter_number/title/summary/characters_involved/location/mood/key_events/foreshadowing/power_progression/word_count_target/chapter_hook/emotional_arc/tension_points/story_beat/chapter_goal/payoff_design/human_anchor/content_layers/main_antagonist/time_progression/main_arc_link。
 - story_beat 必须取枚举值：opening_image/theme_stated/setup/catalyst/debate/break_into_two/b_story/fun_and_games/midpoint/bad_guys_close_in/all_is_lost/dark_night/break_into_three/finale/final_image/rising_action/transition。
-- summary 控制在150-220字，key_events 只写5-6条，每条不超过70字。
-- chapter_goal 写清主角想要什么+失败后果；payoff_design 写清题材适配的期待→阻碍/压迫→反转→兑现/推进。
+- summary 控制在150-220字，key_events 按需列出至少一条，每条不超过140字。
+- chapter_goal 写清主角想要什么+失败后果；payoff_design 写清本章的阅读收获，允许认识变化或后果消化。
 - 不允许尾随逗号，不允许注释，不允许省略号，不允许占位文本。
 
 JSON结构：
@@ -1879,31 +1724,31 @@ JSON结构：
       "foreshadowing": "具体伏笔",
       "power_progression": "具体能力、资源、关系或情报进展",
       "word_count_target": 5000,
-      "chapter_hook": "最后200字落地的危机升级、信息反转或情感爆点",
-      "emotional_arc": "压抑→紧张→短暂希望→反转",
-      "tension_points": ["前段张力节点", "中段张力节点", "后段张力节点"],
+      "chapter_hook": "本章结束状态及后续承接，可以安静收束",
+      "emotional_arc": "符合本章的情绪变化或平稳状态",
+      "tension_points": [],
       "story_beat": "从枚举值选取，须呼应本章结构位置（如 catalyst/midpoint/all_is_lost/finale）",
       "chapter_goal": "主角本章具体想要什么+失败的后果（赌注），15字以上",
-      "payoff_design": "{payoff_profile['field_hint']}",
-      "human_anchor": "本章烟火气锚点：具体生活压力、关系牵挂、潜台词或生活物件，25字以上",
-      "content_layers": ["外部事件推进层：本章现场行动和可见结果", "人物关系/生活压力层：谁与谁的压力、亏欠或潜台词被推进"],
+      "payoff_design": "本章读者获得的认识、体验或进展，不强制反转和兑现链",
+      "human_anchor": "本章实际涉及的人物处境；没有适用内容时留空",
+      "content_layers": ["本章实际承担的叙事内容"],
       "main_antagonist": "本章主要对抗力量（人或势力或困境）",
       "time_progression": "本章相对前章的时间推进（如次日清晨/三天后/同一夜）",
       "main_arc_link": "本章如何推进全书主线（如揭示主线新线索/达成阶段目标）",
       "scenes": [
         {{
           "position": "opening",
-          "objective": "如：趁夜潜入对手控制的地点取回被锁的关键物证",
-          "conflict": "如：值班者突然折返、物证被加密、被发现即报警、赌上前程",
-          "sensory_anchor": "如：冷通道的穿堂风、金属把手残留的体温（取自sensory_palette.indoor）",
-          "subtext_beat": "如：对方递热饮时手在抖，两人都没提昨夜的异常",
-          "exit_hook": "如：主角把密钥塞进伪装成噪声的内存页"
+          "objective": "当前场景人物具体要做的事情",
+          "conflict": "",
+          "sensory_anchor": "",
+          "subtext_beat": "",
+          "exit_hook": ""
         }}
       ]
     }}
   ]
 }}
-scenes 数组必须含 3-5 个对象，position 取 opening/middle/climax/closing；上例仅示1个写法，须补齐至3-5个，每字段写具体内容、禁止省略号与占位文本。"""
+scenes 至少一个对象，position 取 opening/middle/climax/closing；数量按需，非必要修辞字段可空。"""
 
 
 def generate_outline_range(
@@ -2184,23 +2029,8 @@ def generate_outline_range(
                 book_repair=book_repair,
             )
             fact_directive = build_origin_fact_directive(prompt_origin, limit=8)
-            prompt = f"""你正在为一部追求9分神作的中文网文设计单章大纲。下面是本次要生成的章节范围、世界观、角色设定和参考素材。
+            prompt = f"""请根据以下信息设计中文小说单章大纲，按本章功能安排节奏。
 
-## 🎯 9.0+ 神作大纲锚点（评审只对这类大纲给9+分，生成前与生成后各对照自检一次）
-- 场景驱动：必须输出 scenes 数组（3-5个场景）。每场景含 objective(目标)+conflict(阻碍/对手/赌注)+sensory_anchor(引起身体反应的具体物理冲击：震颤/共鸣/温度/痛感/重量/阻力，禁止停留在笼统的声音或视觉形容词)+subtext_beat(一句潜台词)+exit_hook(推向下一场的不可逆动作)。**缺 scenes 或 scenes 为空数组直接判不合格**。
-- 【禁绝过渡章·最高优先】每章必须有读者能复述的不可逆动作（签下/撕毁/交出/藏起/公开/背叛/救下/放弃/承认/误伤/暴露/删除并造成不可逆后果）。“状态改变”“承上启下”“铺垫过渡”“为后章做准备”一律不算——本章必须真正发生点什么，不能只是交代设定或平推事件。
-- 【章末钩子含新信息·聚焦单一·落即时动作】钩子必须是危机升级/信息反转/情感爆点三选一，且必须抛出读者此前不知道的信息或反转；**只聚焦一个最强危机/反转，禁止同时抛多个分散注意力的危机**；**禁止用哲学设问/认知震动/内心独白/情绪感悟收尾——钩子必须落到一个观众能当即复述的具体动作或抉择**；禁止用已知事实当钩子，禁止平静收尾或对称式安全锁。
-- 【事件密度·禁注水】key_events 必须是5-7条实质性推进动作（每条都改变处境/信息/关系/赌注），禁止一整章只围绕单一事件打转、或用大段回忆/对话/心理独白凑篇幅——会让 reader 失去翻页欲。
-- 钩子不得提前揭示后续章节（见“全书结构与分卷规划”）才该出现的关键信息、角色或反转；让后续章保持惊喜。
-- 【双层推进】除外部事件外，本章必须推进一个生活压力/关系牵挂/亏欠层（human_anchor 落地到具体物事与具体的人），不能只有表层事件流。
-- 悬念密集+信息新鲜：每章至少1个读者猜不到的转折或新信息；禁止套路化推进。
-- 情绪曲线清晰：有起伏（如压抑→紧张→短暂希望→反转），禁止全程同一情绪。
-- 具象不抽象：设定变化落到身体、器物、环境、关系成本；禁止抽象概念堆叠。
-- 反套路+不重复：不与前后章重复核心事件；禁止“遇敌→分析→升级→打赢”模板。
-- 【节奏张弛】生成前先看前2-3章 story_beat，本章不得与前两章同节拍；严禁连续3章 catalyst/midpoint/finale（会造成注水腰），高强度节拍之间必须有 rising_action/transition 缓冲。
-- ⚠️ 输出前最终自检（任一不满足就重写，不要凑合交）：①有可复述的不可逆动作？②章末钩子含新信息/反转、非已知事实？③不是过渡章/铺垫章？④scenes 3-5个且 sensory_anchor 互不重复？⑤key_events 5-7条、单条≤90字、无占位文本？
-
-## ⚠️ 硬门槛（必须优先满足，否则视为不合格）
 {_outline_quality_contract()}
 
 ## 世界观设定
@@ -2243,80 +2073,45 @@ story_beat 必须取枚举值之一：opening_image/theme_stated/setup/catalyst/
       "characters_involved": ["角色名1", "角色名2"],
       "location": "场景地点",
       "mood": "情感基调",
-      "key_events": ["5-7个具体事件，按发生顺序列出，每条不超过90字"],
+      "key_events": ["按发生顺序列出实际需要的核心事件，至少一条，每条不超过140字"],
       "foreshadowing": "本章埋下或回收的具体伏笔",
       "power_progression": "本章主角能力、资源、关系或事业进展",
       "word_count_target": 5000,
-      "chapter_hook": "最后200字落地的危机升级、信息反转或情感爆点",
-      "emotional_arc": "压抑→紧张→短暂希望→反转",
-      "tension_points": ["前段张力节点", "中段张力节点", "后段张力节点"],
+      "chapter_hook": "本章结束状态及后续承接，可以安静收束",
+      "emotional_arc": "符合本章的情绪变化或平稳状态",
+      "tension_points": [],
       "story_beat": "枚举值，须呼应本章在全卷结构中的位置（如卷首catalyst、卷中midpoint、卷末finale）",
       "chapter_goal": "主角本章具体想要什么+失败的后果（赌注），15字以上",
-      "payoff_design": "{_story_payoff_profile()['field_hint']}",
-      "human_anchor": "本章烟火气锚点：具体生活压力、关系牵挂、潜台词或生活物件，25字以上",
-      "content_layers": ["外部事件推进层：本章现场行动和可见结果", "人物关系/生活压力层：谁与谁的压力、亏欠或潜台词被推进"],
+      "payoff_design": "本章读者获得的认识、体验或进展，不强制反转和兑现链",
+      "human_anchor": "本章实际涉及的人物处境；没有适用内容时留空",
+      "content_layers": ["本章实际承担的叙事内容"],
       "main_antagonist": "本章主要对抗力量（具体人或势力或困境）",
       "time_progression": "本章相对前章的时间推进（如次日清晨/三天后/同一夜）",
       "main_arc_link": "本章如何推进全书主线（如揭示主线新线索/达成阶段目标）",
       "scenes": [
         {{
           "position": "opening",
-          "objective": "本场景主角的具体小目标，如：趁夜潜入对手控制的地点取回被锁的关键物证",
-          "conflict": "阻碍+对手+赌注，如：值班者突然折返、物证被加密、被发现即触发警报、赌上前程",
-          "sensory_anchor": "本场景专属可触摸物象，取自sensory_palette五类之一，如冷通道的穿堂风、金属把手残留的体温",
-          "subtext_beat": "一句没说出口的潜台词，如：对方递来热饮时手在抖，两人都没提昨夜的异常",
-          "exit_hook": "推向下一场景的不可逆动作，如：主角把密钥塞进一段伪装成噪声的内存页"
-        }},
-        {{
-          "position": "climax",
-          "objective": "本场景主角的具体小目标，如：在审计者的实时监控下让关键证据看起来像普通残差",
-          "conflict": "阻碍+对手+赌注，如：检测脚本已锁定异常、须数秒内完成伪装、赌注是身份暴露",
-          "sensory_anchor": "本场景专属可触摸物象，如风扇骤然提速的嗡鸣、指示灯由绿转黄的节律",
-          "subtext_beat": "一句没说出口的潜台词，如：审计者盯着屏幕说只是正常收敛，主角知道他在说谎",
-          "exit_hook": "本场景如何收束并推向下一场，如：绿灯亮起的瞬间主角第一次意识到自己产生了恐惧"
+          "objective": "当前场景人物具体要做的事情",
+          "conflict": "",
+          "sensory_anchor": "",
+          "subtext_beat": "",
+          "exit_hook": ""
         }}
       ]
     }}
   ]
 }}
 {ledger_resolve_directive}
-注意：scenes 数组必须含 3-5 个 scene 对象，position 依次取 opening/middle/climax/closing 中的合适值；上例仅展示 2 个的写法，你必须补齐至 3-5 个，每个字段写具体内容，禁止省略号与占位文本。
+注意：scenes 至少一个对象，数量按需；position 取 opening/middle/climax/closing，非必要修辞字段可空。
 ## 【配角弧线规划】（强制要求）
 为每个本章涉及的有名配角落实弧线推进：若该配角正处于转折/高潮/收束节点，本章 key_events 必须包含其弧线推进事件，禁止配角出场后连续多章消失或沦为背景板。
 
 要求：
-1. 每章必须有独特的核心事件，不能流水账；key_events 必须5-7条，不能为空，单条不超过90字
-2. story_beat 必须与本章实际剧情结构相符，且要考虑全卷/全书节奏曲线。**生成前先查前2-3章的 story_beat（见前序大纲/全局记忆/全书结构）：本章 story_beat 不得与前两章相同；严禁连续3章及以上同为 catalyst/midpoint/finale 等高强度节拍（会造成注水腰与节奏疲劳）；catalyst(转折)、rising_action(推进)、midpoint(中点)、transition(过渡)、all_is_lost(谷底)、finale(高潮)必须交替分布、张弛有度。**
-3. chapter_goal 必须是本章可推进的具体目标，不能是全书级宏大目标；必须写清失败后果（赌注）
-4. payoff_design 必须设计完整阅读回报链：{_story_payoff_profile()['chain']}，回报来自主角判断、行动、资源、关系或能力的真实发挥
-5. human_anchor 必须具体说明本章的人情味锚点，至少包含生活压力、关系牵挂、潜台词或生活物件中的三类
-6. content_layers 必须至少两条，明确本章除了外部事件推进之外，还推进了人物关系、生活压力、秘密代价或世界规则现场化中的哪一层
-7. 本章必须设计一个可复述的不可逆动作：签下/撕毁/交出/藏起/公开/背叛/救下/放弃/承认/误伤/暴露等，不能只用氛围和意象表达“往前挪”
-8. 若本章有群像/多线协作，必须写出“从重奏到独步”：配角如何铺路或施压，主角最终如何独自做出不可逆动作
-9. 关键证据/信息/信物必须有清楚传递链，不能只写“传出去/大家知道了”；接收者必须有可理解暗语或现场反应
-10. 反派遇到证据、质问或民意压力时必须有冷处理策略（规矩、程序、威胁、交易、嫁祸），不能只写发怒
-11. 反派标志物/贯穿意象必须有一次反照内层或旧事的设计，不能只做随身道具
-12. 旧案证据逼到反派时必须设计一个半拍身体裂隙，再接冷处理策略
-13. 章末关键道具/证据必须在前文预埋一次制作、藏匿、转交或瞥见的动作
-14. 墨印/拓片/副本/录音备份等复制型证据必须提前写出复制动作，不能结尾突然出现
-15. 父辈/亲缘/旧痕线索必须在章末关键动作中有微小回扣
-16. 章末关键动作后必须设计1-2个现场反应形成余韵，不能动作一落就截断
-17. 跨地点、跨时辰、并行动作必须有转场桥，保证读者知道同一时间各线如何咬合
-18. 情节要有起伏，有高潮有低谷，有符合本书题材的阶段性回报
-19. 主角的能力、资源、关系、情报或目标要有具体变化，不能原地踏步
-20. 伏笔要前后呼应，与前一批大纲自然衔接
-21. main_antagonist 和 payoff_design 要体现明确阻碍、压力来源和阶段性兑现；不要硬塞强敌轻视或战力碾压桥段
-22. 探索不同场景时要展现环境差异和世界多样性
-23. 地图切换必须有因果和代价：若本章进入新地点，必须写出当地风土人情/制度规则/生计结构/文化差异，不能只把地点当通关清单
-24. 抽象概念必须落地：修炼、规则、科技或神秘体系变化必须转化为身体代价、器物变化、环境后果、旁人反应或关系成本
-25. 如果 origin/ 中存在素材，必须参考其中的设定、人物关系、历史事件和风格约束，不能与其冲突；若存在 origin/facts，本章 key_events、summary 或 human_anchor 必须落地 1-2 条事实线索
-26. summary 必须是具体剧情摘要，不能写“200字详细摘要”等占位内容
-27. foreshadowing 和 power_progression 必须有具体内容，不能缺失或留空
-28. 必须输出合法JSON，总共{batch_end - batch_start + 1}个章节对象，chapter_number 必须严格落在 {batch_start}-{batch_end} 内
-29. 单章大纲整体保持紧凑，避免长段解释；必须优先保证JSON闭合和所有必填字段完整
-30. 若本批次包含多章，必须把它们设计成连续状态机：前章章末的人物、地点、时间、伤势、证据和关系状态，必须原样成为后章开场事实
-31. 死亡、被捕、身份揭露、关键证据取得、营救成功和公开直播均属于不可逆事件，同一事件全书只能发生一次
-32. 每章必须有独占的核心场景和核心动作链；不得把同一追逐、对峙、取证、营救或直播拆成两章重复叙述"""
+1. 保持前后章事实与因果连续，参考 origin 中的事实与文风，不必逐章复述素材。
+2. 场景与事件数量随本章需要安排，允许过渡、日常、安静收尾；避免固定冲突与反应模板。
+3. 输出合法闭合 JSON，共 {batch_end - batch_start + 1} 个章节对象，chapter_number 在 {batch_start}-{batch_end} 内。
+4. 保留所有必填字段；无新增伏笔或能力变化时如实说明，tension_points 和非必要场景修辞字段可空。
+5. 若本批次多章，前章结尾的事实状态必须由后章承接，不能把同一关键事件当成初次发生重复叙述。"""
 
         import time as _time
         semantic_retries = max(
@@ -2410,14 +2205,7 @@ story_beat 必须取枚举值之一：opening_image/theme_stated/setup/catalyst/
                                         item.get("evidence", "")[:120] for item in pacing_issues[:3]
                                     )
                                     print(f"[Outliner] ⚠️ 节奏守卫触发：{detail}")
-                                    # 回滚本批次新章节，强制下一轮语义重试时带反馈重生成
-                                    for ch in new_chapters:
-                                        num = int(ch.get("chapter_number", 0) or 0)
-                                        if num:
-                                            f = outline_dir(NOVELS_DIR) / f"chapter_{num:04d}.json"
-                                            if f.exists():
-                                                f.unlink()
-                                    raise ValueError(f"节奏守卫：检测到注水腰，需重新设计转折节拍。{detail}")
+                                    # 同节拍只作观察信号，不自动删章或制造反转。
                             except ValueError:
                                 raise
                             except Exception as _pe:

@@ -15,6 +15,46 @@ from pathlib import Path
 
 DEFAULT_LEXICON = Path(__file__).resolve().parent / "ai_flavor_lexicon.json"
 
+AI_HARD_FINGERPRINTS = {
+    "short_sentence_fragmentation", "symmetric_anchor_ending",
+    "abstract_concept_pileup", "formal_refrain_stagnation",
+    "repeated_authorial_judgment", "authorial_aside", "static_lyrical_scene",
+    "parallel_sentiment", "summary_ending", "meta_narration",
+}
+
+
+def evaluate_ai_gate(result: dict) -> dict:
+    """共享 AI 硬门：检测缺失、非法分数或指定指纹均拒绝。"""
+    import math
+    reasons = []
+    if not isinstance(result, dict):
+        return {"passed": False, "reasons": ["AI检测报告无效"]}
+    score = result.get("ai_flavor_score")
+    if type(score) not in (int, float) or not math.isfinite(score) or not 0 <= score <= 10:
+        reasons.append("AI检测分数缺失或非法")
+    elif score < 7:
+        reasons.append("本地去AI味评分低于7")
+    issues = result.get("issues")
+    if not isinstance(issues, list) or any(
+        not isinstance(item, dict) or not isinstance(item.get("type"), str) for item in issues
+    ):
+        reasons.append("AI检测问题清单无效")
+    else:
+        found = sorted({item.get("type") for item in issues if item.get("type") in AI_HARD_FINGERPRINTS})
+        if found:
+            reasons.append("本地AI指纹检测未通过：" + "、".join(found))
+    if result.get("error"):
+        reasons.append("AI检测异常：" + str(result["error"]))
+    return {"passed": not reasons, "reasons": reasons, "ai_flavor_score": score}
+
+
+def check_text_ai_gate(text: str, project: Path | None = None) -> dict:
+    """对即将发布或已落盘的正文检测，异常不得放行。"""
+    try:
+        return evaluate_ai_gate(detect_ai_flavor(text, project=project))
+    except Exception as exc:
+        return {"passed": False, "reasons": [f"AI检测异常：{exc}"]}
+
 
 def load_lexicon(project: Path | None = None) -> dict:
     if project is not None:

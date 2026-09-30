@@ -5,13 +5,7 @@ import statistics
 from typing import Any
 
 
-REQUIRED_DESIGN_GATES = (
-    "core_desire",
-    "irreversible_choice",
-    "midpoint_reversal",
-    "human_warmth",
-    "strong_hook",
-)
+REQUIRED_DESIGN_GATES = ("core_desire", "scene_design")
 
 
 def cast_name_set(characters: Any) -> set[str]:
@@ -313,47 +307,30 @@ def aggregate_outline_reviews(
 
 
 SCENE_REQUIRED_FIELDS = (
-    "position", "objective", "conflict", "sensory_anchor", "subtext_beat", "exit_hook",
+    "position", "objective",
 )
 SCENE_VALID_POSITIONS = ("opening", "middle", "climax", "closing")
 
 
 def detect_scene_density_issues(outline: dict) -> dict | None:
-    """本地确定性检测 scenes 数组密度——单章审查的 scene_design 门证据来源。
-
-    检查 scene 数量(3-5)、五字段完整性、position 合法、sensory_anchor 不重复。
-    返回 {issues, suggestion} 或 None（无 scenes 字段时，由上层决定是否报缺字段）。
-    """
+    """Validate an executable scene plan without imposing literary quotas."""
     if not isinstance(outline, dict):
         return None
     scenes = outline.get("scenes")
-    if scenes is None:
-        return None
-    issues: list[str] = []
-    if not isinstance(scenes, list):
-        return {"issues": ["scenes 不是数组"], "suggestion": "scenes 必须是 3-5 个场景对象数组"}
-    if len(scenes) < 3 or len(scenes) > 5:
-        issues.append(f"scenes 数量为 {len(scenes)}，应为 3-5 个")
-    anchors: list[str] = []
+    issues = []
+    if not isinstance(scenes, list) or not scenes:
+        return {"issues": ["scenes 必须是非空对象数组"], "suggestion": "提供至少一个有位置和具体目标的场景"}
     for idx, scene in enumerate(scenes):
         if not isinstance(scene, dict):
             issues.append(f"scenes[{idx}] 不是对象")
             continue
-        for field in SCENE_REQUIRED_FIELDS:
-            val = str(scene.get(field, "")).strip()
-            if len(val) < 4:
-                issues.append(f"scenes[{idx}].{field} 过短或为空")
-        pos = str(scene.get("position", "")).strip()
-        if pos and pos not in SCENE_VALID_POSITIONS:
-            issues.append(f"scenes[{idx}].position 非法: {pos}")
-        anchor = str(scene.get("sensory_anchor", "")).strip()
-        if anchor:
-            anchors.append(anchor)
-    if anchors and len(anchors) != len(set(anchors)):
-        issues.append("scenes 的 sensory_anchor 存在重复")
+        if scene.get("position") not in SCENE_VALID_POSITIONS:
+            issues.append(f"scenes[{idx}].position 非法")
+        if not isinstance(scene.get("objective"), str) or not scene["objective"].strip():
+            issues.append(f"scenes[{idx}].objective 缺少具体目标")
+        for field in ("conflict", "sensory_anchor", "subtext_beat", "exit_hook"):
+            if field in scene and not isinstance(scene[field], str):
+                issues.append(f"scenes[{idx}].{field} 必须是字符串，可为空")
     if not issues:
         return None
-    return {
-        "issues": issues[:6],
-        "suggestion": "补齐 scenes 数组：3-5 个场景，每个含 position/objective/conflict/sensory_anchor/subtext_beat/exit_hook，sensory_anchor 从 sensory_palette 取材且互不重复",
-    }
+    return {"issues": issues[:6], "suggestion": "修复场景对象结构和目标；不必补物象、潜台词或出口钩子"}

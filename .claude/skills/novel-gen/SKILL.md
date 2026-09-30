@@ -70,13 +70,13 @@ Planner
 Chapter N loop:
   Outline lookahead（默认10章）
      ↓ 先确保第 N 到 N+9 章大纲均已生成并通过审查
-  Outliner / Outline Race
+  Outliner
      ↓ chapters/outline/chapter_XXXX.json
   Outline Reviewer（大纲审查）
      ↓ 不通过：下一次 Outliner 必须立即带审查意见重生成同一章大纲；通过：进入 Writer
-  Writer / Draft Race（正文多候选赛马，默认3候选并行）
+  Writer（单章串行，默认无赛马）
      ↓ chapters/draft/chapter_XXXX.txt
-  Reviewer（对每个候选/精修稿评分，取最高）
+  Reviewer（有效报告 + 本文摘要 + 本地硬门）
      ↓ 不通过：带审查意见重新生成/精修同一章初稿；通过：写入 final
   Final
      ↓ chapters/final/chapter_XXXX.txt
@@ -91,13 +91,11 @@ Push/Reports
 - **Outliner 单章模式必须生成完整大纲**。单章大纲必须包含 `chapter_number/title/summary/characters_involved/location/mood/key_events/foreshadowing/power_progression/word_count_target`。其中 `summary` 必须是具体剧情摘要，`key_events` 至少 3 条，`foreshadowing` 与 `power_progression` 不得缺失或为空；不能把“200字详细摘要”“章节标题”“事件1”等模板占位词写入文件。结构不完整时 Outliner 应非零退出且不得落盘。
 - **生成端必须携带压缩质量标准**。Outliner/Writer 每次生成或重生成都应携带一段短质量契约，而不是完整审查 Prompt：Outliner 需包含大纲门槛分、前后章衔接、独立冲突、summary/key_events/foreshadowing/power_progression 硬要求；Writer 需包含正文门槛分、字数、承接、节奏推进、角色动机、章末钩子和禁止水文等硬要求。审查意见仍是重生成时的最高优先级输入，完整评分细则主要保留给 Reviewer。
 - **审查反馈必须压缩后再传给生成端**。多轮失败时只保留最高分、最近一轮 verdict/score、前 6 条核心失败原因、前 6 条必要修正和少量最新建议；不要把完整历史 reviews、长 failure_analysis 或大段 origin 全量塞入 Outliner/Writer。单章大纲输出也要控制长度：`key_events` 建议 5-7 条、每条不超过 90 字，优先保证 JSON 闭合和必填字段完整。
-- **Outline Reviewer** 紧跟 Outliner。大纲每轮最多生成/审查 3 次；每一次大纲审查未通过、Outliner 生成失败、JSON 解析失败或结构字段不完整后，Coordinator 都必须立即写入 `logs/outline_feedback_chXXXX_roundN.json` 并在下一次 Outliner 调用中传入 `--review-feedback`，不能等到下一轮才带反馈。3 次仍不通过时进入下一轮原因调整；最多 3 轮；仍不通过则停止全流程并推送企业微信错误。
-- 当 `outline_race.enabled=true` 时，大纲质量门必须使用候选并行赛马：同一章并发启动多个 Outliner 候选，每个候选写入 `logs/outline_candidates/chXXXX/roundR_attemptA/candidate_NN.json`，对应 Outline Reviewer 写入同目录候选审查文件；任一候选达到 `outline_reviewer.min_score` 后，Coordinator 立即发布该候选到正式 `chapters/outline/chapter_XXXX.json` 与 `chapters/outline_review/chapter_XXXX_review.json`，并停止同章其他候选进程。所有候选均失败时，汇总最佳分数与失败原因写入下一轮 `--review-feedback`。候选流程不得让多个 Outliner/Reviewer 直接抢写正式大纲文件。
-- **当 `draft_race.enabled=true`（默认开启）时，正文阶段启用多候选赛马**。Coordinator 对每章并发启动 `draft_race.candidates` 个 Writer 候选（默认 3），每个候选写入 `logs/draft_candidates/chXXXX/roundR_attemptA/candidate_NN.txt`，对应 Reviewer 写入同目录候选审查文件。任一候选达到 `reviewer.min_score` 且通过本地质量门，Coordinator 立即发布该候选到正式 `chapters/draft/chapter_XXXX.txt` 与 `chapters/review/chapter_XXXX_review.json`，并停止同章其他候选进程。所有候选均失败时，汇总最佳分数与失败原因进入下一轮或触发 Polisher 精修。候选流程不得让多个 Writer/Reviewer 直接抢写正式初稿文件。
+- **Outline Reviewer** 紧跟 Outliner。大纲默认每轮最多生成/审查 1 次；每一次大纲审查未通过、Outliner 生成失败、JSON 解析失败或结构字段不完整后，Coordinator 都必须立即写入 `logs/outline_feedback_chXXXX_roundN.json` 并在下一次 Outliner 调用中传入 `--review-feedback`，不能等到下一轮才带反馈。1 次仍不通过时进入下一轮原因调整；默认最多 2 轮；仍不通过则停止全流程并推送企业微信错误。
 - 如果大纲审查意见明确指出“与后章重叠/重复/冲突”，默认按“后章有问题”处理：Coordinator 先删除并重写后章大纲，再回头重审当前章，避免把边界错算到前章。
 - **Writer/Reviewer** 紧跟已过审大纲执行。`scripts/maintenance/draft_lane.py` 可用 `--workers` 并发生成初稿，但每章启动前必须确认本章大纲已通过；并发必须受 `--continuity-window` 约束，避免后文无限越过前文。Writer 必须读取前后章节大纲、前一章结尾和审查反馈来处理章节承接；Reviewer 写共享进度文件时应避免并发写冲突。初稿重写次数按 `coordinator.draft_attempts_per_round × coordinator.draft_analysis_rounds` 执行；不通过时 Writer 必须带着上一轮 Reviewer 审查意见重写同一章。耗尽配置次数仍不通过时，Coordinator/draft lane 汇总原因并停止全流程或当前 lane，推送企业微信错误。
 - 初稿审查通过后，Coordinator 将合格初稿写入 `chapters/final/chapter_XXXX.txt`。普通流程不再依赖全局 rewrite 队列作为主路径。
-- `outline_reviewer.min_score` 控制大纲审查门槛，`reviewer.min_score` 控制初稿审查门槛。不要在代码或手工命令中硬编码分数。
+- `outline_reviewer.min_score` 控制大纲审查门槛，`quality.review_min_score` 控制初稿审查门槛（黄金三章另用 reviewer.golden_chapter_min_score）。不要在代码或手工命令中硬编码分数。
 - 当用户要求“最终 8.5 评分”或同等质量优先目标时，项目配置应将 `outline_reviewer.min_score` 与 `reviewer.min_score` 都设为 8.5；大纲/正文重生成次数可提高到 5 轮×5 次。正文 lane 遇到 `需修改`、`需重写` 或低于门槛时必须继续带审查意见重写，不能第一次失败就停止。
 - 继续生成长篇项目时，优先运行 `scripts/pipeline/coordinator.py` 断点续传，不手工逐章调用 Writer/Reviewer，除非是在定位单章故障。
 
@@ -158,7 +156,7 @@ python "scripts/maintenance/wechat_notify.py" --project "projects/<book_id>"
 ```json
 {
   "total_chapters": 2000,
-  "model": "MiniMax-M3-highspeed",
+  "llm": { "provider": "deepseek", "model": "deepseek-chat" },
   "mmx_path": "mmx",
   "api_qps": 5.0,
   "writer": {
@@ -172,29 +170,20 @@ python "scripts/maintenance/wechat_notify.py" --project "projects/<book_id>"
     "pause_between_batches": 3.0,
     "push_interval_seconds": 120,
     "outline_lookahead_chapters": 10,
-    "outline_attempts_per_round": 3,
-    "outline_analysis_rounds": 3,
-    "draft_attempts_per_round": 3,
-    "draft_analysis_rounds": 3
-  },
-  "outline_race": {
-    "enabled": true,
-    "candidates": 3,
-    "max_workers": 3,
-    "stop_on_first_pass": true
-  },
-  "draft_race": {
-    "enabled": true,
-    "candidates": 3,
-    "max_workers": 3,
-    "stop_on_first_pass": true
+    "outline_attempts_per_round": 1,
+    "outline_analysis_rounds": 2,
+    "draft_attempts_per_round": 1,
+    "draft_analysis_rounds": 2
   },
   "outline_reviewer": {
+    "provider": "glm",
+    "model": "glm-4.6",
     "max_tokens": 4096,
     "temperature": 0.3,
     "min_score": 8.5
   },
   "quality": {
+    "review_min_score": 8.5,
     "min_chapter_words": 5000,
     "max_chapter_words": 12000,
     "hard_fail_min_chapter_words": 3000,
@@ -240,7 +229,7 @@ python "scripts/maintenance/wechat_notify.py" --project "projects/<book_id>"
 修改小说自动化代码后至少运行：
 
 ```powershell
-python -m py_compile "scripts/pipeline/planner.py" "scripts/pipeline/outliner.py" "scripts/pipeline/outline_reviewer.py" "scripts/pipeline/coordinator.py" "scripts/pipeline/writer.py" "scripts/pipeline/reviewer.py" "scripts/core/json_repair.py" "scripts/core/mmx_client.py" "scripts/core/novel_config.py" "scripts/core/push_notifier.py" "scripts/core/workflow_state.py" "scripts/maintenance/coordinator_watchdog.py" "scripts/maintenance/wechat_notify.py" "scripts/maintenance/outline_lane.py" "scripts/maintenance/draft_lane.py" "scripts/maintenance/wechat_pusher_lane.py" "scripts/maintenance/gate_watchdog.py" "scripts/maintenance/portable_check.py"
+python -m py_compile "scripts/pipeline/planner.py" "scripts/pipeline/outliner.py" "scripts/pipeline/outline_reviewer.py" "scripts/pipeline/coordinator.py" "scripts/pipeline/writer.py" "scripts/pipeline/reviewer.py" "scripts/core/json_repair.py" "scripts/core/llm_client.py" "scripts/core/novel_config.py" "scripts/core/push_notifier.py" "scripts/core/workflow_state.py" "scripts/maintenance/coordinator_watchdog.py" "scripts/maintenance/wechat_notify.py" "scripts/maintenance/outline_lane.py" "scripts/maintenance/draft_lane.py" "scripts/maintenance/wechat_pusher_lane.py" "scripts/maintenance/gate_watchdog.py" "scripts/maintenance/portable_check.py"
 ```
 
 涉及推送或守护脚本时，追加对应文件到 `py_compile`。
@@ -250,7 +239,33 @@ python -m py_compile "scripts/pipeline/planner.py" "scripts/pipeline/outliner.py
 - Outliner 无 `--outline-file` 时不得生成 `outline.json` 或 `chapters/outline/index.json`。
 - Coordinator 大纲完成数必须来自单章大纲文件。
 - Coordinator 写正文前必须维护默认 10 章大纲提前窗口，可用 `--outline-lookahead` 临时覆盖。
-- 大纲重生成必须从第一次失败后的下一次 attempt 起立即带 `--review-feedback`，不能前三次裸跑。
+- 大纲重生成必须从第一次失败后的下一次 attempt 起立即带 `--review-feedback`，不能不带反馈裸跑。
 - 单章 Outliner 输出必须通过结构校验：`key_events` 不得为空，`foreshadowing`/`power_progression` 不得缺失，模板占位文本不得落盘。
 - 若审查反馈明确指向后章内容重叠，优先修复后章，再重审当前章，不要把该类边界问题误判成当前章的硬失败。
 - 初稿通过 Reviewer 后由 Coordinator 直接写入 final，不再依赖全局 Rewrite 队列。
+
+## 发布契约与旧入口兼容
+
+- 文本模型使用各 Agent 的 `provider/model`（如 `writer.provider/model`、`reviewer.provider/model`），共享 `llm` 仅作回退；mmx 仅负责媒体。加载配置仍校验生成端与审查端的 `(provider, model)` 不得相同。
+- 默认大纲提前窗口为10章；默认大纲与正文各为 `2轮 × 1次`。已有项目显式配置优先；默认不启用赛马。
+- Reviewer 仅当报告 `status=completed` 返回0，包括有效低分、`需修改/需重写`；API失败、解析失败、无正文、契约无效（含 `invalid_review_salvaged`）返回非零。批量中任何一章执行失败即非零；进程成功不代表质量放行，高分也不会将修订结论改成通过。
+- 报告 `content_sha256` 绑定实际送审正文快照（UTF-8，保留换行），模型返回后不重新读取正文计算。正文变化或旧报告无摘要必须重审；发布核对最终正文摘要一致。
+- 恢复历史最高分稿后必须强制重审，包括 Polisher失败、评分回退与重试耗尽。只有 completed、通过、章节阈值、报告质量门、本地硬门与摘要一致才允许发布；抢救出的无效报告不得成为发布依据。
+- Reviewer 和终稿共用 AI硬门：低于7分拒绝，7.0且无硬门指纹保持通过语义；指定指纹无论高分仍拒绝，包含 parallel_sentiment、summary_ending、meta_narration 和原有七类指纹。检测异常或分数缺失/非法均拒绝。
+- 写入 final 前检查正文 AI硬门，失败不覆盖已有终稿；落盘后复检失败立即停止，不抽取跨章状态、不推进完成进度、不推送完成通知。Coordinator 生成、质量门或整本终审失败均返回非零。
+- 根目录 `_gen_serial.py` 仅转发 `scripts/maintenance/gen_serial.py`，该脚本通过真实子进程运行 Coordinator；watchdog 每次重启也走此路径并保留失败退出码。watchdog 的 `--once` 表示监督一次完整子进程执行；不会结束后假报成功，也不再按 final 文件数判定质量通过。
+- 旧 `--start/--end/--skip-planner` 转发；start/end为0使用 Coordinator 默认范围，从第1章检查并续跑。`--max-rounds` 映射正文分析轮数（每轮尝试数仍读配置）。`--candidates/--workers` 仅接受1并明确提示；其它值、显式 `--timeout`、非0 `--time-limit` 明确拒绝。超时应配置各 Agent 的 `timeout_seconds`，不能静默变更旧语义。
+- 测试项目可设置 `coordinator.background_monitors_enabled=false` 禁止旁路监控进程，并清空 webhook、关闭 media；正式项目默认保留监控。
+
+本地验证（Python 3.12+，先确认标准库可加载；Windows 设置 `$env:PYTHONPATH="<repo>/scripts"`）：
+
+```powershell
+python -c "import sys, encodings; print(sys.version)"
+python -m pytest tests scripts/tests -q
+python -m compileall -q scripts
+python scripts/pipeline/coordinator.py --help
+python _gen_serial.py --help
+python scripts/maintenance/gen_serial_watchdog.py --help
+```
+
+CLI固定响应测试包含复制隔离项目的单章冒烟，验证实际子进程、HTTP模型通道、失败退出码与终稿绑定；它不代表真实模型质量验证。真实模型冒烟只能在复制测试项目运行，记录实际 provider/model、退出码、报告状态与终稿结果；缺凭据时明确记录未完成。

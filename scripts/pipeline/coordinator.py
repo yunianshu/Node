@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 
 from core.novel_config import configure_stdio, load_config, resolve_project_dir
+from core.review_quality import review_quality_settings
 from core.push_notifier import (
     push_task_complete as _push_task_complete,
     push_interrupted as _push_interrupted,
@@ -211,6 +212,8 @@ def ensure_wechat_pusher_process(interval_seconds: int | None = None) -> None:
     """启动独立企业微信推送进程；实际单例由推送进程自己的 lock 文件保证。"""
     if NOVELS_DIR is None or CONFIG is None:
         return
+    if not CONFIG.get("coordinator", {}).get("background_monitors_enabled", True):
+        return
     script = MAINTENANCE_SCRIPTS["wechat_pusher_lane.py"]
     if not script.exists():
         log(f"[WeChat] 推送脚本不存在，跳过: {script}")
@@ -250,6 +253,8 @@ def ensure_gate_watchdog_process(
         return
     if mode not in {"outline", "draft"}:
         raise ValueError(f"unsupported watchdog mode: {mode}")
+    if not CONFIG.get("coordinator", {}).get("background_monitors_enabled", True):
+        return
     script = MAINTENANCE_SCRIPTS["gate_watchdog.py"]
     if not script.exists():
         log(f"[Watchdog] 监控脚本不存在，跳过: {script}")
@@ -576,8 +581,12 @@ def _restore_best_draft(chapter: int) -> float:
     return score
 
 def _review_feedback(review_data: dict, chapter: int, gate: str, round_no: int, attempt: int, label: str = "") -> dict:
-    def first_list(value) -> list:
-        return value[:1] if isinstance(value, list) else []
+    max_repair_tasks = review_quality_settings(CONFIG)["max_repair_tasks"]
+
+    def limited_list(value, limit: int = max_repair_tasks) -> list:
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if str(item or "").strip()][:limit]
 
     def targeted_repairs() -> list[str]:
         if gate != "draft":
@@ -637,7 +646,7 @@ def _review_feedback(review_data: dict, chapter: int, gate: str, round_no: int, 
             )
         if not repairs and isinstance(human, dict) and human.get("passed") is False:
             repairs.append("优先修复 human_warmth_detection 失败项：让本章有生活压力、关系牵挂、具体物件和人的反应。")
-        return list(dict.fromkeys(repairs))[:3]
+        return list(dict.fromkeys(repairs))[:max_repair_tasks]
 
     return {
         "chapter": chapter,
@@ -648,12 +657,14 @@ def _review_feedback(review_data: dict, chapter: int, gate: str, round_no: int, 
         "status": review_data.get("status", ""),
         "overall_score": review_data.get("overall_score"),
         "verdict": review_data.get("verdict"),
-        "strengths": first_list(review_data.get("strengths", [])),
-        "weaknesses": first_list(review_data.get("weaknesses", [])),
-        "suggestions": first_list(review_data.get("suggestions", [])),
-        "continuity_issues": first_list(review_data.get("continuity_issues", [])),
+        "strengths": limited_list(review_data.get("strengths", []), 2),
+        "weaknesses": limited_list(review_data.get("weaknesses", [])),
+        "suggestions": limited_list(review_data.get("suggestions", [])),
+        "continuity_issues": limited_list(review_data.get("continuity_issues", [])),
         "summary": review_data.get("summary", ""),
-        "edits": first_list(review_data.get("edits", [])),
+        "edits": limited_list(review_data.get("edits", [])),
+        "repair_tasks": limited_list(review_data.get("repair_tasks", [])),
+        "quality_gate": review_data.get("quality_gate", {}),
         "local_analysis": review_data.get("local_analysis", {}),
         "targeted_repairs": targeted_repairs(),
         "raw_response": review_data.get("raw_response", ""),
@@ -683,11 +694,15 @@ def _failure_analysis(chapter: int, gate: str, reviews: list[dict]) -> dict:
             pass
         statuses.append(str(item.get("status", "")))
         weaknesses.extend([str(v) for v in item.get("weaknesses", []) if v])
+        weaknesses.extend([str(v) for v in item.get("review_contract_errors", []) if v])
+        weaknesses.extend([str(v) for v in item.get("quality_gate", {}).get("reasons", []) if v])
         suggestions.extend([str(v) for v in item.get("suggestions", []) if v])
+        suggestions.extend([str(v) for v in item.get("repair_tasks", []) if v])
         targeted_repairs.extend([str(v) for v in item.get("targeted_repairs", []) if v])
-    top_weaknesses = list(dict.fromkeys(weaknesses))[:1]
-    top_suggestions = list(dict.fromkeys(suggestions))[:1]
-    top_repairs = list(dict.fromkeys(targeted_repairs))[:3]
+    max_repair_tasks = review_quality_settings(CONFIG)["max_repair_tasks"]
+    top_weaknesses = list(dict.fromkeys(weaknesses))[:max_repair_tasks]
+    top_suggestions = list(dict.fromkeys(suggestions))[:max_repair_tasks]
+    top_repairs = list(dict.fromkeys(targeted_repairs))[:max_repair_tasks]
     return {
         "chapter": chapter,
         "gate": gate,
@@ -992,22 +1007,28 @@ def _extract_post_chapter_states(chapter: int) -> None:
     rel_thread.join()
 
 
-def _final_ai_flavor_check(chapter: int) -> None:
-    """G14: 终稿落盘后复检 AI 味，严重时记录告警（不阻断，仅报告）。"""
+def _final_ai_flavor_check(chapter: int) -> bool:
+    """终稿落盘后复检，失败必须先于状态抽取和进度更新阻断。"""
     final_file = NOVELS_DIR / "chapters" / "final" / f"chapter_{chapter:04d}.txt"
     if not final_file.exists():
-        return
+        return False
     try:
-        from core.ai_flavor_detector import detect_ai_flavor
-        text = final_file.read_text(encoding="utf-8")
-        result = detect_ai_flavor(text, project=NOVELS_DIR)
-        score = result.get("ai_flavor_score", 10) if isinstance(result, dict) else 10
-        if score < 7:
-            log(f"[Coordinator] ⚠️ 第{chapter}章终稿AI味复检偏低(score={score})，建议人工复核")
-        else:
-            log(f"[Coordinator] 第{chapter}章终稿AI味复检通过(score={score})")
+        from core.ai_flavor_detector import check_text_ai_gate
+        from core.review_quality import read_manuscript, review_matches_text
+        text = read_manuscript(final_file)
+        result = check_text_ai_gate(text, project=NOVELS_DIR)
+        if not review_matches_text(_load_json_file(_review_file(chapter)), text):
+            log(f"[Coordinator] 第{chapter}章终稿与审查正文摘要不匹配")
+            draft_gate_module.record_final_gate_failure(_runtime(), chapter, ["终稿与送审摘要不匹配"])
+            return False
+        log(f"[Coordinator] 第{chapter}章终稿AI复检：{result}")
+        if not result["passed"]:
+            draft_gate_module.record_final_gate_failure(_runtime(), chapter, result["reasons"])
+        return result["passed"]
     except Exception as _afe:
-        log(f"[Coordinator] 终稿AI味复检异常（忽略）: {_afe}")
+        log(f"[Coordinator] 终稿AI味复检异常，停止流程: {_afe}")
+        draft_gate_module.record_final_gate_failure(_runtime(), chapter, [f"终稿复检异常：{_afe}"])
+        return False
 
 
 def _ending_integrity_check(final_chapter: int) -> None:
@@ -1086,11 +1107,9 @@ def run_serial_quality_workflow(start: int, end: int, outline_lookahead: int | N
         if not process_draft_gate(chapter):
             return False
 
-        # G3: 正文通过门禁后，抽取角色状态快照和成长弧线进度（供下一章 writer 注入）
+        if not _final_ai_flavor_check(chapter):
+            return False
         _extract_post_chapter_states(chapter)
-
-        # G14: 终稿AI味复检——final 落盘后做一次 ai_flavor 检测，严重时记录告警
-        _final_ai_flavor_check(chapter)
 
         progress = refresh_progress_from_status()
         progress["failed_chapters"] = []
@@ -1541,7 +1560,7 @@ def _verify_book_repair_manifest(report: dict) -> None:
         return
     cfg = CONFIG.get("book_reviewer", {}) if isinstance(CONFIG.get("book_reviewer"), dict) else {}
     min_book_score = float(cfg.get("min_score", 8.5))
-    reviewer_min = float(CONFIG.get("reviewer", {}).get("min_score", 8.5))
+    reviewer_min = review_quality_settings(CONFIG)["review_min_score"]
     statuses = scan_chapter_status(NOVELS_DIR, min(chapters), max(chapters))
     cleanup_snapshots = _latest_cleanup_snapshots(chapters)
     chapter_results = []
@@ -1563,7 +1582,7 @@ def _verify_book_repair_manifest(report: dict) -> None:
         if not status or not status.final_ok:
             issues.append("final 未重新生成或未通过质量门")
         if not status or not status.review_ok or (status.review_score is not None and status.review_score < reviewer_min):
-            issues.append("review 未达到 reviewer.min_score")
+            issues.append("review 未达到正文质量门槛")
         if isinstance(human_warmth, dict) and human_warmth.get("passed") is False:
             issues.append("human_warmth_detection 仍未通过")
         if not relationship_state.exists():
@@ -2029,7 +2048,7 @@ def generate_summary_report():
 
     # 单章评分常被软封顶在 8.5 附近，算术平均会被低分章拖低；改用分位数口径，
     # 让中位数与过审率反映真实质量分布，避免整本分被单一均分锚定。
-    min_score = float(CONFIG.get("reviewer", {}).get("min_score", 8.5))
+    min_score = review_quality_settings(CONFIG)["review_min_score"]
     score_metrics = aggregate_review_scores(review_scores, min_score=min_score)
 
     report = {
@@ -2064,6 +2083,7 @@ def main():
     parser.add_argument("--outline-lookahead", type=int, default=0,
                         help="写正文前预先通过审查的大纲章数，默认读取 coordinator.outline_lookahead_chapters")
     parser.add_argument("--skip-planner", action="store_true", help="跳过Planner阶段")
+    parser.add_argument("--draft-rounds", type=int, default=0, help="覆盖正文分析轮数，每轮尝试数仍读取配置")
     parser.add_argument(
 
         "--skip-book-review",
@@ -2084,6 +2104,10 @@ def main():
         sys.exit(1)
 
     init_project(project)
+    if args.draft_rounds < 0:
+        parser.error("--draft-rounds 不能为负数")
+    if args.draft_rounds:
+        CONFIG["coordinator"]["draft_analysis_rounds"] = args.draft_rounds
 
     print("=" * 70)
     print("  小说Agent系统 - Coordinator")
@@ -2110,7 +2134,7 @@ def main():
         log("[Coordinator] 启动Planner生成或校验世界观、角色档案...")
         if run_planner() != 0:
             log("[ERROR] Planner生成或契约校验失败，请检查日志")
-            return
+            return 1
         progress["planner_done"] = True
         save_progress(progress)
     elif check_base_files_exist():
@@ -2121,11 +2145,11 @@ def main():
         progress["planner_done"] = False
         save_progress(progress)
         log("[ERROR] 已跳过Planner，但 world.json 或 characters.json 不存在")
-        return
+        return 1
 
     if not progress["planner_done"]:
         log("[ERROR] Planner未完成且跳过标志未设置")
-        return
+        return 1
 
     media_cfg = CONFIG.get("media", {})
     if media_cfg.get("enabled", True) and media_cfg.get("generate_after_planner", True):
@@ -2133,13 +2157,13 @@ def main():
             log("[Coordinator] 检测到媒体提示词缺失，重新运行Planner补齐 media_prompts...")
             if run_planner("--with-media-prompts") != 0:
                 log("[ERROR] Planner补齐媒体提示词失败，请检查日志")
-                return
+                return 1
         if not media_prompts_ready():
             log("[ERROR] world.json 缺少 media_prompts，无法生成封面/视频/主题歌")
-            return
+            return 1
         if run_media_generator() != 0:
             log("[ERROR] 媒体资产生成失败，请检查 media_generator.log")
-            return
+            return 1
 
     outline_lookahead = args.outline_lookahead or int(CONFIG["coordinator"].get("outline_lookahead_chapters", 10) or 10)
     outline_lookahead = max(1, outline_lookahead)
@@ -2149,7 +2173,7 @@ def main():
     if not ok:
         refresh_progress_from_status(progress)
         log("[Coordinator] 单章质量门失败，流程已停止")
-        return
+        return 1
 
     # G15: 整本终审门禁——全书正文完成后做分层终审（segment→volume→final），
     # 未达 book_reviewer.min_score 则阻断，整本结构缺陷在生成时即可见。
@@ -2167,7 +2191,7 @@ def main():
                     run_story_flow_audit_report(args.start, end_chapter)
                     refresh_progress_from_status(progress)
                     log("[Coordinator] 整本终审门禁未通过，流程已停止")
-                    return
+                    return 1
             # 终审通过后强制刷新一次，确保进度与终审结果一致
             if args.force_book_review:
                 refresh_progress_from_status(progress)
@@ -2199,9 +2223,11 @@ def main():
         rewrite_count=report["rewrite_count"],
     )
 
+    return 0
+
 if __name__ == "__main__":
     try:
-        main()
+        raise SystemExit(main())
     except KeyboardInterrupt:
         log("[Coordinator] 用户中断，保存进度...")
         progress = load_progress()
@@ -2209,9 +2235,11 @@ if __name__ == "__main__":
         log("[Coordinator] 进度已保存，可断点续传")
         title = get_book_title()
         _push_interrupted(config=CONFIG, title=title, reason="用户中断")
+        raise SystemExit(130)
     except Exception as e:
         log(f"[ERROR] 发生异常: {e}")
         import traceback
         log(traceback.format_exc())
         title = get_book_title()
         _push_error(config=CONFIG, title=title, error=str(e))
+        raise SystemExit(1)

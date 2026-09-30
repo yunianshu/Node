@@ -57,7 +57,7 @@ def format_relationships_for_prompt(data: dict) -> str:
     rels = data.get("relationships", [])
     if not isinstance(rels, list) or not rels:
         return ""
-    lines = ["## 【关系欠账与人情味连续性】（截至上一章，本章要延续人的反应）"]
+    lines = ["## 既有关系状态（背景事实，按当前场景相关性使用）"]
     for item in rels[:10]:
         if not isinstance(item, dict):
             continue
@@ -83,7 +83,7 @@ def format_relationships_for_prompt(data: dict) -> str:
             lines.append(f"- {pair}：" + "；".join(parts))
     if len(lines) == 1:
         return ""
-    lines.append("本章写冲突和爽点时，必须让至少一条关系欠账产生回声：有人更亏欠、释怀、误会加深或改变看法。")
+    lines.append("关系状态需要保持一致，但不要求每章推进；无关关系可暂不出场，也不必复述台账。")
     return "\n".join(lines)
 
 
@@ -144,16 +144,16 @@ def select_relationship_obligation(data: dict) -> dict:
 
 
 def relationship_obligation_for_prompt(data: dict) -> str:
-    """Select one open relationship pressure and turn it into a hard task."""
+    """Suggest relevant open pressure without forcing resolution in this chapter."""
     obligation = select_relationship_obligation(data)
     if not obligation:
         return ""
     return (
-        "## 【本章必须兑现的关系任务】\n"
+        "## 可供本章考虑的未解决关系\n"
         f"- 关系对象：{obligation['pair']}\n"
         f"- 未解决压力：{obligation['pressure']}\n"
-        "- 正文必须让这条关系在一个具体场景中发生可见变化：至少写出一句带潜台词的对白、一个照料/回避/补偿动作，"
-        "以及事件结束后双方关系是更亏欠、误会加深、短暂释怀还是立下新承诺。不得只在内心旁白中提及。"
+        "只在相关人物实际在场且当前事件涉及这条关系时承接；允许延后、停滞或不提。"
+        "不要为了台账安排人物出场、补对白、照料动作或强行解决关系。\n"
     )
 
 
@@ -350,7 +350,7 @@ def _selftest() -> None:
             },
         ]
     })
-    assert "本章必须兑现的关系任务" in obligation and "林深->苏雯" in obligation and "潜台词" in obligation
+    assert "可供本章考虑" in obligation and "林深->苏雯" in obligation and "允许延后" in obligation
     selected = select_relationship_obligation({
         "relationships": [
             {"pair": "林深->母亲", "debt": "药费", "resolved": True},

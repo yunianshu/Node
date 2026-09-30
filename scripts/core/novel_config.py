@@ -40,6 +40,7 @@ DEFAULT_CONFIG = {
         "headers": {},
     },
     "writer": {
+        "use_scored_examples": False,
         "provider": "deepseek",
         "model": "deepseek-chat",
         "max_tokens": 8192,
@@ -129,6 +130,19 @@ DEFAULT_CONFIG = {
         "song_format": "mp3",
     },
     "quality": {
+        # 正文审查门禁统一由 quality 配置控制，避免各调度入口读取不同阈值。
+        "review_min_score": 8.5,
+        "scene_realization_min_rate": 0.75,
+        "critical_dimension_min_scores": {
+            "character_voice": 8.0,
+            "causal_logic": 8.0,
+            "pacing": 8.0,
+            "emotional_impact": 8.0,
+            "information_freshness": 8.0,
+            "payoff_intensity": 8.0,
+            "read_desire": 8.0,
+        },
+        "max_repair_tasks": 4,
         "min_chapter_words": 5000,
         "max_chapter_words": 12000,
         "warn_min_chapter_words": 4800,
@@ -149,10 +163,14 @@ DEFAULT_CONFIG = {
         "temperature": 0.5,
     },
     "polisher": {
+        "enabled": False,
         "provider": "deepseek",
         "model": "deepseek-chat",
         "max_tokens": 8192,
         "temperature": 0.4,
+    },
+    "revision": {
+        "max_changed_ratio": 0.15,
     },
     "character_state": {
         "provider": "deepseek",

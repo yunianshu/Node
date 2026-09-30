@@ -16,6 +16,7 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 from core.novel_config import load_config, resolve_project_dir
+from core.review_quality import review_quality_settings
 from core.workflow_state import (
     load_outline_review_status,
     scan_one_chapter,
@@ -115,7 +116,7 @@ def main() -> int:
     config = load_config(project)
     end = args.end or int(config["total_chapters"])
     outline_min_score = float(config.get("outline_reviewer", {}).get("min_score", 8.5))
-    draft_min_score = float(config.get("reviewer", {}).get("min_score", 8.5))
+    draft_min_score = review_quality_settings(config)["review_min_score"]
     max_rounds = int(config.get("coordinator", {}).get("draft_analysis_rounds", 3) or 3)
     attempts_per_round = int(config.get("coordinator", {}).get("draft_attempts_per_round", 3) or 3)
     requested_workers = args.workers or int(config.get("coordinator", {}).get("draft_workers", 1) or 1)

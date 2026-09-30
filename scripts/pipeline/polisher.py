@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Polisher Agent - 精修Agent
-基于 reviewer 反馈对 draft 进行定向局部修改，目标是让章节从 8 分提升到 9 分。
+基于 reviewer 定位对 draft 应用有限修改量的精确补丁，保留其余文本。
 """
 
 from pathlib import Path
@@ -18,11 +18,9 @@ import time
 from pathlib import Path
 
 from core.llm_client import LLMError, call_llm as _call_section_llm
+from core.edit_diff import EditApplyError, apply_reviewed_edits, build_edit_prompt, parse_edit_ops
 from core.novel_config import configure_stdio, load_config, load_origin_materials, resolve_project_dir
-from core.workflow_state import (
-    FORBIDDEN_PHRASES, VALID_ENDINGS, load_outline_chapter,
-    review_dir, report_path,
-)
+from core.workflow_state import review_dir
 
 configure_stdio()
 
@@ -99,169 +97,37 @@ def _load_json_file(path: Path) -> dict:
         return {}
 
 
-def _clean_content(content: str) -> str:
-    content = content.strip()
-    if content.startswith("```"):
-        lines = content.split("\n")
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        content = "\n".join(lines).strip()
-    for phrase in FORBIDDEN_PHRASES:
-        content = content.replace(phrase, "")
-    if content and not content.endswith(VALID_ENDINGS):
-        paragraphs = content.split("\n\n")
-        if len(paragraphs) > 1 and not paragraphs[-1].strip().endswith(VALID_ENDINGS):
-            content = "\n\n".join(paragraphs[:-1]).strip()
-        if content and not content.endswith(VALID_ENDINGS):
-            last_valid = max(
-                (content.rfind(end) for end in VALID_ENDINGS if end in content),
-                default=-1,
-            )
-            if last_valid > len(content) * 0.9:
-                content = content[: last_valid + 1].strip()
-    return content
-
-
 def polish_chapter(chapter_number: int, retry: int = 0, candidate_id: int = 0, temperature: float | None = None) -> str:
-    source_draft_file = _draft_file(chapter_number)
-    draft_file = _draft_file(chapter_number, candidate_id)
-    if not source_draft_file.exists():
-        log(f"第{chapter_number}章初稿不存在，无法精修")
-        return "failed"
-
+    source = _draft_file(chapter_number)
+    target = _draft_file(chapter_number, candidate_id)
     review_file = _review_file(chapter_number)
-    if not review_file.exists():
-        log(f"第{chapter_number}章审查报告不存在，无法精修")
+    if not source.exists() or not review_file.exists():
+        log(f"第{chapter_number}章缺少原稿或审查报告")
         return "failed"
-
-    draft_content = source_draft_file.read_text(encoding="utf-8")
-    review_data = _load_json_file(review_file)
-
-    score = review_data.get("overall_score", 0)
-    verdict = review_data.get("verdict", "")
-    weaknesses = review_data.get("weaknesses", [])
-    suggestions = review_data.get("suggestions", [])
-    continuity_issues = review_data.get("continuity_issues", [])
-    summary = review_data.get("summary", "")
-
-    candidate_label = f"（候选{candidate_id}）" if candidate_id > 0 else ""
-    log(f"第{chapter_number}章{candidate_label}当前评分: {score}，开始精修...")
-
-    chapter_outline = load_outline_chapter(NOVELS_DIR, chapter_number) or {}
-    world = _load_json_file(WORLD_FILE)
-    characters = _load_json_file(CHARACTERS_FILE)
-
-    key_events = chapter_outline.get("key_events", [])
-    if isinstance(key_events, str):
-        key_events = [key_events]
-    key_events_text = "\n".join(f"{i+1}. {str(ev)}" for i, ev in enumerate(key_events) if str(ev).strip())
-    chapter_hook = str(chapter_outline.get("chapter_hook", "")).strip()
-
+    with source.open("r", encoding="utf-8", newline="") as stream:
+        original = stream.read()
+    review = _load_json_file(review_file)
+    if not review.get("edits"):
+        log(f"第{chapter_number}章无可定位修改，保留原稿")
+        return "failed"
     quality = CONFIG.get("quality", {})
     min_words = int(quality.get("min_chapter_words", 5000))
     max_words = int(quality.get("max_chapter_words", 12000))
-    target_min = max(min_words + 500, 5500)
-
-    system = f"""你是一位保守的 9 分神作精修编辑。你的座右铭是：**改得越少，风险越小**。
-你相信 8 分稿距离 9 分只差几处精准修改，而不是全局重写。
-你的精修原则：
-- **最小修改**：只改 reviewer 明确指出的段落，其他段落尽量原样保留
-- **保留优点**：原文中高张力的对话、成功悬念、有效刺点必须保留，不能因为"创新"而破坏
-- **精准打击**：每个修改只针对一个具体问题，不要连锁改动
-- **风格一致**：新增或修改的段落必须与原文语气、节奏、人物口吻一致
-- **不解释**：输出完整正文，不输出修改说明
-
-你痛恨：为了修改而修改、全局重写、破坏原有节奏、新增与原文风格不符的内容。"""
-
-    prompt = f"""请对以下第{chapter_number}章初稿进行最小化精修，目标是从 {score} 分提升到 9.0 分以上。
-
-## 精修铁律（违反任何一条都视为失败）
-1. **最小修改原则**：只修改 reviewer 明确指出的具体段落。 reviewer 没有批评的段落必须原样保留，禁止因为"优化"而改动。
-2. **禁止全文重写**：严禁推倒重来。如果 reviewer 没有批评某个场景，这个场景必须一字不动地保留在输出中。
-3. **禁止破坏优点**：原文中被 reviewer 列入 strengths 的优点（高张力对话、有效悬念、成功刺点）必须完整保留。
-4. **逐条精准修改**：对 reviewer 的每一条 weakness 和 suggestion，只修改它指向的具体部分，不要连带修改无关内容。
-5. **风格一致**：修改后的新增内容必须与原文的语气、节奏、人物口吻完全一致，不能出现风格突变。
-6. **字数保护**：当前初稿 {len(draft_content)} 字，精修后字数必须在 {min_words}-{max_words} 字之间，建议 {target_min}-10000 字。输出少于 {min_words} 字或多于 {max_words} 字都视为失败。
-
-## 本章大纲
-{json.dumps(chapter_outline, ensure_ascii=False, indent=2)}
-
-## 本章关键事件（不能遗漏）
-{key_events_text}
-
-## 本章章末钩子（必须保留并强化）
-{chapter_hook}
-
-## origin/ 原始参考素材
-{ORIGIN_MATERIALS or "（无）"}
-
-## Reviewer 反馈（必须逐条解决）
-**总体评分**: {score}  
-**verdict**: {verdict}  
-**总体评价**: {summary}
-
-### 主要问题
-{chr(10).join(f"{i+1}. {w}" for i, w in enumerate(weaknesses))}
-
-### 修改建议
-{chr(10).join(f"{i+1}. {s}" for i, s in enumerate(suggestions))}
-
-### 连续性问题
-{chr(10).join(f"{i+1}. {c}" for i, c in enumerate(continuity_issues)) if continuity_issues else "（无）"}
-
-## 当前初稿
-{draft_content}
-
-请直接输出精修后的完整正文。字数必须在 {min_words}-{max_words} 之间。不要输出解释、不要输出修改清单、不要输出任何元信息。"""
-
-    temp = temperature if temperature is not None else float(CONFIG.get("polisher", {}).get("temperature", 0.2))
-    content = call_llm(system, prompt, max_tokens=8192, temperature=temp)
-    if not content:
-        log(f"第{chapter_number}章精修收到空响应")
-        max_retry = CONFIG.get("polisher", {}).get("max_retries", 3)
-        if retry < max_retry:
-            log(f"第{chapter_number}章精修失败，重试({retry+1}/{max_retry})...")
-            time.sleep(CONFIG.get("polisher", {}).get("retry_delay", 5.0))
-            return polish_chapter(chapter_number, retry + 1, candidate_id, temperature)
-        log(f"第{chapter_number}章精修失败，已达最大重试次数")
+    system, prompt = build_edit_prompt(original, review, chapter_number, min_words, max_words)
+    temp = temperature if temperature is not None else float(CONFIG.get("polisher", {}).get("temperature", 0.4))
+    try:
+        raw = call_llm(system, prompt, max_tokens=8192, temperature=temp)
+        revised = apply_reviewed_edits(
+            original, parse_edit_ops(raw), review["edits"],
+            max_changed_ratio=float(CONFIG.get("revision", {}).get("max_changed_ratio", 0.15)),
+            min_words=min_words, max_words=max_words,
+        )
+    except (EditApplyError, ValueError, TypeError) as exc:
+        log(f"第{chapter_number}章精修补丁无效，原稿保留: {exc}")
         return "failed"
-
-    content = _clean_content(content)
-
-    word_count = len(content)
-    original_count = len(draft_content)
-    # 字数变化保护：精修应最小化改动，避免大幅改写破坏优点
-    min_ratio = float(CONFIG.get("polisher", {}).get("min_length_ratio", 0.85))
-    max_ratio = float(CONFIG.get("polisher", {}).get("max_length_ratio", 1.15))
-    if word_count < original_count * min_ratio or word_count > original_count * max_ratio:
-        log(f"第{chapter_number}章精修后字数变化过大（原{original_count}字 -> 现{word_count}字），尝试重试...")
-        max_retry = CONFIG.get("polisher", {}).get("max_retries", 3)
-        if retry < max_retry:
-            time.sleep(CONFIG.get("polisher", {}).get("retry_delay", 5.0))
-            return polish_chapter(chapter_number, retry + 1, candidate_id, temperature)
-        log(f"第{chapter_number}章精修后字数仍变化过大，保留原稿")
-        return "failed"
-    if word_count < min_words:
-        log(f"第{chapter_number}章精修后字数不足（{word_count}字），尝试重试...")
-        max_retry = CONFIG.get("polisher", {}).get("max_retries", 3)
-        if retry < max_retry:
-            time.sleep(CONFIG.get("polisher", {}).get("retry_delay", 5.0))
-            return polish_chapter(chapter_number, retry + 1, candidate_id, temperature)
-        log(f"第{chapter_number}章精修后字数仍不足（{word_count}字），保留原稿")
-        return "failed"
-    if word_count > max_words:
-        log(f"第{chapter_number}章精修后字数超标（{word_count}字），尝试重试...")
-        max_retry = CONFIG.get("polisher", {}).get("max_retries", 3)
-        if retry < max_retry:
-            time.sleep(CONFIG.get("polisher", {}).get("retry_delay", 5.0))
-            return polish_chapter(chapter_number, retry + 1, candidate_id, temperature)
-        log(f"第{chapter_number}章精修后字数仍超标（{word_count}字），保留原稿")
-        return "failed"
-
-    draft_file.write_text(content, encoding="utf-8")
-    log(f"第{chapter_number}章精修完成（{word_count}字），覆盖原初稿")
+    with target.open("w", encoding="utf-8", newline="") as stream:
+        stream.write(revised)
+    log(f"第{chapter_number}章精修补丁已保存（{len(revised)}字）")
     return "success"
 
 
